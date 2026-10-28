@@ -67,7 +67,8 @@ test('常量：主机名与路径是学堂的那几个', () => {
   assert.equal(SSO_HOST, 'id.tsinghua.edu.cn');
 });
 
-test('edgeCandidates：先 Program Files (x86)，没有 LOCALAPPDATA 时只给两条', () => {
+test('edgeCandidates：先 Program Files (x86)，没有 LOCALAPPDATA 时只给两条',
+  { skip: process.platform !== 'win32' && 'Edge 安装路径是 Windows 专有语义，其他平台跳过' }, () => {
   const withLocal = edgeCandidates({ 'ProgramFiles(x86)': 'C:\\pf86', ProgramFiles: 'C:\\pf', LOCALAPPDATA: 'C:\\local' });
   assert.deepEqual(withLocal, [
     'C:\\pf86\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -84,7 +85,8 @@ test('edgeCandidates：环境变量缺失时退回默认安装位置（不抛）
   assert.ok(list[0].includes('Program Files (x86)'));
 });
 
-test('findEdgeExecutable：第一个存在的就返回，都不存在回 null', () => {
+test('findEdgeExecutable：第一个存在的就返回，都不存在回 null',
+  { skip: process.platform !== 'win32' && 'Edge 安装路径是 Windows 专有语义，其他平台跳过' }, () => {
   const env = { 'ProgramFiles(x86)': 'C:\\pf86', ProgramFiles: 'C:\\pf' };
   const second = 'C:\\pf\\Microsoft\\Edge\\Application\\msedge.exe';
   assert.equal(findEdgeExecutable({ env, exists: (p) => p === second }), second);

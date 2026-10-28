@@ -272,7 +272,7 @@ test('工具 schema 必须在 dsh-tools 的受支持子集内（这一条防的�
   });
 });
 
-test('工具返回值必须通过 output.schema 校验，render 不抛（第二道关卡）', async () => {
+test('工具返回值必须通过 output.schema 校验，render 不抛（第二道关卡）', async (t) => {
   // 工具 schema 有**两道**关卡，我先后各踩了一次：
   //   1) 注册时 assertSupportedJsonSchema —— 拒绝 type 数组
   //      （`type: ['string','null']` 曾让整个 DSH 启动失败、桌面端进安全模式）；
@@ -287,6 +287,12 @@ test('工具返回值必须通过 output.schema 校验，render 不抛（第二�
     assert.fail('缺少 tools/verify-tool-output.mjs（生产版输出校验）');
   }
   const result = spawnSync(process.execPath, [toolOutputCheck], { encoding: 'utf8' });
+  // 校验器要加载**生产版** dsh 包里的 validateJsonSchemaValue；机器上没有 dsh
+  // 安装（例如 CI 上）时它打印「跳过：…」并退 0 —— 这不是失败，本用例跟着跳过。
+  if (/跳过/.test(result.stdout ?? '')) {
+    t.skip('本机没有可用的 DSH 包，生产版输出校验器跳过');
+    return;
+  }
   assert.equal(result.status, 0,
     `verify-tool-output.mjs 未通过：\n${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /7 项通过，0 项失败/, '输出校验应报告 7 项全过');

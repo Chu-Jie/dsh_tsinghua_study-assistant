@@ -65,7 +65,8 @@ test('DEFAULT_RECORDING_DIR 指到用户主目录下的录像目录', () => {
   assert.equal(MAX_READ_BYTES, 8 * 1024 * 1024);
 });
 
-test('resolveRecording：合法组合落成绝对路径', () => {
+test('resolveRecording：合法组合落成绝对路径',
+  { skip: process.platform !== 'win32' && '录音目录按盘符判定是否为绝对路径，其他平台跳过' }, () => {
   const base = 'D:\\会议录像';
   const resolved = resolveRecording(base, '2026-10-09 20.04.19', '2026_10_09200419.aac');
   assert.equal(resolved.ok, true);
