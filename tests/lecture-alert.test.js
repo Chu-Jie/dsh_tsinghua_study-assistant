@@ -40,7 +40,7 @@ test('buildNameMatcher：同音字表覆盖的音节能建出整名/名/姓三�
   assert.equal(matcher.classes.length, 3);
 
   matcher.full.lastIndex = 0;
-  assert.equal(matcher.full.exec('杜昊阳')?.[0], '杜昊阳', '同音字要能整名命中');
+  assert.equal(matcher.full.exec('杜皓阳')?.[0], '杜皓阳', '同音字要能整名命中');
   matcher.given.lastIndex = 0;
   assert.equal(matcher.given.exec('好，浩阳你来说')?.[0], '浩阳');
   matcher.surname.lastIndex = 0;
