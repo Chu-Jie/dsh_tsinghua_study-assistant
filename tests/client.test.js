@@ -834,7 +834,7 @@ test('client.js：资料页把索引/题目/知识点都渲染出来，空数据
   assert.ok(mindSource.includes('@keyframes sa-draw') && mindSource.includes('@keyframes sa-pop'), '两段动效的 keyframes 要在');
   assert.ok(/prefers-reduced-motion[\s\S]{0,400}?\.sa-mind-link/.test(mindSource), '「减少动态效果」时要关掉导图动效');
   // 展开两章之后再渲一次：知识点出现、带掌握度符号
-  internals.readKnowledgeUi({ treeCourseId: 'c_dg', subjectTrees: internals.patchSubjectTree({}, 'c_dg', { mindOpen: ['第 2 章', '第 4 章'] }) });
+  internals.readKnowledgeUi({ treeCourseId: 'c_dg', subjectTrees: internals.patchSubjectTree({}, 'c_dg', { mindOpen: ['第 2 章', '第 4 章','mind:section:c_dg|第 2 章|2.3','mind:section:c_dg|第 4 章|4.1'] }) });
   const knowledgeMindOpen = renderFullKnowledge(docs, 'mind', internals.readKnowledgeUi());
   internals.resetKnowledgeUi();
   internals.resetMaterialsUi();
@@ -1553,7 +1553,10 @@ test('client.js：思维导图布局是横向树（全部→课→章→点）�
   assert.ok(collapsedAll.nodes.filter((item) => item.kind === 'chapter').every((item) => item.total === undefined || typeof item.total === 'number'),
     '章要带总点数（渲染层显示「N 个」）');
 
-  const oneChapter = internals.buildMindMap(nodes, labels, { expanded: ['第 2 章'] });
+  const onlyChapter = internals.buildMindMap(nodes, labels, { expanded: ['第 2 章'] });
+  assert.equal(onlyChapter.points,0,'Opening a chapter must leave sections collapsed');
+  assert.ok(onlyChapter.nodes.filter(n=>n.kind==='section').every(n=>n.open===false));
+  const oneChapter = internals.buildMindMap(nodes, labels, { expanded: ['第 2 章','mind:section:c_dg|第 2 章|2.1','mind:section:c_dg|第 2 章|2.3'] });
   assert.equal(oneChapter.points, 2, '只展开第 2 章 ⇒ 只铺该章的 2 个点');
   assert.equal(oneChapter.collapsed, 1, '第 4 章仍折叠');
   // 注意：client 在 vm 里跑，数组原型与测试进程不同 ⇒ 用 JSON 比，别用 deepStrictEqual
@@ -2293,7 +2296,7 @@ test('mind map: full outline hierarchy, no collapsed overlap, course-specific ex
   const folded=lib.buildMindMap(rows,{course:id=>id},{outline,expanded:[]});
   const chapters=folded.nodes.filter(n=>n.kind==='chapter');assert.equal(chapters.length,2);assert.notEqual(chapters[0].y,chapters[1].y);
   const first=lib.buildMindMap(rows,{course:id=>id},{outline,expanded:[chapters[0].key]});
-  assert.equal(first.points,2);assert.equal(first.collapsed,1);
+  assert.equal(first.points,0);assert.equal(first.collapsed,1);assert.ok(first.nodes.filter(n=>n.kind==='section').every(n=>!n.open));
   assert.equal(lib.resetKnowledgeUi().view,'mind');
   const {renderToStaticMarkup}=createFakeServer();
   const html=renderToStaticMarkup({__el:true,type:lib.knowledgeTab,props:{docs:{knowledgeNetwork:{nodes:rows},knowledgeOutline:outline}},children:[]});
@@ -2346,6 +2349,7 @@ test('subject tree: A to B to A restores both views and clears cross-course deta
  box(f).props.onScroll({currentTarget:{scrollLeft:7,scrollTop:80}});
  select(f).props.onChange({target:{value:'a'}});f=full();assert.equal(chapter(f).props['aria-expanded'],true);
  dom={scrollLeft:0,scrollTop:0};box(f).props.ref(dom);assert.equal(dom.scrollLeft,130);assert.equal(dom.scrollTop,270);
+ f.find(n=>n.type==='g'&&n.props?.['aria-label']==='1.1').props.onClick();f=render();
  const leaf=f.find(n=>n.type==='g'&&n.props?.['aria-label']==='Alpha only leaf');leaf.props.onClick();f=render();assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'));
  select(f).props.onChange({target:{value:'b'}});f=render();assert.equal(f.some(n=>n.props?.id==='sa-kp-detail'),false);
  f.find(n=>n.type==='button'&&text(n)==='目录树').props.onClick();f=render();assert.equal(box(f).props['data-tree-course'],'b');
@@ -2470,6 +2474,47 @@ test('公式排版：formulas[].tex 与行内 $…$ 都转成符号，界面不�
   const env = flat(lib.latexNodes('f=\\begin{cases} x & x>0 \\\\ 0 & x\\le 0 \\end{cases}', 'f7'));
   assert.ok(!env.includes('cases'), `环境名不许外露：${env}`);
   assert.ok(env.includes('x>0') && /x≤\s*0/u.test(env), `环境里的内容要保留：${env}`);
+
+  // 教材 OCR 的公式编号 `\tag{12.11}`（2026-10-27 晚）：以前会印成「tag12.11」
+  const tagged = flat(lib.latexNodes('E=\\int\\mathrm{d}E\\tag{12.11}', 'f8'));
+  assert.ok(!/tag/iu.test(tagged.replace(/\\(?:ta|ag)/gu, '')), `编号关键字不许外露：${tagged}`);
+  assert.ok(tagged.includes('12.11'), `编号数字要保留：${tagged}`);
+});
+
+test('material preview: 教材页正文按「排版」读，页眉/分隔线丢掉、公式真排版', () => {
+  const test = statefulClient();
+  const lib = test.half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.materialPreviewNodes, 'function', 'client 要把材料页排版导出给测试用');
+
+  const body = [
+    '# 第 30 页',
+    '式中，$r$ 是电荷元 $\\mathrm{d}q$ 到 $P$ 的距离。',
+    '',
+    '$$\\boldsymbol{E}=\\int\\mathrm{d}\\boldsymbol{E}$$',
+    '$$\\tag{12.11}$$',
+    '---',
+    '### 例 12.3',
+    '求电偶极子中垂线上任一点的电场强度。',
+  ].join('\n');
+  const nodes = lib.materialPreviewNodes(body, 'mp');
+  assert.ok(Array.isArray(nodes) && nodes.length > 0, '要排出版式节点');
+  const flat = (function walk(list, out) {
+    for (const item of list) {
+      if (item === null || item === undefined || item === false) continue;
+      if (typeof item === 'string' || typeof item === 'number') { out.push(String(item)); continue; }
+      if (Array.isArray(item)) { walk(item, out); continue; }
+      walk(item.children ?? [], out);
+    }
+    return out.join('');
+  })(nodes, []);
+  // 页眉 `# 第 30 页` 与 `---` 都不该印出来
+  assert.ok(!flat.includes('第 30 页'), `页眉要丢掉：${flat}`);
+  assert.ok(!flat.includes('---'), `分隔线要丢掉：${flat}`);
+  // 行内单字母公式 `$r$` 不许露 `$`，整段公式不许露反斜杠命令
+  assert.ok(!flat.includes('$'), `行内公式要排版：${flat}`);
+  assert.ok(!/\\[A-Za-z]+/u.test(flat), `不许露 LaTeX 源码：${flat}`);
+  assert.ok(flat.includes('例 12.3'), `小标题文字要保留：${flat}`);
+  assert.ok(flat.includes('电荷元'), `正文要保留：${flat}`);
 });
 
 test('split reader: compact selection and full-map return preserve the navigator',()=>{
@@ -2488,6 +2533,7 @@ test('split reader: compact selection and full-map return preserve the navigator
  f.find(n=>n.type==='button'&&text(n)==='展开完整导图').props.onClick();f=render();
  assert.equal(f.find(n=>n.props?.className==='sa-learning-layout').props['data-full-browser'],'true');
  f.find(n=>n.type==='g'&&typeof n.props?.['aria-expanded']==='boolean').props.onClick();f=render();
+ f.find(n=>n.type==='g'&&n.props?.['aria-label']==='1.1').props.onClick();f=render();
  f.find(n=>n.type==='g'&&n.props?.['aria-label']==='Second point').props.onClick();f=render();
  assert.equal(f.find(n=>n.props?.className==='sa-learning-layout').props['data-full-browser'],'false');
  assert.ok(f.some(n=>n.type==='h3'&&text(n)==='Second point'));
@@ -2495,5 +2541,46 @@ test('split reader: compact selection and full-map return preserve the navigator
  f.find(n=>n.type==='button'&&text(n)==='收起').props.onClick();f=render();
  assert.equal(f.some(n=>n.props?.id==='sa-kp-detail'),false);
  assert.equal(f.find(n=>n.props?.className==='sa-learning-layout').props['data-browser-collapsed'],'false');
- const source=fs.readFileSync(CLIENT_FILE,'utf8');assert.ok(source.includes('if (readerRef.current) readerRef.current.scrollTop = 0;'));
+ const source=fs.readFileSync(CLIENT_FILE,'utf8');assert.ok(source.includes('if (focusReading && readerRef.current) readerRef.current.scrollTop = 0;'));
+});
+
+test('progressive tree: chapter, section and subsection require their own expansion',()=>{
+ const {half}=loadClient(),lib=half.DESCRIPTORS.internals;
+ const nodes=[{id:'p',name:'Leaf',courseId:'a',chapter:'第1章 Test',section:'1.1',subsection:'1.1.1'}];
+ const outline={courses:[{courseId:'a',chapters:[{no:1,title:'Test',sections:[{no:'1.1',title:'Section',subs:[{no:'1.1.1',title:'Subsection'}]}]}]}]};
+ const options={outline,courseRoot:true,courseId:'a'};
+ let m=lib.buildMindMap(nodes,{}, {...options,expanded:[]});const chapter=m.nodes.find(n=>n.kind==='chapter');
+ m=lib.buildMindMap(nodes,{}, {...options,expanded:[chapter.key]});const section=m.nodes.find(n=>n.kind==='section');assert.equal(section.open,false);assert.equal(m.points,0);assert.equal(m.nodes.some(n=>n.kind==='sub'),false);
+ m=lib.buildMindMap(nodes,{}, {...options,expanded:[chapter.key,section.key]});const sub=m.nodes.find(n=>n.kind==='sub');assert.equal(sub.open,false);assert.equal(m.points,0);
+ m=lib.buildMindMap(nodes,{}, {...options,expanded:[chapter.key,section.key,sub.key]});assert.equal(m.points,1);
+ m=lib.buildMindMap(nodes,{}, {...options,expanded:[]});assert.equal(m.nodes.some(n=>n.kind==='section'),false);
+});
+test('mind zoom: fit, clamp, SVG geometry and per-course restoration',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ assert.equal(lib.clampMindZoom(NaN),1);assert.equal(lib.clampMindZoom(20),2);assert.equal(lib.clampMindZoom(0.00001),0.001);
+ assert.equal(lib.fitMindZoom(1000,2000,524,1024),0.5);assert.equal(lib.fitMindZoom(0,0,500,500),1);assert.ok(32874*lib.fitMindZoom(1210,32874,300,100)<=100);
+ const docs={courses:{courses:[{id:'a',name:'A'},{id:'b',name:'B'}]},knowledgeNetwork:{nodes:[{id:'a1',name:'A leaf',courseId:'a',chapter:'第1章 A',section:'1.1'},{id:'b1',name:'B leaf',courseId:'b',chapter:'第1章 B',section:'1.1'}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs}));}
+ function full(){let f=render();const b=f.find(n=>n.type==='button'&&text(n)==='展开完整导图');if(b){b.props.onClick();f=render();}return f;}
+ let f=full(),svg=f.find(n=>n.type==='svg'),w=svg.props.width;assert.ok(svg.props.viewBox);
+ f.find(n=>n.props?.['aria-label']==='缩小导图').props.onClick();f=render();assert.equal(f.find(n=>n.type==='svg').props.width,w*0.8);
+ f.find(n=>n.props?.['aria-label']==='选择学科树').props.onChange({target:{value:'b'}});f=full();assert.equal(lib.subjectTreeState(lib.readKnowledgeUi().subjectTrees,'b').mindZoom,1);
+ f.find(n=>n.props?.['aria-label']==='选择学科树').props.onChange({target:{value:'a'}});f=full();assert.equal(f.find(n=>n.type==='svg').props.width,w*0.8);
+ const box={clientWidth:260,clientHeight:180,scrollLeft:0,scrollTop:0};f.find(n=>n.props?.id==='sa-mind-wrap').props.ref(box);
+ f.find(n=>n.type==='button'&&text(n)==='适应窗口').props.onClick();f=render();svg=f.find(n=>n.type==='svg');assert.ok(svg.props.width<=box.clientWidth&&svg.props.height<=box.clientHeight);
+ f.find(n=>n.type==='button'&&text(n)==='100%').props.onClick();f=render();assert.equal(f.find(n=>n.type==='svg').props.width,w);
+});
+test('focus reading: entry, exit and close retain the same selected content',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+ lib.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs}));}
+ let f=render();const page={scrollTop:240,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:-120})};
+ f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'true');
+ assert.ok(f.some(n=>n.type==='h3'&&text(n)==='Focus point'));
+ f.find(n=>n.type==='button'&&text(n)==='退出专注阅读').props.onClick();f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
+ assert.equal(page.scrollTop,240);assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'));
 });

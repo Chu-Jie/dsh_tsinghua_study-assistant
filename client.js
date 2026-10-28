@@ -1271,6 +1271,33 @@ window.__ModuleLoader__.load({
 .sa-full-browser,.sa-browser-content,.sa-compact-scroll{height:auto!important;overflow:visible!important}
 }
 
+/* 普通模式让正文随整页滚动；仅专注阅读建立独立滚动区。 */
+.sa-learning-layout{height:auto;align-items:start}
+.sa-browser-pane{position:sticky;top:0;height:clamp(300px,64vh,720px)}
+.sa-reader-pane{overflow:visible;min-height:0;max-height:none}
+.sa-reader-pane .sa-reading{max-height:none!important;overflow:visible!important}
+.sa-reader-pane .sa-reader-empty{min-height:320px}
+.sa-learning-layout[data-full-browser="true"]{height:clamp(420px,72vh,860px)}
+.sa-learning-layout[data-full-browser="true"]>.sa-browser-pane{position:static;height:100%}
+.sa-reader-pane[data-focus-reader="true"]{position:absolute;inset:0;z-index:8;display:block;height:100%;overflow:auto;overscroll-behavior:contain;background:var(--dsw-alias-bg-layer-1);padding:18px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+.sa-root:has(.sa-reader-pane[data-focus-reader="true"])>.sa-body{overflow:hidden}
+.sa-knowledge-page:has([data-focus-reader="true"]){animation:none!important;transform:none!important}
+.sa-reader-pane[data-focus-reader="true"]>.sa-node-detail,.sa-reader-pane[data-focus-reader="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
+.sa-focus-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;margin-bottom:16px;background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sa-focus-header>strong{flex:1;min-width:140px;font-size:18px}
+.sa-focus-header .sa-muted{font-size:14px}
+.sa-zoom-controls{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sa-zoom-value{min-width:50px;text-align:center;font-size:14px;font-variant-numeric:tabular-nums}
+@container (max-width:860px){
+ .sa-browser-pane{position:static;height:auto}
+ .sa-learning-layout[data-full-browser="true"]{height:auto}
+ .sa-reader-pane[data-focus-reader="true"]{padding:12px}
+}
+@media print{
+ .sa-browser-pane,.sa-focus-header,.sa-zoom-controls{display:none!important}
+ .sa-reader-pane[data-focus-reader="true"]{position:static;height:auto;overflow:visible;padding:0}
+}
+
 /* 打印：只印当前页签的内容。页签栏、按钮、输入框、内嵌滚动区在纸上没有意义，
    一律藏掉；卡片不让跨页断开，「资料正文/知识画布」这类限高容器在纸上要全展开。 */
 @media print{
@@ -3655,7 +3682,8 @@ window.__ModuleLoader__.load({
         node.height = Math.max(56, node.lines.length * 24 + 34);
         const compact = text => String(text ?? '').split(' ').join('');
         const legacyMatch = expanded !== null && [...expanded].some(value => !String(value).startsWith('mind:') && compact(value) === compact(node.label));
-        node.open = kind !== 'chapter' || expanded === null || expanded.has(key) || legacyMatch;
+        node.expandable = !point && kind !== 'course';
+        node.open = !node.expandable || expanded === null || expanded.has(key) || (kind === 'chapter' && legacyMatch);
         if (kind === 'chapter' && !node.open) collapsed += 1;
         result.push(node);
         if (parent) links.push({key:parent.key+'>'+key,from:parent.key,to:key});
@@ -3845,24 +3873,7 @@ window.__ModuleLoader__.load({
                   onClick: () => showMaterial(openPath, no),
                 }, String(no))))
               : null,
-            h('pre', {
-              className: 'sa-reading-pre',
-              style: {
-                margin: 0,
-                maxHeight: '46vh',
-                overflow: 'auto',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: 14,
-                lineHeight: 1.6,
-                background: 'var(--dsw-alias-bg-base)',
-                color: 'var(--dsw-alias-label-primary)',
-                border: '1px solid var(--dsw-alias-border-l1)',
-                borderRadius: 'var(--dsw-radius-sm)',
-                padding: 10,
-              },
-            }, detail.data.text ?? ''))
+            h(MaterialReading, { text: detail.data.text, page: detail.data.page }))
           : null);
 
 
@@ -3914,12 +3925,19 @@ window.__ModuleLoader__.load({
       return [...new Set(order)].map(id => ({ id, name: known.find(c => String(c.id) === id)?.name
         || objectList(outline?.courses).find(c => String(c.courseId) === id)?.name || (id === '__none__' ? '未匹配学科' : id) }));
     }
+    function clampMindZoom(value) {
+      const n = Number(value); return Number.isFinite(n) && n > 0 ? Math.min(2, Math.max(0.001, n)) : 1;
+    }
+    function fitMindZoom(width, height, viewportWidth, viewportHeight) {
+      if (![width,height,viewportWidth,viewportHeight].every(v => Number.isFinite(v) && v > 0)) return 1;
+      return clampMindZoom(Math.min(1, Math.max(1,viewportWidth-24)/width, Math.max(1,viewportHeight-24)/height));
+    }
     function subjectTreeState(memory, courseId) {
       const saved = memory && Object.prototype.hasOwnProperty.call(memory, courseId) ? memory[courseId] : null;
       const keys = (value, fallback) => Array.isArray(value) ? value.filter(x => typeof x === 'string' && x !== '').slice(0,1000) : fallback;
       const coord = value => Number.isFinite(Number(value)) ? Math.max(0,Number(value)) : 0;
       const point = value => ({ left: coord(value?.left), top: coord(value?.top) });
-      return { openTree: keys(saved?.openTree, ['course:' + courseId]), mindOpen: keys(saved?.mindOpen, []),
+      return { mindZoom: clampMindZoom(saved?.mindZoom), openTree: keys(saved?.openTree, ['course:' + courseId]), mindOpen: keys(saved?.mindOpen, []),
         scroll: { mind: point(saved?.scroll?.mind), tree: point(saved?.scroll?.tree) } };
     }
     function patchSubjectTree(memory, courseId, patch = {}) {
@@ -4084,14 +4102,20 @@ window.__ModuleLoader__.load({
      * 安全口径：**先切分、再建 React 节点**，任何一段都走文本节点，绝不拼 innerHTML ——
      * 所以正文里出现 `<script>` 也只会被当成字面量显示。
      */
-    const INLINE_MARK_PATTERN = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|\$[^$\n]{2,}\$)/gu;
+    // 2026-10-27 晚：`{2,}` → `+?`（非贪婪、允许 1 个字）、并补 `$$…$$`。
+    // 缘由：物理与数据结构里大量单字母公式（`$v$`、`$s$`、`$n$`）原先落选，
+    // 于是 `$` 与**后一个** `$` 跨段配对（`$s$ 到 $v$` → 把「到」当公式），
+    // 真正的公式段反而留在外面，`\rho`、`\Omega` 全以源码露出来 —— 实测 150/982 个点中招。
+    const INLINE_MARK_PATTERN = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|\$\$[^$\n]+\$\$|\$[^$\n]+?\$)/gu;
     const analysisInline = (text, keyPrefix = 'in') => String(text ?? '')
       .split(INLINE_MARK_PATTERN)
       .filter((part) => part !== '')
       .map((part, index) => {
         const key = `${keyPrefix}-${index}`;
-        if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) return h('strong', { key }, part.slice(2, -2));
-        if (part.length > 2 && part.startsWith('*') && part.endsWith('*')) return h('em', { key }, part.slice(1, -1));
+        // 2026-10-27 晚：粗体/斜体内部**再解析一遍**。原先这里直接塞纯文本，于是
+        // `**对长度 $n$ 的查找链…**` 这类「粗体里套公式」会把 `$n$` 原样印出来。
+        if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) return h('strong', { key }, ...analysisInline(part.slice(2, -2), `${key}-b`));
+        if (part.length > 2 && part.startsWith('*') && part.endsWith('*')) return h('em', { key }, ...analysisInline(part.slice(1, -1), `${key}-i`));
         if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
           return h('code', { key, style: { fontFamily: 'Consolas, monospace', fontSize: '0.95em', padding: '0 2px' } }, part.slice(1, -1));
         }
@@ -4199,6 +4223,14 @@ window.__ModuleLoader__.load({
           // 环境本身不排版，内容继续平铺（行分隔的 `\\` 由 LATEX_SYMBOL 转成空格）
           readArgument();
           return [];
+        }
+        if (name === 'tag' || name === 'label') {
+          // 2026-10-27 晚：教材 OCR 的整段公式常带 `\tag{12.11}`（编号）。以前会把
+          // 「tag」当正文印在式子末尾（`…e_r tag12.11`），这里把编号排成跟在后头的小字。
+          const tagBody = readArgument();
+          const tagText = tagBody.filter((part) => typeof part === 'string').join('');
+          if (tagText === '') return [];
+          return [h('span', { key: nextKey(), style: { marginLeft: 8, fontSize: 12, opacity: 0.75 } }, `(${tagText})`)];
         }
         if (LATEX_IGNORED.has(name)) return [];
         if (LATEX_SPACING[name] !== undefined) return [LATEX_SPACING[name]];
@@ -4316,7 +4348,10 @@ window.__ModuleLoader__.load({
       rendered.length > 0
         ? h('div', { style: { fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 17, lineHeight: 1.7, letterSpacing: '0.2px' } }, ...rendered)
         : null,
-      plain !== '' ? h('div', { className: 'sa-muted', style: { marginTop: rendered.length > 0 ? 4 : 0 } }, plain) : null);
+      plain !== '' ? h('div', { className: 'sa-muted', style: { marginTop: rendered.length > 0 ? 4 : 0 } },
+        // 2026-10-27 晚：`plain` 是「一句人话」，但生成侧偶尔在里面写裸 LaTeX
+        // （`V_1 \sim V_2 只表示同态像`），直接当纯文本贴会露出反斜杠命令
+        ...mathInlineNodes(plain, `f${index}-plain`)) : null);
     };
     /** 表格行：`| a | b |`。分隔行（`|---|:--:|`）只用来告诉解析器「上一行是表头」，渲染时丢掉。 */
     const isTableRow = (line) => /^\|.*\|$/u.test(line);
@@ -4405,6 +4440,152 @@ window.__ModuleLoader__.load({
       return nodes;
     };
 
+    /**
+     * 教材页正文的**预览排版**（2026-10-27 晚加）。
+     *
+     * 为什么要有：资料页那张「正文卡」原来是 `<pre>` 直出 OCR 的 markdown 原文，
+     * 物理教材页长这样 —— `# 第 30 页`、`$$\boldsymbol{E}=\int…\tag{12.11}$$`、`**解**`、`---`，
+     * 读者看到的是一屏「代码」。这里把同一段文本交给面板已有的排版器，再补三条它不认的东西：
+     *   - 跨行的 `$$ … $$` 整段公式（含 `\tag{}`：latexRender 会吃掉 tag，只留 (12.11) 的编号写法）；
+     *   - `#`~`######` 各级标题（原文只认 `###`）；页眉 `# 第 N 页` 直接跳过；
+     *   - `---` / `***` / `___` 整行分隔线（不渲染，断开段落）。
+     * 其余（粗体、行内 `$…$`、列表、竖线表格）继续走 analysisBlockNodes，不重复实现。
+     */
+    const materialPreviewNodes = (text, keyPrefix = 'mat') => {
+      const nodes = [];
+      const lines = String(text ?? '').split('\n');
+      let buffer = [];
+      const flush = () => {
+        if (buffer.length === 0) return;
+        const part = buffer.join('\n');
+        buffer = [];
+        nodes.push(...analysisBlockNodes(part, `${keyPrefix}-p${nodes.length}`));
+      };
+      for (let i = 0; i < lines.length; i += 1) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        // 页眉：OCR 每页开头都有「# 第 N 页」，不是正文
+        if (/^#{1,6}\s*第\s*\d+\s*页\s*$/u.test(trimmed)) continue;
+        // 整行分隔线
+        if (/^(?:-{3,}|\*{3,}|_{3,})$/u.test(trimmed)) { flush(); continue; }
+        // 跨行整段公式
+        if (trimmed.startsWith('$$')) {
+          const pieces = [];
+          const rest = trimmed.slice(2);
+          const firstClose = rest.indexOf('$$');
+          if (firstClose >= 0) {
+            pieces.push(rest.slice(0, firstClose));
+            i += 0;
+          } else {
+            pieces.push(rest);
+            for (i += 1; i < lines.length; i += 1) {
+              const close = lines[i].indexOf('$$');
+              if (close >= 0) { pieces.push(lines[i].slice(0, close)); break; }
+              pieces.push(lines[i]);
+            }
+          }
+          flush();
+          const tex = pieces.join(' ').replace(/\s+/gu, ' ').trim();
+          if (tex !== '') {
+            nodes.push(h('div', {
+              key: `${keyPrefix}-eq${nodes.length}`,
+              style: { margin: '10px 0', textAlign: 'center', fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 17, lineHeight: 1.7 },
+            }, ...latexNodes(tex, `${keyPrefix}-eq${nodes.length}`)));
+          }
+          continue;
+        }
+        // 各级标题
+        const heading = /^(#{1,6})\s+(.*)$/u.exec(trimmed);
+        if (heading !== null) {
+          flush();
+          const level = heading[1].length;
+          const size = level <= 2 ? 17 : level === 3 ? 16 : 15;
+          nodes.push(h('div', {
+            key: `${keyPrefix}-h${nodes.length}`,
+            style: { margin: '12px 0 2px', fontSize: size, fontWeight: 600, lineHeight: 1.6 },
+          }, ...analysisInline(heading[2], `${keyPrefix}-h${nodes.length}`)));
+          continue;
+        }
+        buffer.push(line);
+      }
+      flush();
+      return nodes;
+    };
+
+    /** 「原文」那一档的等宽样式（两处正文卡共用）。 */
+    const MATERIAL_PRE_STYLE = {
+      margin: 0,
+      maxHeight: '46vh',
+      overflow: 'auto',
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 14,
+      lineHeight: 1.6,
+      background: 'var(--dsw-alias-bg-base)',
+      color: 'var(--dsw-alias-label-primary)',
+      border: '1px solid var(--dsw-alias-border-l1)',
+      borderRadius: 'var(--dsw-radius-sm)',
+      padding: 10,
+    };
+
+    /**
+     * 「混着公式的一句话」的排版（2026-10-27 晚）：教材 OCR 有的把公式存成带 `$…$` 的行内式，
+     * 有的干脆存成**裸 LaTeX**（`T=T_1+T_2=\left(R_1+2R_2\right)C\ln2`、`\overline{A+B}`）。两种都要能读：
+     * 有 `$` 走行内 Markdown，没有 `$` 但含 `\命令` 就把整段当公式排一次。
+     * 引文、易错、例句的题干与步骤都走这里。
+     */
+    const mathInlineNodes = (text, keyPrefix) => {
+      let source = String(text ?? '').trim();
+      if (source === '') return [''];
+      // 引文被生成侧截断时常留下孤零零的一个 `$`（`… ) $(f(v_i), f(v_j)) \in E_2`），
+      // 这会让整段匹配不上行内公式、LaTeX 命令全裸奔 —— 先把这个落单的 `$` 去掉。
+      const dollarCount = (source.match(/\$/gu) ?? []).length;
+      if (dollarCount % 2 === 1) source = source.replace(/\$/gu, '');
+      if (source.includes('$')) return analysisInline(source, keyPrefix);
+      if (/\\[A-Za-z]+/u.test(source)) {
+        return [h('span', { key: `${keyPrefix}-tex`, style: { fontFamily: 'Georgia, "Times New Roman", serif' } },
+          ...latexNodes(source, `${keyPrefix}-t`))];
+      }
+      return [source];
+    };
+
+    /**
+     * 教材页正文卡（2026-10-27 晚）：默认「排版」，可切「原文」。
+     * 两处用到（资料页的正文卡、知识点页「看原页」），所以抽成组件，别复制两份。
+     */
+    function MaterialReading({ text, page }) {
+      const [mode, setMode] = useState('preview');
+      const body = String(text ?? '');
+      return h('div', null,
+        h('div', { className: 'sa-dock', style: { justifyContent: 'flex-end', marginBottom: 4 } },
+          h('button', {
+            className: `sa-btn${mode === 'preview' ? ' primary' : ''}`,
+            title: '把这一页的 markdown 排成正文与公式',
+            onClick: () => setMode('preview'),
+          }, '排版'),
+          h('button', {
+            className: `sa-btn${mode === 'raw' ? ' primary' : ''}`,
+            title: '原样显示这一页的取字文本（含 markdown 记号，便于核对 OCR）',
+            onClick: () => setMode('raw'),
+          }, '原文')),
+        mode === 'raw'
+          ? h('pre', { className: 'sa-reading-pre', style: MATERIAL_PRE_STYLE }, body)
+          : h('div', {
+            className: 'sa-reading',
+            style: {
+              margin: 0,
+              maxHeight: '52vh',
+              overflow: 'auto',
+              background: 'var(--dsw-alias-bg-base)',
+              color: 'var(--dsw-alias-label-primary)',
+              border: '1px solid var(--dsw-alias-border-l1)',
+              borderRadius: 'var(--dsw-radius-sm)',
+              padding: '10px 14px',
+            },
+          }, ...materialPreviewNodes(body, `mat-${page ?? 0}`)));
+    }
+
     function KnowledgeTab({ docs = {}, refresh, focus = null, onFocusConsumed, initialView = null, onOpenMaterial }) {
       // 2026-10-23 凌晨：文档被外部改坏时 nodes 里可能出现 null / 非对象（真实渲染探针抓到过），
       // 这里统一先剔掉——树、体检、图、列表都靠这份 netNodes，任何一处拿到 null 都会整页白屏。
@@ -4431,9 +4612,44 @@ window.__ModuleLoader__.load({
       const [courseId, setCourseId] = useState(restoredUi.courseId);
       const [openPath, setOpenPath] = useState(restoredUi.detailPath);
       const [detail, setDetail] = useState(null); // { status, data }：证据里「看原页」用
+      const mindViewportRef = useRef(null);
+      const zoomScrollRef = useRef(null);
       const [fullBrowser, setFullBrowser] = useState(false);
       const [browserCollapsed, setBrowserCollapsed] = useState(false);
       const readerRef = useRef(null);
+      const [focusReading, setFocusReading] = useState(false);
+      const focusReturnRef = useRef(null);
+      const enterFocusReading = event => {
+        const pane = readerRef.current;
+        const page = pane?.closest?.('.sa-body');
+        if (!pane || !page) return;
+        focusReturnRef.current = {page,top:page.scrollTop,left:page.scrollLeft,trigger:event?.currentTarget,
+          readerTop:Math.max(0,page.getBoundingClientRect().top-pane.getBoundingClientRect().top)};
+        setFocusReading(true);
+      };
+      const exitFocusReading = () => setFocusReading(false);
+      useEffect(() => {
+        if (!focusReading || typeof window === 'undefined') return;
+        const pane=readerRef.current,saved=focusReturnRef.current;
+        if (!pane || !saved) return;
+        pane.scrollTop=saved.readerTop; pane.focus?.({preventScroll:true});
+        const onKey = event => {
+          if (event.key==='Escape') {event.preventDefault();setFocusReading(false);return;}
+          if (event.key!=='Tab' || typeof pane.querySelectorAll!=='function') return;
+          const items=[...pane.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]')].filter(el=>el.tabIndex>=0&&el.getClientRects().length);
+          const first=items[0],last=items[items.length-1];
+          if (!first){event.preventDefault();pane.focus();return;}
+          if(event.shiftKey && (document.activeElement===first || document.activeElement===pane)){event.preventDefault();last.focus();}
+          else if(!event.shiftKey && (document.activeElement===last || !pane.contains(document.activeElement))){event.preventDefault();first.focus();}
+        };
+        window.addEventListener?.('keydown',onKey);
+        return () => {
+          window.removeEventListener?.('keydown',onKey);
+          const restore=()=>{if(saved.page.isConnected!==false){saved.page.scrollTop=saved.top;saved.page.scrollLeft=saved.left;saved.trigger?.focus?.({preventScroll:true});}};
+          if(typeof window.requestAnimationFrame==='function')window.requestAnimationFrame(restore);else restore();
+          focusReturnRef.current=null;
+        };
+      }, [focusReading]);
       const [selected, setSelected] = useState(restoredUi.selected); // 知识网络里选中的节点 id
       const [markBusy, setMarkBusy] = useState(false);
       const [markError, setMarkError] = useState('');
@@ -4509,13 +4725,14 @@ window.__ModuleLoader__.load({
       const effectiveCourseId = isTreeView ? treeCourseId : courseId;
       const keep = item => effectiveCourseId === '' || (String(item?.courseId ?? '').trim() || '__none__') === effectiveCourseId;
       const chooseTreeCourse = id => {
-        setFullBrowser(false); setBrowserCollapsed(false);
+        setFocusReading(false); setFullBrowser(false); setBrowserCollapsed(false);
         setTreeCourseId(id); setCourseId(id); setSelected(null); setOpenPath(null); setDetail(null);
         setChatBusy(false); setChatError(''); setChatSources([]); setChatThread([]);
         setKpQuery(''); setKpFilter('all'); setKpMastery([]); setMarkNote(''); setMarkError('');
       };
       const selectForReading = id => {
         setSelected(id); setFullBrowser(false); setBrowserCollapsed(id !== null);
+        if (id === null) setFocusReading(false);
       };
       const restoreCompactScroll = useCallback(box => {
         if (!box) return;
@@ -4528,6 +4745,7 @@ window.__ModuleLoader__.load({
       };
       const restoreTreeScroll = useCallback(box => {
         if (!box || (kpView !== 'mind' && kpView !== 'tree')) return;
+        if (kpView === 'mind') mindViewportRef.current = box;
         const scroll = subjectTreeState(subjectTreesRef.current, treeCourseId).scroll[kpView];
         box.scrollLeft = scroll.left; box.scrollTop = scroll.top;
       }, [treeCourseId, kpView]);
@@ -4587,7 +4805,7 @@ window.__ModuleLoader__.load({
       // 那时候用户明确在找一小撮节点，再让他一章章点开是添乱。规则与树视图的「搜索自动展开」一致。
       // 搜索有词、选了任一筛选档、或勾了掌握度档 ⇒ 用户明确在找一小撮节点，树/导图直接全展开
       // （2026-10-24：掌握度多选也算「在找特定子集」，不然还得一章章点开找）
-      const mindAutoExpand = kpQuery.trim() !== '' || kpFilter !== 'all' || kpMastery.length > 0;
+      const mindAutoExpand = kpQuery.trim() !== ''; // 搜索命中才临时展开，普通筛选不再铺满所有节。
       // 每科首次只显示学科和章；搜索/筛选临时展开，不改该科手动记忆。
       const mindExpanded = mindAutoExpand ? null : mindOpen;
       const mind = useMemo(
@@ -4595,14 +4813,29 @@ window.__ModuleLoader__.load({
           { expanded: mindExpanded, outline: outlineDoc, courseRoot: true, courseId: treeCourseId }),
         [kpFiltered, courses, mindExpanded, outlineDoc, treeCourseId],
       );
-      const mindChapterKeys = useMemo(
-        () => mind.nodes.filter((entry) => entry.kind === 'chapter').map((entry) => entry.key),
-        [mind],
-      );
+      const mindZoom = savedTree.mindZoom;
+      const changeMindZoom = value => {
+        const zoom = clampMindZoom(value), box = mindViewportRef.current;
+        if (box) { const ratio=zoom/mindZoom; zoomScrollRef.current={course:treeCourseId,left:Math.max(0,(box.scrollLeft+box.clientWidth/2)*ratio-box.clientWidth/2),top:Math.max(0,(box.scrollTop+box.clientHeight/2)*ratio-box.clientHeight/2)}; }
+        updateSubjectTree({mindZoom:zoom});
+      };
+      const fitMindToWindow = () => {
+        const box=mindViewportRef.current;if(!box)return;
+        const zoom=fitMindZoom(mind.width,mind.height,box.clientWidth,box.clientHeight);
+        zoomScrollRef.current={course:treeCourseId,left:0,top:0};box.scrollLeft=0;box.scrollTop=0;
+        updateSubjectTree({mindZoom:zoom,scroll:{mind:{left:0,top:0}}});
+      };
+      useEffect(() => {
+        const pending=zoomScrollRef.current,box=mindViewportRef.current;
+        if(!pending||!box||pending.course!==treeCourseId||!fullBrowser||kpView!=='mind')return;
+        box.scrollLeft=pending.left;box.scrollTop=pending.top;zoomScrollRef.current=null;
+        updateSubjectTree({scroll:{mind:{left:box.scrollLeft,top:box.scrollTop}}},false);
+      }, [mindZoom, fullBrowser, kpView, treeCourseId]);
+      const mindBranchKeys = useMemo(() => allTreeKeys.filter(key => !key.startsWith('course:')).map(key => 'mind:' + key), [allTreeKeys]);
       const toggleMindChapter = (label) => {
         const key = String(label ?? '').trim();
         if (key === '') return;
-        const effective = mind.nodes.filter((item) => item.kind === 'chapter' && item.open).map((item) => item.key);
+        const effective = mindAutoExpand ? mindBranchKeys : mindOpen;
         setMindOpen(effective.includes(key) ? effective.filter((item) => item !== key) : [...effective, key]);
       };
       // 大纲规模（只用于树卡抬头的「按教材目录」说明）
@@ -4760,7 +4993,7 @@ window.__ModuleLoader__.load({
         if (selected === null || selected === undefined || selected === '') return;
         if (isTreeView) {
           setBrowserCollapsed(true);
-          if (readerRef.current) readerRef.current.scrollTop = 0;
+          if (focusReading && readerRef.current) readerRef.current.scrollTop = 0;
           return;
         }
         if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
@@ -5043,24 +5276,7 @@ window.__ModuleLoader__.load({
                   onClick: () => showMaterial(openPath, no),
                 }, String(no))))
               : null,
-            h('pre', {
-              className: 'sa-reading-pre',
-              style: {
-                margin: 0,
-                maxHeight: '46vh',
-                overflow: 'auto',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-                fontSize: 14,
-                lineHeight: 1.6,
-                background: 'var(--dsw-alias-bg-base)',
-                color: 'var(--dsw-alias-label-primary)',
-                border: '1px solid var(--dsw-alias-border-l1)',
-                borderRadius: 'var(--dsw-radius-sm)',
-                padding: 10,
-              },
-            }, detail.data.text ?? ''))
+            h(MaterialReading, { text: detail.data.text, page: detail.data.page }))
           : null);
 
 
@@ -5226,7 +5442,11 @@ window.__ModuleLoader__.load({
                   },
                 }, String(question.prompt ?? '')))
               : h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
-                typeof ev?.quote === 'string' && ev.quote !== '' ? `「${ev.quote}」` : '（没存引文，点「看原页」读那一页）'))
+                ...(typeof ev?.quote === 'string' && ev.quote !== ''
+                  // 2026-10-27 晚：引文里也有公式（教材 OCR 把 `$\boldsymbol{D}$` 原样存下来），
+                  // 直接当纯文本贴会露出源码，这里走一遍行内排版
+                  ? ['「', ...mathInlineNodes(ev.quote, `evq-${prefix}-${index}`), '」']
+                  : ['（没存引文，点「看原页」读那一页）'])))
             : null);
       };
       const evidenceRows = (evidence, prefix) => (Array.isArray(evidence) ? evidence : [])
@@ -5298,7 +5518,7 @@ window.__ModuleLoader__.load({
             : null,
           typeof selectedPoint.analogy === 'string' && selectedPoint.analogy.trim() !== ''
             ? h('div', { style: { marginTop: 8, fontSize: 16, lineHeight: 1.6 } },
-              h('strong', null, '打个比方：'), selectedPoint.analogy.trim())
+              h('strong', null, '打个比方：'), ...mathInlineNodes(selectedPoint.analogy.trim(), 'ana'))
             : null,
           ...(Array.isArray(selectedPoint.formulas) ? selectedPoint.formulas : [])
             .filter((formula) => formula !== null && typeof formula === 'object')
@@ -5307,7 +5527,8 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
               h('h4', { className: 'sa-section-title' }, '易错'),
               ...selectedPoint.pitfalls.filter((item) => typeof item === 'string' && item.trim() !== '')
-                .map((item, index) => h('div', { key: `pf${index}`, style: { fontSize: 16, lineHeight: 1.6 } }, `✗ ${item.trim()}`)))
+                .map((item, index) => h('div', { key: `pf${index}`, style: { fontSize: 16, lineHeight: 1.6 } },
+                  '✗ ', ...mathInlineNodes(item.trim(), `pf${index}`))))
             : null,
           (Array.isArray(selectedPoint.examples) ? selectedPoint.examples : []).filter((item) => item !== null && typeof item === 'object').length > 0
             ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
@@ -5322,15 +5543,16 @@ window.__ModuleLoader__.load({
                   borderRadius: 'var(--dsw-radius-sm)',
                 },
               },
-              h('div', { style: { fontSize: 16, whiteSpace: 'pre-wrap' } }, String(example.prompt ?? '')),
+              h('div', { style: { fontSize: 16, whiteSpace: 'pre-wrap' } }, ...mathInlineNodes(String(example.prompt ?? ''), 'exp')),
               ...(Array.isArray(example.steps) ? example.steps : [])
                 .filter((step) => typeof step === 'string' && step.trim() !== '')
-                .map((step, stepIndex) => h('div', { key: `st${stepIndex}`, className: 'sa-example-step', style: { fontSize: 14, marginTop: 2 } }, `${stepIndex + 1}. ${step.trim()}`)),
+                .map((step, stepIndex) => h('div', { key: `st${stepIndex}`, className: 'sa-example-step', style: { fontSize: 14, marginTop: 2 } },
+                  `${stepIndex + 1}. `, ...mathInlineNodes(step.trim(), `st${stepIndex}`))),
               typeof example.answer === 'string' && example.answer.trim() !== ''
-                ? h('div', { className: 'sa-example-answer', style: { fontSize: 16, marginTop: 4 } }, `答：${example.answer.trim()}`)
+                ? h('div', { className: 'sa-example-answer', style: { fontSize: 16, marginTop: 4 } }, '答：', ...mathInlineNodes(example.answer.trim(), 'ans'))
                 : null,
               typeof example.method === 'string' && example.method.trim() !== ''
-                ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } }, `套路：${example.method.trim()}`)
+                ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } }, '套路：', ...mathInlineNodes(example.method.trim(), 'mtd'))
                 : null)))
             : null,
           (Array.isArray(selectedPoint.sources) ? selectedPoint.sources : []).filter((item) => item !== null && typeof item === 'object').length > 0
@@ -5341,8 +5563,11 @@ window.__ModuleLoader__.load({
                 const page = Number(source.page);
                 return h('div', { key: `src${index}`, className: 'sa-dock', style: { gap: 6, flexWrap: 'wrap', marginTop: 2 } },
                   h('span', { className: 'sa-grow', style: { fontSize: 14 } },
-                    `${file}${Number.isFinite(page) && page > 0 ? ` · 第 ${page} 页` : ''}`
-                    + (typeof source.quote === 'string' && source.quote !== '' ? ` —— 「${source.quote}」` : '')),
+                    `${file}${Number.isFinite(page) && page > 0 ? ` · 第 ${page} 页` : ''}`,
+                    // 2026-10-27 晚：引文里的公式同样要排版，否则 `$\boldsymbol{D}$` 这种会原样露出
+                    ...(typeof source.quote === 'string' && source.quote !== ''
+                      ? [' —— 「', ...mathInlineNodes(source.quote, `srcq${index}`), '」']
+                      : [])),
                   file !== ''
                     ? h('button', {
                       className: 'sa-btn',
@@ -5357,6 +5582,7 @@ window.__ModuleLoader__.load({
       const nodeCard = selectedNode === null ? null : h('div', { className: 'sa-card sa-node-detail', id: 'sa-kp-detail' },
         h('div', { className: 'sa-dock' },
           h('h3', { className: 'sa-grow sa-detail-title' }, selectedNode.name ?? '(未命名)'),
+          isTreeView && !focusReading ? h('button', {type:'button',className:'sa-btn',onClick:enterFocusReading,title:'占满学习台主面板，Esc退出并回到原阅读位置'}, '专注阅读') : null,
           h('button', {
             className: 'sa-btn',
             title: '收起这个知识点的详情（回到列表本身）',
@@ -6042,7 +6268,7 @@ window.__ModuleLoader__.load({
             style: { paddingLeft: 0, ...reveal },
           }, knowledgeRow(entry.node));
         }
-        const open = kpFilter !== 'all' || kpQuery.trim() !== '' || kpMastery.length > 0 || openTree.includes(entry.key);
+        const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
         const empty = entry.empty === true;
         return h('div', { key: entry.key, className: 'sa-kp-branch' },
           h('div', {
@@ -6137,7 +6363,7 @@ window.__ModuleLoader__.load({
             h('button', {
               className: 'sa-btn',
               title: '把所有章的知识点都铺出来（节点多时图会很长）',
-              onClick: () => setMindOpen(mindChapterKeys),
+              onClick: () => setMindOpen(mindBranchKeys),
             }, '全部展开'),
             h('button', {
               className: 'sa-btn',
@@ -6148,7 +6374,13 @@ window.__ModuleLoader__.load({
               className: 'sa-btn',
               title: '把导图缩到一屏宽（内容太长时横向滚动）',
               onClick: () => { if (typeof document !== 'undefined') { const box = document.getElementById('sa-mind-wrap'); if (box) { box.scrollLeft = 0; box.scrollTop = 0; saveTreeScroll('mind', { currentTarget: box }); } } },
-            }, '回到开头')),
+            }, '回到开头'),
+            h('span', {className:'sa-zoom-controls',role:'group','aria-label':'导图缩放'},
+              h('button',{type:'button',className:'sa-btn','aria-label':'缩小导图',disabled:mindZoom<=0.001,onClick:()=>changeMindZoom(mindZoom/1.25)},'−'),
+              h('output',{className:'sa-zoom-value','aria-live':'polite'},(Math.round(mindZoom*1000)/10)+'%'),
+              h('button',{type:'button',className:'sa-btn','aria-label':'放大导图',disabled:mindZoom>=2,onClick:()=>changeMindZoom(mindZoom*1.25)},'+'),
+              h('button',{type:'button',className:'sa-btn',onClick:()=>changeMindZoom(1)},'100%'),
+              h('button',{type:'button',className:'sa-btn',onClick:fitMindToWindow},'适应窗口'))),
           kpFiltered.length === 0
             ? h('div', { className: 'sa-muted', style: { marginTop: 6 } }, '当前搜索/筛选没有命中节点，清空关键词或切回「全部」。')
             : h('div', {
@@ -6157,8 +6389,9 @@ window.__ModuleLoader__.load({
               style: { marginTop: 8, overflow: 'auto', maxHeight: '62vh' },
             },
             h('svg', {
-              width: mind.width,
-              height: mind.height,
+              width: mind.width * mindZoom,
+              height: mind.height * mindZoom,
+              viewBox: '0 0 '+mind.width+' '+mind.height,
               role: 'img',
               'aria-label': (treeCourses.find(item => item.id === treeCourseId)?.name || '学科') + '知识点思维导图',
               style: { display: 'block' },
@@ -6172,22 +6405,22 @@ window.__ModuleLoader__.load({
                 fill:'none',stroke:'var(--dsw-alias-border-l1)',strokeWidth:2});
             }),
             ...mind.nodes.map((item,mindIndex) => {
-              const isPoint=item.kind==='point',isChapter=item.kind==='chapter';
+              const isPoint=item.kind==='point',isChapter=item.kind==='chapter',isBranch=item.expandable===true;
               const selectedPoint=isPoint && item.id===selected;
               const state=MASTERY_STYLE[isPoint ? Math.min(Math.max(item.mastery||0,0),3) : 0];
               const activate=()=>isPoint ? selectForReading(item.id) : toggleMindChapter(item.key);
               const level=({root:'总览',course:'课程',chapter:'章',section:'节',sub:'小节',group:'分组',point:'知识点'})[item.kind] || '';
               return h('g',{key:item.key,className: 'sa-mind-node',
-                role:isPoint||isChapter?'button':undefined,tabIndex:isPoint||isChapter?0:undefined,
-                'aria-label':item.label,'aria-expanded':isChapter?item.open:undefined,
-                onClick:isPoint||isChapter?activate:undefined,
-                onKeyDown:isPoint||isChapter?(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}}:undefined,
-                style:{cursor:isPoint||isChapter?'pointer':'default',animationDelay:Math.min(mindIndex,20)*10+'ms'}},
+                role:isPoint||isBranch?'button':undefined,tabIndex:isPoint||isBranch?0:undefined,
+                'aria-label':item.label,'aria-expanded':isBranch?item.open:undefined,
+                onClick:isPoint||isBranch?activate:undefined,
+                onKeyDown:isPoint||isBranch?(event)=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();activate();}}:undefined,
+                style:{cursor:isPoint||isBranch?'pointer':'default',animationDelay:Math.min(mindIndex,20)*10+'ms'}},
                 h('title',null,item.label),
                 h('rect',{x:item.x,y:item.y-item.height/2,width:item.width,height:item.height,rx:12,
                   fill:'var(--dsw-alias-bg-layer-1)',stroke:selectedPoint?'var(--dsw-alias-brand-primary)':'var(--dsw-alias-border-l1)',strokeWidth:selectedPoint?2.5:1}),
                 h('text',{x:item.x+14,y:item.y-item.height/2+19,fontSize:14,fill:'var(--dsw-alias-label-secondary)'},
-                  level+(isPoint?' '+state.symbol+' '+state.label:'')+(isChapter?' '+(item.open?'▾':'▸')+' '+item.total+' 个':'')+(item.marked?' ★':'')),
+                  level+(isPoint?' '+state.symbol+' '+state.label:'')+(isBranch?' '+(item.open?'▾':'▸')+' '+item.total+' 个':'')+(item.marked?' ★':'')),
                 isPoint?h('circle',{cx:item.x+item.width-16,cy:item.y-item.height/2+16,r:4,fill:state.color}):null,
                 ...item.lines.map((line,index)=>h('text',{key:index,x:item.x+14,y:item.y-item.height/2+43+index*24,
                   fontSize:item.kind==='course'||item.kind==='root'?18:16,fontWeight:item.kind==='point'?500:650,fill:'var(--dsw-alias-label-primary)'},line)));
@@ -6407,7 +6640,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'sa-compact-dot', 'aria-hidden': true }, active ? '●' : '·'),
               h('span', null, renderMatched(entry.label, kpQuery))));
         }
-        const open = kpFilter !== 'all' || kpQuery.trim() !== '' || kpMastery.length > 0 || openTree.includes(entry.key);
+        const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
         return h('li', { key: entry.key, className: 'sa-compact-branch', 'data-kind': entry.kind },
           h('button', { type: 'button', className: 'sa-compact-toggle', 'aria-expanded': open,
             title: entry.label, onClick: () => toggleTreeNode(entry.key) },
@@ -6437,8 +6670,12 @@ window.__ModuleLoader__.load({
         h('section', { className: 'sa-browser-pane', 'aria-label': '选择知识点' }, browsingHeader,
           h('div', { className: 'sa-browser-content', id: 'sa-browser-content' },
             fullBrowser ? h('div', { key: kpView, className: 'sa-kp-view sa-full-browser' }, kpView === 'tree' ? treeCard : mindCard) : compactTree)),
-        h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: 0,
+        h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: focusReading ? -1 : 0, 'data-focus-reader': focusReading ? 'true' : 'false',
           'aria-label': selectedNode ? '知识点阅读：' + selectedNode.name : '知识点阅读区' },
+          focusReading ? h('div',{className:'sa-focus-header'},
+            h('strong',null,selectedNode?.name || '专注阅读'),
+            h('span',{className:'sa-muted'},'Esc 退出'),
+            h('button',{type:'button',className:'sa-btn',onClick:exitFocusReading},'退出专注阅读')) : null,
           nodeCard || h('div', { className: 'sa-card sa-reader-empty' },
             h('h3', null, '选一个知识点开始阅读'),
             h('p', null, '展开知识树中的章、节，点击知识点名称。详解、例题和配图会显示在这里。'),
@@ -7270,6 +7507,9 @@ window.__ModuleLoader__.load({
         // 详解渲染（2026-10-26）：正文的轻量 Markdown（行内 + 块级）与插图区块
         analysisInline,
         analysisBlockNodes,
+        // 教材页正文卡的排版预览（2026-10-27 晚）：跨行 `$$…$$`、`#` 标题、分隔线，
+        // 其余交给 analysisBlockNodes；「排版 / 原文」两档由 MaterialReading 组件切换
+        materialPreviewNodes,
         // 公式排版（2026-10-26 深夜）：LaTeX → 符号（上下标/分式/根号/希腊字母），
         // 保证界面上不再出现 `\Rightarrow` 这种源码
         latexNodes,
@@ -7286,6 +7526,8 @@ window.__ModuleLoader__.load({
         splitByQuery,
         // 思维导图（2026-10-23 夜，A 块）：布局纯函数 + 掌握度的符号/颜色编码
         buildMindMap,
+        clampMindZoom,
+        fitMindZoom,
         knowledgeTreeCourses,
         subjectTreeState,
         patchSubjectTree,

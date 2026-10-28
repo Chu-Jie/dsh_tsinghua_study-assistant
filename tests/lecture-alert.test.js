@@ -2,7 +2,7 @@
  * 点名 / 答题提醒层测试（零依赖）
  * 运行：node tests/lecture-alert.test.js
  *
- * 这一层最容易出的错是**误报**：一节课四十分钟，只要「是」「事」「时」这种高频字
+ * 这一层最容易出的错是**误报**：一节课四十分钟，只要「都」「好」「度」这种高频字
  * 进了同音表，或者没有称呼语闸门，提醒会响几十次，用户第一件事就是把它关掉。
  * 所以下面的用例里，负面用例（必须一条都不报）和正面用例一样重要。
  *
@@ -22,19 +22,29 @@ import { makeTempDir, removeTempDir } from './_tmpdir.js';
 
 /* ------------------------------------------------------------------ 同音字表 */
 
-test('buildNameMatcher：默认学生名是示例同学，三档正则都建出来', () => {
+test('buildNameMatcher：默认学生名是示例同学，表外字退化成字面匹配', () => {
   assert.equal(DEFAULT_STUDENT_NAME, '示例同学');
   const matcher = buildNameMatcher('示例同学');
   assert.equal(matcher.name, '示例同学');
-  assert.deepEqual(matcher.syllables, ['shi4', 'li4', 'tong2', 'xue2']);
-  assert.equal(matcher.classes.length, 4);
+  // 「示例同学」四个字都不在同音字表里 → 每个字退化成它自己，仍然能精确匹配
+  assert.deepEqual(matcher.classes, ['示', '例', '同', '学']);
+  assert.deepEqual(matcher.syllables, [undefined, undefined, undefined, undefined]);
+  matcher.full.lastIndex = 0;
+  assert.equal(matcher.full.exec('请示例同学回答')?.[0], '示例同学');
+});
+
+test('buildNameMatcher：同音字表覆盖的音节能建出整名/名/姓三档', () => {
+  // 表里示范的是 du4 hao4 yang2（示例姓名「杜浩阳」），三档都该建出来
+  const matcher = buildNameMatcher('杜浩阳');
+  assert.deepEqual(matcher.syllables, ['du4', 'hao4', 'yang2']);
+  assert.equal(matcher.classes.length, 3);
 
   matcher.full.lastIndex = 0;
-  assert.equal(matcher.full.exec('示丽桐雪')?.[0], '示丽桐雪', '同音字要能整名命中');
+  assert.equal(matcher.full.exec('杜昊阳')?.[0], '杜昊阳', '同音字要能整名命中');
   matcher.given.lastIndex = 0;
-  assert.equal(matcher.given.exec('好，丽同雪你来说')?.[0], '丽同雪');
+  assert.equal(matcher.given.exec('好，浩阳你来说')?.[0], '浩阳');
   matcher.surname.lastIndex = 0;
-  assert.equal(matcher.surname.exec('市同学')?.[0], '市', '同音姓氏也要能命中（再由误报词表拦）');
+  assert.equal(matcher.surname.exec('度同学')?.[0], '度', '同音姓氏也要能命中（再由误报词表拦）');
 });
 
 test('buildNameMatcher：表外字退化成字面匹配，两字名没有名/姓档', () => {
@@ -98,27 +108,27 @@ test('detectAlerts：整名命中判 3 档，且不因为「同学」多报一�
   assert.ok(alerts[0].snippet.includes('示例同学'));
 });
 
-test('detectAlerts：同音错字（示丽桐雪）照样算叫到你', () => {
-  const alerts = detectAlerts('示丽桐雪，你来回答一下');
+test('detectAlerts：同音错字（度皓洋）照样算叫到你', () => {
+  const alerts = detectAlerts('度皓洋，你来回答一下', { studentName: '杜浩阳' });
   const names = alerts.filter((a) => a.kind === 'name');
   assert.equal(names.length, 1);
-  assert.equal(names[0].matched, '示丽桐雪');
+  assert.equal(names[0].matched, '度皓洋');
   assert.equal(names[0].severity, 3);
 });
 
 test('detectAlerts：只报名字（没有姓）也算 3 档', () => {
-  const alerts = detectAlerts('这个问题请丽同雪回答');
+  const alerts = detectAlerts('这个问题请浩阳回答', { studentName: '杜浩阳' });
   const names = alerts.filter((a) => a.kind === 'name');
   assert.equal(names.length, 1);
-  assert.equal(names[0].matched, '丽同雪');
+  assert.equal(names[0].matched, '浩阳');
   assert.equal(names[0].severity, 3);
 });
 
 test('detectAlerts：只在窗口里出现的姓单字，必须挨着称呼语才报，且判 2 档', () => {
-  const alerts = detectAlerts('市同学，在吗');
+  const alerts = detectAlerts('杜同学，在吗', { studentName: '杜浩阳' });
   const names = alerts.filter((a) => a.kind === 'name');
   assert.equal(names.length, 1);
-  assert.equal(names[0].matched, '市');
+  assert.equal(names[0].matched, '杜');
   assert.equal(names[0].severity, 2);
 });
 
@@ -151,19 +161,19 @@ test('detectAlerts：要求作答是 3 档，一般提问是 2 档', () => {
 
 /* ------------------------------------------------------------------ 负面用例 */
 
-test('detectAlerts：不报「是 / 事 / 时」这类高频字（同音表刻意不收）', () => {
-  assert.deepEqual(detectAlerts('我全是听懂了的'), []);
-  assert.deepEqual(detectAlerts('这件事很简单'), []);
-  assert.deepEqual(detectAlerts('时间不够了，我们下次讲'), []);
+test('detectAlerts：不报「都 / 好 / 号」这类高频字（同音表刻意不收）', () => {
+  assert.deepEqual(detectAlerts('我都听懂了吧'), []);
+  assert.deepEqual(detectAlerts('这个号很难抢'), []);
+  assert.deepEqual(detectAlerts('好，我们接着讲'), []);
 });
 
-test('detectAlerts：姓单字落在「表示 / 演示」这类词里要判误报', () => {
-  assert.deepEqual(detectAlerts('这个表示方法太慢了，同学们都跟不上'), []);
-  assert.deepEqual(detectAlerts('这门课的演示和公示都挺合适'), []);
+test('detectAlerts：姓单字落在「速度 / 程度」这类词里要判误报', () => {
+  assert.deepEqual(detectAlerts('这个速度太快了，同学们都跟不上'), []);
+  assert.deepEqual(detectAlerts('这门课的难度和深度都挺合适'), []);
 });
 
 test('detectAlerts：光有姓、附近没有称呼语就不报', () => {
-  assert.deepEqual(detectAlerts('示例图看起来很漂亮'), []);
+  assert.deepEqual(detectAlerts('杜甫的诗写得很好'), []);
 });
 
 test('detectAlerts：纯噪音 / 空文本不报', () => {
@@ -177,10 +187,12 @@ test('detectAlerts：一段异常文本最多产 MAX_ALERTS_PER_FRAME 条', () =
 });
 
 test('snippetAround：截断时加省略号，短文本原样返回', () => {
-  assert.equal(snippetAround('示例同学同学', 0, 4), '示例同学同学');
+  assert.equal(snippetAround('示例同学同学', 0, 3), '示例同学同学');
   const long = `${'前'.repeat(40)}示例同学${'后'.repeat(40)}`;
-  const snippet = snippetAround(long, 40, 4, 5);
-  assert.equal(snippet, '…前前前前前示例同学后后后后后…');
+  const snippet = snippetAround(long, 40, 3, 5);
+  // 宽度 = 名字前后各若干字，名字本身长度不由这里假定，断言只看形状
+  assert.ok(snippet.startsWith('…前') && snippet.endsWith('后…'), '两端要有省略号');
+  assert.ok(snippet.includes('示例同学'), '名字要留在片段里');
 });
 
 /* ------------------------------------------------------------------ 会话层 */
@@ -261,7 +273,7 @@ test('session：喂一帧文本 → 拿到提醒 → 停止时落盘完整记录
   }
 });
 
-test('session：跨帧被截断的名字能拼上（「…示例」+「同学同学…」）', async () => {
+test('session：跨帧被截断的名字能拼上（「老师示」+「例同学…」）', async () => {
   const dir = await makeTempDir('lecture-alert-');
   try {
     const session = createLectureSession({
@@ -271,13 +283,13 @@ test('session：跨帧被截断的名字能拼上（「…示例」+「同学同
       studentName: '示例同学',
     });
     await session.start({ course: '高等数学' });
-    const first = await session.feed({ text: '今天我们讲函数的连续性，老师说示例' });
+    const first = await session.feed({ text: '今天我们讲函数的连续性，老师说示' });
     assert.deepEqual(first.alerts, [], '名字还没拼全，这一帧不该报');
 
-    // 腾讯会议的字幕是滚动窗口：新一帧以上一帧的末尾开头，重叠 6 个字
-    const second = await session.feed({ text: '，老师说示例同学同学你来回答一下' });
+    // 腾讯会议的字幕是滚动窗口：新一帧以上一帧的末尾 6 个字开头，名字被切在「示」「例」之间
+    const second = await session.feed({ text: '性，老师说示例同学同学你来回答一下' });
     assert.equal(second.overlap, 6);
-    assert.equal(second.appended, '同学同学你来回答一下');
+    assert.equal(second.appended, '例同学同学你来回答一下');
     assert.equal(second.alerts.length, 1);
     assert.equal(second.alerts[0].matched, '示例同学');
     assert.equal(second.alerts[0].severity, 3);

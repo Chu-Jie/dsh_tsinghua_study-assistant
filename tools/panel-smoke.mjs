@@ -124,6 +124,9 @@ function readDocs(dataDir) {
     knowledgeCandidates: '知识点候选.json',
     knowledgeNetwork: '知识点网络.json',
     knowledgeOutline: '知识点大纲.json',
+    // 2026-10-27 晚补：原先漏了这份，于是「详解」卡在这套烟测里永远是「未分析」——
+    // 1000 多个用例从没真正渲染过详解正文，公式源码露出来也测不出来。
+    knowledgeAnalysis: '资料分析.json',
   };
   for (const [key, name] of Object.entries(names)) {
     const file = path.join(dataDir, name);
@@ -132,7 +135,13 @@ function readDocs(dataDir) {
   return docs;
 }
 
-const BAD_TOKENS = ['undefined', 'NaN', '[object Object]'];
+// 2026-10-27 晚：`NaN` 不能一律当坏词——化学式 NaNbO₃（铌酸钠）里就含「NaN」三个字母，
+// 那是正常正文。改成按「独立单词」判（前后不能紧贴字母数字）。
+const BAD_TOKEN_TESTS = [
+  { token: 'undefined', hit: (html) => html.includes('undefined') },
+  { token: 'NaN', hit: (html) => /\bNaN\b/u.test(html) },
+  { token: '[object Object]', hit: (html) => html.includes('[object Object]') },
+];
 const args = parseArgs(process.argv.slice(2));
 const clientFile = path.join(HERE, '..', 'client.js');
 const internals = loadClient(clientFile);
@@ -143,7 +152,7 @@ const cases = [];
 const run = (name, build) => {
   try {
     const html = renderToMarkup(build());
-    const bad = BAD_TOKENS.filter((token) => html.includes(token));
+    const bad = BAD_TOKEN_TESTS.filter((item) => item.hit(html)).map((item) => item.token);
     cases.push({ name, ok: true, chars: html.length, bad });
     if (args.verbose) console.log(`  ✔ ${name}（${html.length} 字符）`);
   } catch (error) {
@@ -174,6 +183,33 @@ for (const node of nodes) {
   run(`KnowledgeTab/选中=${node.id}`, () => ({ __el: true, type: internals.knowledgeTab, props: { docs, refresh: () => {} } }));
 }
 internals.resetKnowledgeUi();
+// 4b) 详解必须真的渲染出来（2026-10-27 晚补）
+//     之前 readDocs 不读 资料分析.json，这张卡永远是「未分析」，等于没测。
+//     现在逐个有详解的节点核对两件事：① 不许出现「未分析」；② 正文不许把 LaTeX 源码露出来
+//     （`\rho`、`\Omega` 这类裸命令是 2026-10-27 的真实 bug：单字母公式 `$v$` 让 `$` 错位配对）。
+const analysisIndex = internals.buildAnalysisPoints(docs.knowledgeAnalysis);
+const textOfMarkup = (html) => String(html).replace(/<[^>]*>/gu, ' ');
+let detailMissing = 0;
+let detailRawLatex = [];
+for (const node of nodes) {
+  const point = analysisIndex[node.id];
+  if (point === undefined) continue;
+  internals.resetKnowledgeUi();
+  internals.readKnowledgeUi({ selected: node.id, view: 'list' });
+  const html = renderToMarkup({ __el: true, type: internals.knowledgeTab, props: { docs, refresh: () => {} } });
+  if (html.includes('未分析')) detailMissing += 1;
+  const text = textOfMarkup(html);
+  const raw = text.match(/\\[A-Za-z]{2,}/u);
+  if (raw !== null) detailRawLatex.push(`${node.id}:${raw[0]}`);
+}
+run('详解/有详解的节点不显示「未分析」', () => {
+  if (detailMissing > 0) throw new Error(`${detailMissing} 个节点仍显示「未分析」`);
+  return null;
+});
+run('详解/正文不露 LaTeX 源码', () => {
+  if (detailRawLatex.length > 0) throw new Error(`${detailRawLatex.length} 个节点露出裸命令：${detailRawLatex.slice(0, 6).join(' ')}`);
+  return null;
+});
 // 5) 坏数据 / 空数据
 run('坏数据/空 docs', () => ({ __el: true, type: internals.knowledgeTab, props: { docs: {}, refresh: () => {} } }));
 run('坏数据/空节点表', () => ({ __el: true, type: internals.knowledgeTab, props: { docs: { ...docs, knowledgeNetwork: { nodes: [] } }, refresh: () => {} } }));

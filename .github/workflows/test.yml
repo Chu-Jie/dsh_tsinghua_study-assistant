@@ -43,3 +43,16 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: 运行测试（仅供参考）
         run: npm test
+
+  # 隐私闸门：仓库是公开的，任何提交都不许带上真实姓名/学号、本机绝对路径、
+  # 邮箱、令牌、会话票据或网络学堂真实 id。命中任意一条即 exit 1，本 job 变红。
+  privacy:
+    name: 隐私闸门
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 扫描隐私信息
+        run: node tools/check-privacy.mjs --quiet
