@@ -46,6 +46,9 @@ jobs:
 
   # 隐私闸门：仓库是公开的，任何提交都不许带上真实姓名/学号、本机绝对路径、
   # 邮箱、令牌、会话票据或网络学堂真实 id。命中任意一条即 exit 1，本 job 变红。
+  # 扫描范围：仓库根目录递归（排除 .git/、node_modules/、二进制扩展名、单文件 > 16 MB）；
+  # vendor/ 下第三方文件豁免「邮箱/令牌」两类规则（THIRD_PARTY_NOTICES.md 覆盖）。
+  # 汇总行会打印「共扫 N 文件，命中 M 条（耗时 X ms）」，可据此看规模与性能回归。
   privacy:
     name: 隐私闸门
     runs-on: ubuntu-latest
