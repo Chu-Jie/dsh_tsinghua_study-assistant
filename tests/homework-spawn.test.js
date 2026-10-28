@@ -141,9 +141,12 @@ test('正常点火：200 且固定指令里带硬约束', async () => {
     // 指令里必须真的点名这次作业与课程，否则会话不知道从哪下手
     assert.ok(prompt.includes('数据结构第 01 次作业'));
     assert.ok(prompt.includes('数据结构/作业/'));
-    // 两份产物的文件名是用户 2026-10-20 定的，写错就等于没交付
-    assert.ok(prompt.includes('第NN次作业_引导与详解.md'));
-    assert.ok(prompt.includes('第NN次作业_誊写版.md'));
+    // 两份产物的文件名是 2026-10-28 定的（按次子目录 + 角色名，次号由文件夹承担），写错就等于没交付
+    assert.ok(prompt.includes('答案/第NN次/'), '产物要落 答案/第NN次/ 子目录');
+    assert.ok(prompt.includes('引导与详解.md'));
+    assert.ok(prompt.includes('誊写版.md'));
+    assert.ok(!prompt.includes('第NN次作业_引导与详解.md'), '不能再退回「扁平 + 次号前缀」的旧写法');
+    assert.ok(!prompt.includes('不建子目录'), '不能再写「不建子目录」');
     // 可打印 HTML 也是一键开工的产物（用户 2026-10-20 傍晚定）：md2html.py 转一份，命名沿用脚本默认名
     assert.ok(prompt.includes('_工具/md2html.py'));
     assert.ok(prompt.includes('(可打印).html'));
@@ -159,7 +162,7 @@ test('正常点火：200 且固定指令里带硬约束', async () => {
     // 誊写版是「可直接抄的完成稿」，旧口径「不带推导」已废弃
     assert.ok(prompt.includes('可直接抄的完成稿'));
     assert.ok(!prompt.includes('不带推导'), '誊写版不能退回「只给答案」');
-    assert.ok(prompt.includes('第NN次数值验证.py'), '数值验证脚本要入库');
+    assert.ok(prompt.includes('答案/第NN次/数值验证.py'), '数值验证脚本要入库到按次子目录');
     assert.ok(prompt.includes('按每版分别定位'), '多版本教材要分别作答');
     assert.ok(prompt.includes('需你确认'), '拿不准的题要标注');
     assert.ok(prompt.includes('[learn:xszyid:'), 'note 要保留 learn 记号');
