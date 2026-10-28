@@ -13,13 +13,13 @@
     "homework",
     "learning"
   ],
-  "homepage": "https://github.com/Chu-Jie/dsh_tsinghua_study-assist#readme",
+  "homepage": "https://github.com/Chu-Jie/dsh_tsinghua_study-assistant#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Chu-Jie/dsh_tsinghua_study-assist.git"
+    "url": "git+https://github.com/Chu-Jie/dsh_tsinghua_study-assistant.git"
   },
   "bugs": {
-    "url": "https://github.com/Chu-Jie/dsh_tsinghua_study-assist/issues"
+    "url": "https://github.com/Chu-Jie/dsh_tsinghua_study-assistant/issues"
   },
   "exports": {
     ".": "./index.js",

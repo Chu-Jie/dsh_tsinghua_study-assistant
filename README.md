@@ -9,7 +9,7 @@
 
 - 插件 id / 接口前缀：`study-assistant` / `/api/study-assistant`
 - 面板名（中文）：**大学生学习辅助系统**；侧栏标签「学习辅助」
-- 仓库：<https://github.com/Chu-Jie/dsh_tsinghua_study-assist>
+- 仓库：<https://github.com/Chu-Jie/dsh_tsinghua_study-assistant>
 - 许可：MIT；**运行时零 npm 依赖**（唯一第三方代码是随仓库携带的 PDF.js，见 `THIRD_PARTY_NOTICES.md`）
 - Node：`>= 22`
 
