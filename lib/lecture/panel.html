@@ -1,0 +1,1231 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>听课台</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --line: #e3e3e8;
+    --text: #1c1c1e;
+    --dim: #6b6b70;
+    --accent: #2f6fed;
+    --danger: #d92d20;
+    --warn: #b54708;
+    --ok: #067647;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --card: #1f1f24;
+      --line: #32323a;
+      --text: #ececf1;
+      --dim: #9a9aa2;
+      --accent: #6f9dff;
+      --danger: #ff6b60;
+      --warn: #f0a355;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 18px 16px 60px; }
+  h1 { font-size: 19px; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 16px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .card > h2 {
+    font-size: 13px;
+    letter-spacing: .02em;
+    color: var(--dim);
+    margin: 0 0 10px;
+    font-weight: 600;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  label.field { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim); }
+  input[type="text"], select, textarea {
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 9px;
+  }
+  input[type="text"] { min-width: 190px; }
+  textarea { width: 100%; min-height: 92px; resize: vertical; line-height: 1.7; }
+  button {
+    font: inherit;
+    padding: 7px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .pill {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    border: 1px solid currentColor;
+  }
+  .pill.ok { color: var(--ok); }
+  .pill.off { color: var(--dim); }
+  .pill.live { color: var(--danger); }
+  .hint { color: var(--dim); font-size: 12px; }
+  .banner {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-bottom: 10px;
+    border: 1px solid var(--line);
+  }
+  .banner.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .banner.bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); }
+  #alert-layer {
+    position: fixed; left: 0; right: 0; top: 0;
+    z-index: 50; pointer-events: none;
+  }
+  #alert-layer .alert {
+    pointer-events: auto;
+    margin: 10px auto;
+    max-width: 860px;
+    border-radius: 12px;
+    padding: 12px 14px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+    border: 2px solid;
+    animation: pop .18s ease-out;
+  }
+  @keyframes pop { from { transform: translateY(-8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  #alert-layer .alert.sev3 { background: color-mix(in srgb, var(--danger) 16%, var(--card)); border-color: var(--danger); }
+  #alert-layer .alert.sev2 { background: color-mix(in srgb, var(--warn) 16%, var(--card)); border-color: var(--warn); }
+  #alert-layer .alert.sev3 .kind { color: var(--danger); }
+  #alert-layer .alert.sev2 .kind { color: var(--warn); }
+  #alert-layer .kind { font-weight: 700; font-size: 15px; }
+  #alert-layer .snip { font-size: 13px; opacity: .9; }
+  #alert-layer .grow { flex: 1; min-width: 0; }
+  #transcript {
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: color-mix(in srgb, var(--bg) 60%, var(--card));
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    line-height: 1.85;
+  }
+  #alerts { display: flex; flex-direction: column; gap: 8px; }
+  #alerts .item {
+    display: flex; gap: 10px; align-items: flex-start;
+    border: 1px solid var(--line); border-left-width: 4px;
+    border-radius: 8px; padding: 8px 10px;
+  }
+  #alerts .item.sev3 { border-left-color: var(--danger); }
+  #alerts .item.sev2 { border-left-color: var(--warn); }
+  #alerts .meta { color: var(--dim); font-size: 12px; }
+  #alerts .answer {
+    margin-top: 6px; padding: 6px 8px; border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    font-size: 13px; line-height: 1.5;
+  }
+  #rolling { font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+  .ok-text { color: var(--ok); }
+  .bad-text { color: var(--danger); }
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 13px; }
+  dl.kv dt { color: var(--dim); }
+  dl.kv dd { margin: 0; }
+  details.ac { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--card); }
+  details.ac > summary { cursor: pointer; color: var(--dim); font-size: 13px; }
+  #level-track { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; flex: 1; min-width: 140px; }
+  #level-bar { height: 100%; width: 0%; background: var(--accent); transition: width .06s linear; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div id="alert-layer"></div>
+<main>
+  <h1>听课台</h1>
+  <div class="sub">
+    把课堂上的文字喂进来（腾讯会议实时字幕 / 手动粘贴 / 备用麦克风），自动盯着点名、签到和提问。
+    下课时在这里结束，逐字稿落进「学习台/听课记录」。
+  </div>
+
+  <div id="top-banner" class="banner ok">正在读取语音与听课服务状态…</div>
+
+  <section class="card">
+    <h2>这节课</h2>
+    <div class="row">
+      <label class="field">课程
+        <input id="course" type="text" placeholder="例如：高等数学" list="course-history">
+      </label>
+      <datalist id="course-history"></datalist>
+      <label class="field">文本来源
+        <select id="source">
+          <option value="screen">腾讯会议读屏（OCR）</option>
+          <option value="paste">手动粘贴</option>
+          <option value="mic">麦克风转写</option>
+          <option value="recorder">录音笔实时跟随（推荐）</option>
+        </select>
+      </label>
+      <button id="start" class="primary">开始听课</button>
+      <button id="stop" class="danger" disabled>结束这节课</button>
+      <span id="session-pill" class="pill off">未开始</span>
+    </div>
+    <div class="row hint">
+      点名按「同音 + 声调」匹配，学生姓名 <b id="who">—</b>（配置项 <span class="mono">studentName</span>，配错等于这个功能没用）。
+    </div>
+    <div class="row" id="recorder-row" style="display:none">
+      <label class="field">录音笔文件
+        <select id="rec-file"><option value="">（还没有扫描）</option></select>
+      </label>
+      <button id="rec-reload">重新扫描</button>
+      <label class="field">起点
+        <select id="rec-position">
+          <option value="tail" selected>从此刻开始（上课用这个）</option>
+          <option value="head">从头开始（补录一遍）</option>
+        </select>
+      </label>
+      <label class="field">每片
+        <select id="rec-chunk">
+          <option value="5">5 秒</option>
+          <option value="8" selected>8 秒</option>
+          <option value="15">15 秒</option>
+        </select>
+      </label>
+    </div>
+    <div class="row hint" id="recorder-stat-row" style="display:none">
+      <span id="rec-stat">没有在跟随。</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>提醒</h2>
+    <div id="alerts"><div class="hint">还没有提醒。开始听课后，出现「叫到你 / 点名签到 / 要求作答」会立刻弹在这里。</div></div>
+  </section>
+
+  <section class="card">
+    <h2>喂一帧文本</h2>
+    <textarea id="frame" placeholder="把腾讯会议窗口里的这一屏字幕复制进来，或直接粘一段老师刚说的话。重复内容会自动去重：只取真正新增的部分。"></textarea>
+    <div class="row">
+      <button id="feed" class="primary" disabled>追加这一帧</button>
+      <button id="paste-clip" disabled>从剪贴板粘贴</button>
+      <span class="hint">整段都能喂，空白帧会被忽略。</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>逐字稿</h2>
+    <div id="transcript" class="hint">（空）</div>
+    <dl class="kv" style="margin-top:10px">
+      <dt>累计字数</dt><dd id="stat-chars">0</dd>
+      <dt>帧数</dt><dd id="stat-frames">0</dd>
+      <dt>提醒数</dt><dd id="stat-alerts">0</dd>
+      <dt>去重丢弃</dt><dd id="stat-dropped">0</dd>
+    </dl>
+    <div class="row" style="margin-top:10px">
+      <button id="refresh" disabled>刷新</button>
+      <span id="saved" class="hint"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>这节课的脉络（滚动小结）</h2>
+    <div id="rolling" class="hint">开始听课后，攒够内容就会在这里出现一份不断更新的脉络小结（约每 600 字 / 1 分钟更新一次）。它也是课后总结的底稿。</div>
+  </section>
+
+  <section class="card">
+    <h2>课后笔记</h2>
+    <div id="report" class="hint">点「结束这节课」后，会自动生成一份 md 笔记写进对应科目目录，并开一个新会话把总结交给我继续追问。</div>
+  </section>
+
+  <details class="ac">
+    <summary>备用音源：本机麦克风录一段 → 本地 SenseVoice 转写（浏览器不给麦克风时用不了）</summary>
+    <div style="margin-top:12px">
+      <div id="speech-state" class="banner ok">正在读取语音服务状态…</div>
+      <div class="row">
+        <label class="field">设备
+          <select id="device"><option value="">默认麦克风</option></select>
+        </label>
+        <label class="field">语种
+          <select id="language">
+            <option value="zh">中文</option>
+            <option value="auto">自动</option>
+            <option value="en">英语</option>
+            <option value="yue">粤语</option>
+            <option value="ja">日语</option>
+            <option value="ko">韩语</option>
+          </select>
+        </label>
+        <label class="field">时长
+          <select id="seconds">
+            <option value="5">5 秒</option>
+            <option value="8" selected>8 秒</option>
+            <option value="15">15 秒</option>
+            <option value="30">30 秒</option>
+          </select>
+        </label>
+        <button id="rec-start" class="primary">开始录音</button>
+        <button id="rec-stop" disabled>停止</button>
+      </div>
+      <div class="row">
+        <span class="hint" style="min-width:52px">音量</span>
+        <div id="level-track"><div id="level-bar"></div></div>
+        <span id="dbfs" class="mono" style="min-width:76px">— dBFS</span>
+        <span id="peak" class="mono" style="min-width:104px">峰值 —</span>
+      </div>
+      <pre id="asr-out" class="mono" style="white-space:pre-wrap;margin:10px 0 0;color:var(--dim)">（还没有转写结果）</pre>
+      <div class="row">
+        <button id="to-frame" disabled>把这段结果放进粘贴框</button>
+        <span class="hint">不缓存音频：只在停止时打包上传一次。</span>
+      </div>
+    </div>
+  </details>
+
+  <section class="card">
+    <h2>排障信息</h2>
+    <dl class="kv">
+      <dt>页面地址</dt><dd class="mono" id="diag-url">—</dd>
+      <dt>接口前缀</dt><dd class="mono" id="diag-api">—</dd>
+      <dt>浏览器采样率</dt><dd class="mono" id="diag-rate">—</dd>
+      <dt>设备</dt><dd class="mono" id="diag-device">—</dd>
+      <dt>上次转写</dt><dd class="mono" id="diag-asr">—</dd>
+    </dl>
+    <div class="hint" style="margin-top:8px">
+      音频这条路走不通时，整个听课台照常可用 —— 逐字稿是文本，跟音频从哪来没关系。
+    </div>
+  </section>
+</main>
+
+<script type="module">
+import { float32ToWavPcm16, resampleLinear, levelPercent } from './wav.js';
+import { inspectAdts, splitFrames } from './adts.js';
+
+const HEADER = { 'X-Study-Request': '1' };
+const el = (id) => document.getElementById(id);
+const API = new URL('./health', location.href).pathname.replace(/\/health$/, '');
+
+/* 接口地址统一从这里出。
+   页面以前有的地方写 './xxx'、有的写 'lecture/xxx'，后者会被浏览器解析成
+   .../lecture/lecture/xxx 直接 404（面板一直停在「正在读取语音服务状态…」就是这个原因）。
+   这里顺手兼容两种写法：剥掉开头多余的 './' 与 'lecture/'，再接 API 前缀。 */
+function apiUrl(path) {
+  let rest = String(path == null ? '' : path).replace(/^\.?\//, '');
+  if (rest.slice(0, 8) === 'lecture/') rest = rest.slice(8);
+  return API + '/' + rest;
+}
+
+const state = {
+  running: false,
+  speechReady: false,
+  alerts: [],
+  seen: new Set(),
+  poll: null,
+  reportTimer: null,
+  title: document.title,
+  flash: null,
+  lastAsr: '',
+};
+
+/* ------------------------------------------------------------ 网络小工具 */
+
+async function getJson(path) {
+  const response = await fetch(apiUrl(path), { cache: 'no-store' });
+  const data = await response.json();
+  return { status: response.status, data };
+}
+
+async function postJson(path, body) {
+  const response = await fetch(apiUrl(path), {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, HEADER),
+    body: JSON.stringify(body || {}),
+  });
+  let data = {};
+  try { data = await response.json(); } catch (error) { data = { ok: false, error: 'bad-response' }; }
+  return { status: response.status, data };
+}
+
+function say(text, kind) {
+  const node = el('top-banner');
+  node.className = 'banner ' + (kind || 'ok');
+  node.textContent = text;
+}
+
+/* ------------------------------------------------------------ 提醒呈现 */
+
+function renderAlerts() {
+  const box = el('alerts');
+  box.innerHTML = '';
+  if (state.alerts.length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.textContent = state.running
+      ? '暂时没有未确认的提醒。'
+      : '还没有提醒。开始听课后，出现「叫到你 / 点名签到 / 要求作答」会立刻弹在这里。';
+    box.appendChild(hint);
+    return;
+  }
+  for (const alert of state.alerts) {
+    const item = document.createElement('div');
+    item.className = 'item sev' + String(alert.severity);
+    const grow = document.createElement('div');
+    grow.style.flex = '1';
+    grow.style.minWidth = '0';
+    const head = document.createElement('div');
+    head.textContent = alert.label + ' · ' + alert.matched;
+    head.style.fontWeight = '600';
+    const snip = document.createElement('div');
+    snip.className = 'meta';
+    snip.textContent = alert.snippet;
+    grow.appendChild(head);
+    grow.appendChild(snip);
+    // 提问类提醒会被后台模型补上一段「秒答」；点名类永远没有（那要我自己抬头）
+    if (typeof alert.answer === 'string' && alert.answer !== '') {
+      const answer = document.createElement('div');
+      answer.className = 'answer';
+      answer.textContent = alert.answer;
+      grow.appendChild(answer);
+    } else if (typeof alert.answerError === 'string' && alert.answerError !== '') {
+      const failed = document.createElement('div');
+      failed.className = 'meta';
+      failed.textContent = '秒答没成：' + alert.answerError;
+      grow.appendChild(failed);
+    }
+    const ack = document.createElement('button');
+    ack.textContent = '知道了';
+    ack.addEventListener('click', () => { acknowledge(alert.id); });
+    item.appendChild(grow);
+    item.appendChild(ack);
+    box.appendChild(item);
+  }
+}
+
+async function acknowledge(id) {
+  const result = await postJson('alert/ack', { id });
+  if (result.data.ok) {
+    state.alerts = state.alerts.filter((entry) => entry.id !== id);
+    renderAlerts();
+  }
+}
+
+function popup(alert) {
+  const layer = el('alert-layer');
+  const node = document.createElement('div');
+  node.className = 'alert sev' + String(alert.severity);
+  const grow = document.createElement('div');
+  grow.className = 'grow';
+  const kind = document.createElement('div');
+  kind.className = 'kind';
+  kind.textContent = alert.severity >= 3 ? '⚠ ' + alert.label : alert.label;
+  const snip = document.createElement('div');
+  snip.className = 'snip';
+  snip.textContent = alert.matched + ' —— ' + alert.snippet;
+  grow.appendChild(kind);
+  grow.appendChild(snip);
+  const close = document.createElement('button');
+  close.textContent = '知道了';
+  close.addEventListener('click', () => {
+    node.remove();
+    acknowledge(alert.id);
+  });
+  node.appendChild(grow);
+  node.appendChild(close);
+  layer.appendChild(node);
+  if (alert.severity >= 3) {
+    beep();
+    flashTitle('⚠ ' + alert.label);
+    window.setTimeout(() => { node.remove(); }, 30000);
+  } else {
+    window.setTimeout(() => { node.remove(); }, 12000);
+  }
+}
+
+/** 提醒音：教室噪一点也要能听见。用振荡器现造，不引入任何外部文件。 */
+function beep() {
+  try {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (Ctor === undefined) return;
+    const ctx = new Ctor();
+    const now = ctx.currentTime;
+    [0, 0.22].forEach((offset, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = index === 0 ? 880 : 1174;
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.22, now + offset + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.18);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.2);
+    });
+    window.setTimeout(() => { ctx.close().catch(() => {}); }, 900);
+  } catch (error) { /* 声音只是加分项，失败不影响提醒 */ }
+}
+
+/** 网页没法把自己拉到前台，能做的就是闪标题 —— 浏览器里唯一诚实的做法。 */
+function flashTitle(mark) {
+  if (state.flash !== null) window.clearInterval(state.flash);
+  let on = false;
+  let ticks = 0;
+  state.flash = window.setInterval(() => {
+    on = !on;
+    document.title = on ? mark + ' ' + state.title : state.title;
+    ticks += 1;
+    if (ticks > 20) {
+      window.clearInterval(state.flash);
+      state.flash = null;
+      document.title = state.title;
+    }
+  }, 700);
+}
+
+/** 用服务端返回的未确认提醒刷新界面，并给「没见过的」弹浮层。 */
+function applyState(payload) {
+  state.running = payload.running === true;
+  if (Array.isArray(payload.alerts)) state.alerts = payload.alerts;
+  renderAlerts();
+  const box = el('transcript');
+  box.textContent = payload.textTail ? payload.textTail : '（空）';
+  box.className = payload.textTail ? '' : 'hint';
+  box.scrollTop = box.scrollHeight;
+  const rollingBox = el('rolling');
+  const rolling = typeof payload.rolling === 'string' ? payload.rolling : '';
+  rollingBox.textContent = rolling !== '' ? rolling : '还没有脉络小结 —— 攒够内容（约 600 字）且过了更新间隔才会生成一次。';
+  rollingBox.className = rolling !== '' ? 'rolling' : 'hint';
+  if (payload.session !== null && payload.session !== undefined) {
+    const stats = payload.session.stats || {};
+    el('stat-chars').textContent = String(stats.chars || 0);
+    el('stat-frames').textContent = String(stats.frames || 0);
+    el('stat-alerts').textContent = String(stats.alerts || 0);
+    el('stat-dropped').textContent = String(stats.dropped || 0);
+  }
+  for (const alert of state.alerts) {
+    if (state.seen.has(alert.id)) continue;
+    state.seen.add(alert.id);
+    popup(alert);
+  }
+  setRunning(state.running);
+}
+
+function setRunning(running) {
+  state.running = running;
+  el('start').disabled = running;
+  el('stop').disabled = !running;
+  el('feed').disabled = !running;
+  el('paste-clip').disabled = !running;
+  el('refresh').disabled = !running;
+  const pill = el('session-pill');
+  pill.className = 'pill ' + (running ? 'live' : 'off');
+  pill.textContent = running ? '听课中' : '未开始';
+}
+
+/* ------------------------------------------------------------ 课后收尾 */
+
+const REPORT_STAGE_TEXT = {
+  queued: '排队中…',
+  summarizing: '正在总结这节课…',
+  writing: '正在写 md 笔记…',
+  handoff: '正在开一个课后追问的新会话…',
+  done: '全部完成',
+  'done-no-session': '笔记写好了（这次没能开新会话）',
+  'note-failed': '笔记没写成功',
+  'no-reporting': '笔记模块没接上',
+};
+
+/** 画课后收尾状态。传 null 就是「还没结束过任何一节课」。 */
+function renderReport(report) {
+  const box = el('report');
+  box.innerHTML = '';
+  if (report === null || report === undefined) {
+    box.className = 'hint';
+    box.textContent = '点「结束这节课」后，会自动生成一份 md 笔记写进对应科目目录，并开一个新会话把总结交给我继续追问。';
+    return;
+  }
+  box.className = '';
+  const stage = String(report.stage || '');
+  const head = document.createElement('div');
+  head.style.fontWeight = '600';
+  head.textContent = REPORT_STAGE_TEXT[stage] || stage;
+  head.className = stage === 'done' || stage === 'done-no-session' ? 'ok-text'
+    : (stage === 'note-failed' ? 'bad-text' : '');
+  box.appendChild(head);
+
+  const rows = [];
+  if (report.course) rows.push(['课程', String(report.course)]);
+  if (report.transcriptFile) rows.push(['逐字稿', String(report.transcriptFile)]);
+  if (report.note !== null && report.note !== undefined) {
+    rows.push(['笔记', report.note.ok === true ? String(report.note.file) : '没写成：' + String(report.note.error || '')]);
+    if (report.note.ok === true && report.note.fallback === true) {
+      rows.push(['落点', '课程目录没对上，写进了数据目录的「笔记」子目录']);
+    }
+  }
+  if (report.handoff !== null && report.handoff !== undefined) {
+    rows.push(['新会话', report.handoff.ok === true
+      ? String(report.handoff.sessionId || '') + (report.handoff.titled === true ? '（已命名）' : '')
+      : '没开成：' + String(report.handoff.error || '')]);
+  }
+  if (report.summaryOk !== true && typeof report.summaryError === 'string' && report.summaryError !== '') {
+    rows.push(['总结', '没成：' + report.summaryError + '（笔记退化成逐字稿摘录）']);
+  }
+  if (rows.length > 0) {
+    const dl = document.createElement('dl');
+    dl.className = 'kv';
+    dl.style.marginTop = '8px';
+    for (const pair of rows) {
+      const dt = document.createElement('dt');
+      dt.textContent = pair[0];
+      const dd = document.createElement('dd');
+      dd.className = 'mono';
+      dd.textContent = pair[1];
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+    box.appendChild(dl);
+  }
+  if (report.note !== null && report.note !== undefined && report.note.ok === true) {
+    const copy = document.createElement('button');
+    copy.textContent = '复制笔记路径';
+    copy.style.marginTop = '8px';
+    copy.addEventListener('click', () => {
+      navigator.clipboard.writeText(String(report.note.file)).then(
+        () => { copy.textContent = '已复制'; },
+        () => { copy.textContent = '复制失败'; },
+      );
+    });
+    box.appendChild(copy);
+  }
+}
+
+/**
+ * 轮询课后收尾状态。
+ *
+ * `/lecture/session/stop` 只等逐字稿落盘就返回（总结 + 写笔记 + 开新会话要几十秒，
+ * 卡住不让 HTTP 返回是不对的），所以结果要这样拉回来。
+ */
+async function pollReport() {
+  if (state.reportTimer !== null) {
+    window.clearInterval(state.reportTimer);
+    state.reportTimer = null;
+  }
+  renderReport(null);
+  let ticks = 0;
+  const tick = async () => {
+    ticks += 1;
+    const result = await getJson('report');
+    const report = result.data.ok === true ? result.data.report : null;
+    renderReport(report);
+    const stage = report === null ? '' : String(report.stage || '');
+    const settled = stage === 'done' || stage === 'done-no-session'
+      || stage === 'note-failed' || stage === 'no-reporting';
+    if (!settled && ticks < 120) return;
+    if (state.reportTimer !== null) {
+      window.clearInterval(state.reportTimer);
+      state.reportTimer = null;
+    }
+    if (stage === 'done') say('笔记写好了，课后追问的新会话也开好了 —— 去会话列表里接着问就行。', 'ok');
+    else if (stage === 'done-no-session') say('笔记写好了，但这次没能开新会话（宿主没有会话服务），去「课后笔记」看路径。', 'warn');
+    else if (stage === 'note-failed') say('笔记没写成，原因见「课后笔记」那一栏。', 'bad');
+  };
+  state.reportTimer = window.setInterval(() => { tick().catch(() => {}); }, 2500);
+  await tick();
+}
+
+/* ------------------------------------------------------------ 会话控制 */
+
+async function startSession() {
+  const course = el('course').value.trim();
+  if (course === '') {
+    say('先填课程名 —— 逐字稿要按课程名存进「听课记录」。', 'bad');
+    el('course').focus();
+    return;
+  }
+  const source = el('source').value;
+  const followMode = source === 'recorder';
+  // 录音笔走的是房间里的麦克风，会话来源记 mic；follow 只是「自动喂帧」的方式
+  const result = await postJson('session/start', { course, source: followMode ? 'mic' : source });
+  if (!result.data.ok) {
+    say('开课失败：' + (result.data.error || result.status) +
+      (result.data.error === 'session-active' ? '（已经有一节课在跑，先结束它）' : ''), 'bad');
+    return;
+  }
+  window.localStorage.setItem('study-assistant.lecture.course', course);
+  el('saved').textContent = '';
+  state.seen = new Set();
+  say('已开始：' + course + '（来源：' + el('source').selectedOptions[0].textContent + '）', 'ok');
+  setRunning(true);
+  await refresh();
+  startPolling();
+  if (followMode) await startFollowing();
+}
+
+async function stopSession() {
+  const result = await postJson('session/stop');
+  stopPolling();
+  stopFollowing();
+  if (!result.data.ok) {
+    say('结束失败：' + (result.data.error || result.status), 'bad');
+    return;
+  }
+  setRunning(false);
+  state.alerts = [];
+  renderAlerts();
+  const stats = result.data.stats || {};
+  el('saved').innerHTML = '';
+  const line = document.createElement('span');
+  line.textContent = '已保存（' + String(stats.frames || 0) + ' 帧 / ' + String(stats.chars || 0) + ' 字）：';
+  const code = document.createElement('span');
+  code.className = 'mono';
+  code.textContent = String(result.data.file || '');
+  const copy = document.createElement('button');
+  copy.textContent = '复制路径';
+  copy.style.marginLeft = '8px';
+  copy.addEventListener('click', () => {
+    navigator.clipboard.writeText(String(result.data.file || '')).then(
+      () => { copy.textContent = '已复制'; },
+      () => { copy.textContent = '复制失败'; },
+    );
+  });
+  el('saved').appendChild(line);
+  el('saved').appendChild(code);
+  el('saved').appendChild(copy);
+  say('这节课结束了，逐字稿已经落盘；总结、笔记和新会话在后台跑。', 'ok');
+  pollReport().catch(() => {});
+}
+
+/* ------------------------------------------------------------ 喂文本 */
+
+async function feed(text, origin, sourceOverride) {
+  const result = await postJson('feed', { text, source: sourceOverride || el('source').value });
+  if (!result.data.ok) {
+    say('这一帧没喂进去：' + (result.data.error || result.status), 'bad');
+    return;
+  }
+  const appended = result.data.appended || '';
+  const alerts = Array.isArray(result.data.alerts) ? result.data.alerts : [];
+  for (const alert of alerts) {
+    state.seen.add(alert.id);
+    state.alerts.push(alert);
+    popup(alert);
+  }
+  renderAlerts();
+  const shown = appended === '' ? '没有新增内容（和上一帧重复，或整帧都是噪音）' : '新增 ' + appended.length + ' 字';
+  say((origin || '这一帧') + '：' + shown + '，' + alerts.length + ' 条提醒。', alerts.length > 0 ? 'bad' : 'ok');
+  await refresh();
+}
+
+async function refresh() {
+  const result = await getJson('state');
+  if (result.data.ok) applyState(result.data);
+}
+
+function startPolling() {
+  stopPolling();
+  // 逐字稿也可能由宿主侧的读屏适配器喂进来，所以页面必须主动拉
+  state.poll = window.setInterval(() => {
+    if (document.hidden) return;
+    refresh().catch(() => {});
+  }, 2500);
+}
+
+function stopPolling() {
+  if (state.poll !== null) window.clearInterval(state.poll);
+  state.poll = null;
+}
+
+/* ------------------------------------------------------------ 备用音源 */
+
+const audio = {
+  ctx: null, stream: null, node: null, source: null, frames: 0, activeRate: 16000,
+  chunks: [], peak: 0, running: false, lastWav: null,
+};
+
+async function loadDevices() {
+  if (navigator.mediaDevices === undefined) return;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const select = el('device');
+    select.innerHTML = '';
+    const auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = '默认麦克风';
+    select.appendChild(auto);
+    for (const device of devices.filter((item) => item.kind === 'audioinput')) {
+      const option = document.createElement('option');
+      option.value = device.deviceId;
+      option.textContent = device.label || '麦克风 ' + String(select.length);
+      select.appendChild(option);
+    }
+  } catch (error) { /* 没授权时列表为空，不算故障 */ }
+}
+
+async function startRecording() {
+  const wanted = Number(el('seconds').value) || 8;
+  const deviceId = el('device').value;
+  try {
+    audio.stream = await navigator.mediaDevices.getUserMedia({
+      audio: Object.assign(
+        { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        deviceId === '' ? {} : { deviceId: { exact: deviceId } },
+      ),
+    });
+  } catch (error) {
+    el('speech-state').className = 'banner bad';
+    el('speech-state').textContent = '拿不到麦克风：' + (error && error.message ? error.message : String(error)) +
+      '（如果是 DSH 自己的窗口，权限一律被拒 —— 换成 Edge 打开这个页面）';
+    return;
+  }
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  audio.ctx = new Ctor({ sampleRate: 16000, latencyHint: 'interactive' });
+  audio.activeRate = audio.ctx.sampleRate;
+  audio.source = audio.ctx.createMediaStreamSource(audio.stream);
+  audio.node = audio.ctx.createScriptProcessor(4096, 1, 1);
+  const silence = audio.ctx.createGain();
+  silence.gain.value = 0;
+  audio.chunks = [];
+  audio.frames = 0;
+  audio.peak = 0;
+  audio.running = true;
+  const track = audio.stream.getAudioTracks()[0];
+  const settings = track && track.getSettings ? track.getSettings() : {};
+  el('diag-rate').textContent = String(audio.activeRate) + ' Hz（请求 16000）';
+  el('diag-device').textContent = (track && track.label ? track.label : '未知') +
+    ' · ' + String(settings.channelCount || '?') + ' 声道 / ' + String(settings.sampleRate || '?') + ' Hz';
+  audio.node.onaudioprocess = (event) => {
+    if (!audio.running) return;
+    const input = event.inputBuffer.getChannelData(0);
+    audio.chunks.push(new Float32Array(input));
+    audio.frames += input.length;
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i < input.length; i += 1) {
+      const value = input[i];
+      sum += value * value;
+      if (Math.abs(value) > peak) peak = Math.abs(value);
+    }
+    const rms = Math.sqrt(sum / input.length);
+    if (peak > audio.peak) audio.peak = peak;
+    el('level-bar').style.width = levelPercent(rms) + '%';
+    el('dbfs').textContent = rms < 1e-6 ? '— dBFS' : (20 * Math.log10(rms)).toFixed(1) + ' dBFS';
+    el('peak').textContent = '峰值 ' + (audio.peak < 1e-6 ? '—' : (20 * Math.log10(audio.peak)).toFixed(1)) + ' dB';
+    if (audio.frames / audio.activeRate >= wanted) stopRecording();
+  };
+  audio.source.connect(audio.node);
+  audio.node.connect(silence);
+  silence.connect(audio.ctx.destination);
+  el('rec-start').disabled = true;
+  el('rec-stop').disabled = false;
+  el('asr-out').textContent = '录音中…（' + String(wanted) + ' 秒后自动停止）';
+}
+
+async function stopRecording() {
+  if (!audio.running) return;
+  audio.running = false;
+  el('rec-start').disabled = false;
+  el('rec-stop').disabled = true;
+  if (audio.node !== null) audio.node.onaudioprocess = null;
+  try { if (audio.source !== null) audio.source.disconnect(); } catch (error) { /* 已断开 */ }
+  try { if (audio.node !== null) audio.node.disconnect(); } catch (error) { /* 已断开 */ }
+  try { if (audio.stream !== null) audio.stream.getTracks().forEach((track) => track.stop()); } catch (error) { /* 已停 */ }
+  if (audio.ctx !== null) { try { await audio.ctx.close(); } catch (error) { /* 已关 */ } }
+
+  const total = audio.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  if (total === 0) {
+    el('asr-out').textContent = '这一段没有任何采样 —— 麦克风没出声。';
+    return;
+  }
+  let samples = new Float32Array(total);
+  let at = 0;
+  for (const chunk of audio.chunks) { samples.set(chunk, at); at += chunk.length; }
+  if (Math.round(audio.activeRate) !== 16000) samples = resampleLinear(samples, audio.activeRate, 16000);
+  audio.chunks = [];
+  const wav = float32ToWavPcm16(samples, 16000);
+  audio.lastWav = wav;
+  el('asr-out').textContent = '正在转写 ' + (wav.byteLength / 32000).toFixed(1) + ' 秒音频…';
+  const response = await fetch(apiUrl('chunk?language=') + encodeURIComponent(el('language').value), {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/octet-stream' }, HEADER),
+    body: wav,
+  });
+  const data = await response.json().catch(() => ({ ok: false, error: 'bad-response' }));
+  if (!data.ok) {
+    el('asr-out').textContent = '转写失败：' + (data.error || response.status) + (data.detail ? ' —— ' + data.detail : '');
+    el('diag-asr').textContent = '失败：' + (data.error || response.status);
+    return;
+  }
+  state.lastAsr = data.text || '';
+  el('asr-out').textContent = state.lastAsr === '' ? '(识别结果为空 —— 多半是这一段里没有人声)' : state.lastAsr;
+  el('to-frame').disabled = state.lastAsr === '';
+  el('diag-asr').textContent = (data.seconds || 0) + ' 秒音频 / 推理 ' + (data.inferenceSeconds || 0).toFixed(2) +
+    ' 秒 / 端到端 ' + String(data.wallMs || 0) + ' ms';
+}
+
+/* ------------------------------------------------------------ 录音笔实时跟随 */
+
+/**
+ * 腾讯会议「录音笔」写出来的是 ADTS AAC：32 kHz / 单声道 / 每帧 512 字节 / 每帧 1024 采样
+ * ⇒ 每秒正好 16000 字节。于是「文件长到多少字节」就能换算成「录到第几秒」。
+ *
+ * 这个跟随器的全部原理：定时去读文件**新增的那一段**，凑够一整片就交给
+ * /lecture/chunk 转写、再把文字喂给 /lecture/feed —— 后面的提醒、滚动小结、
+ * 秒答、课后笔记全都复用听课台已有的那条链路。
+ *
+ * 实测：录音开始 12 分钟后，文件大小与「已录时长 × 16000」只差 8191 字节（约 0.5 秒），
+ * 也就是说腾讯会议几乎是实时落盘的，所以这条路的延迟只有「切片秒数 + 推理 0.4 秒」。
+ */
+const RECORDER_BYTES_PER_SECOND = 16000;
+const RECORDER_READ_BYTES = 1 << 20; // 一次最多读 1 MiB（64 秒），足够追平
+
+const follow = {
+  timer: null,
+  ctx: null,
+  items: [],
+  skipped: 0,
+  session: '',
+  name: '',
+  offset: 0,
+  pending: new Uint8Array(0),
+  slices: 0,
+  chars: 0,
+  busy: false,
+};
+
+function formatBytes(size) {
+  const value = Number(size) || 0;
+  if (value < 1024) return String(value) + ' B';
+  if (value < 1024 * 1024) return (value / 1024).toFixed(0) + ' KB';
+  return (value / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+function followContext() {
+  if (follow.ctx === null) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    // 请求 16 kHz：decodeAudioData 会顺手把 32 kHz 的录音重采样成我们要的采样率
+    follow.ctx = new Ctor({ sampleRate: 16000 });
+  }
+  return follow.ctx;
+}
+
+/** 扫一遍录音目录，把「能被逐帧切片」的文件填进下拉框（按 mtime 倒序，最新的在最前）。 */
+async function loadRecordings() {
+  const result = await getJson('recording/list');
+  const data = result.data || {};
+  const select = el('rec-file');
+  select.innerHTML = '';
+  const all = Array.isArray(data.items) ? data.items : [];
+  // 实时跟随要从任意偏移只解「新增的完整帧」⇒ 只认 ADTS（.aac）；
+  // m4a/wemta 是别的容器，选它也一个字都出不来，不如不列。
+  // 宿主新版会给每项带 adts 标记；万一还是旧宿主（没重启），就退回按后缀判断。
+  const keepAdts = (item) => item.adts === true
+    || (item.adts === undefined && /\.aac$/i.test(String(item.name || '')));
+  follow.items = all.filter(keepAdts);
+  follow.skipped = all.length - follow.items.length;
+  const skippedNote = follow.skipped > 0
+    ? '（另有 ' + String(follow.skipped) + ' 个 .m4a/.wemta 没列出来：实时跟随只支持 .aac）'
+    : '';
+  if (follow.items.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = data.configured === true ? '（这个目录里没有可跟随的 .aac 文件）' : '（没有配录音目录）';
+    select.appendChild(option);
+    el('rec-stat').textContent = data.configured === true
+      ? '录音目录 ' + String(data.dir || '') + ' 里没有可跟随的 .aac 文件 —— 要等腾讯会议开了「录音笔」才会出现。' + skippedNote
+      : '没配 recordingDir（配置项留空会关掉录音导入）。';
+    return;
+  }
+  for (const item of follow.items) {
+    const option = document.createElement('option');
+    option.value = item.session + '|' + item.name;
+    option.textContent = item.session + ' / ' + item.name + '（' + formatBytes(item.size) + '）';
+    select.appendChild(option);
+  }
+  el('rec-stat').textContent = '扫到 ' + String(follow.items.length) + ' 个可跟随的 .aac 文件，最新的一个：'
+    + follow.items[0].session + skippedNote;
+}
+
+function pickedRecording() {
+  const value = String(el('rec-file').value || '');
+  const index = value.indexOf('|');
+  if (index < 0) return null;
+  const session = value.slice(0, index);
+  const name = value.slice(index + 1);
+  for (const item of follow.items) {
+    if (item.session === session && item.name === name) return item;
+  }
+  return null;
+}
+
+async function readRecordingRange(offset, maxBytes) {
+  const url = API + '/recording/file?session=' + encodeURIComponent(follow.session)
+    + '&name=' + encodeURIComponent(follow.name)
+    + '&offset=' + String(offset)
+    + '&maxBytes=' + String(maxBytes);
+  const response = await fetch(url, { cache: 'no-store', headers: HEADER });
+  if (!response.ok) throw new Error('读取录音失败 HTTP ' + String(response.status));
+  const buffer = await response.arrayBuffer();
+  return { bytes: new Uint8Array(buffer), size: Number(response.headers.get('X-Study-Size') || 0) };
+}
+
+async function transcribeSlice(bytes) {
+  const copy = new Uint8Array(bytes.length);
+  copy.set(bytes);
+  const decoded = await followContext().decodeAudioData(copy.buffer);
+  let samples = decoded.getChannelData(0);
+  if (decoded.sampleRate !== 16000) samples = resampleLinear(samples, decoded.sampleRate, 16000);
+  const wav = float32ToWavPcm16(samples, 16000);
+  const started = performance.now();
+  const response = await fetch(API + '/chunk?language=zh', {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/octet-stream' }, HEADER),
+    body: wav,
+  });
+  const payload = await response.json();
+  return { ok: payload.ok === true, payload, wall: performance.now() - started, seconds: samples.length / 16000 };
+}
+
+function setFollowStat(size) {
+  const unread = Math.max(0, (Number(size || 0) - follow.offset) / RECORDER_BYTES_PER_SECOND);
+  const buffered = follow.pending.length / RECORDER_BYTES_PER_SECOND;
+  el('rec-stat').textContent = '已读 ' + formatBytes(follow.offset)
+    + '（约 ' + String(Math.round(follow.offset / RECORDER_BYTES_PER_SECOND)) + ' 秒音频）'
+    + '、转写 ' + String(follow.slices) + ' 片 / ' + String(follow.chars) + ' 字'
+    + '；还没读 ' + unread.toFixed(1) + ' 秒、积压待转写 ' + buffered.toFixed(1) + ' 秒。';
+}
+
+/** 转写一片录音并把文字喂进听课台；返回 false 表示这一片没成（调用方应当停手）。 */
+async function transcribeAndFeed(bytes) {
+  const result = await transcribeSlice(bytes);
+  if (result.ok !== true) {
+    say('录音笔：这一片没识别成（' + String(result.payload.error || '')
+      + (result.payload.reason ? ' / ' + String(result.payload.reason) : '') + '）。', 'bad');
+    return false;
+  }
+  follow.slices += 1;
+  const text = String(result.payload.text || '');
+  follow.chars += text.length;
+  if (text !== '') {
+    await feed(text, '录音笔', 'mic');
+  } else {
+    say('录音笔：这一片 ' + result.seconds.toFixed(1) + ' 秒里没有人声。（'
+      + String(Math.round(result.wall)) + ' ms）', 'warn');
+  }
+  return true;
+}
+
+/** 一次跟随：读新增字节 → 凑片 → 转写 → 喂进听课台。失败只提示，不停会话。 */
+async function followTick() {
+  if (follow.busy || follow.name === '') return;
+  follow.busy = true;
+  try {
+    const listed = await getJson('recording/list');
+    const items = listed.data && Array.isArray(listed.data.items) ? listed.data.items : [];
+    const current = items.find((item) => item.session === follow.session && item.name === follow.name) || null;
+    if (current === null) {
+      say('录音文件不见了（' + follow.name + '），跟随停了；这节课还在，可以手动粘贴继续。', 'bad');
+      stopFollowing();
+      return;
+    }
+    const size = Number(current.size || 0);
+    if (size <= follow.offset) {
+      setFollowStat(size);
+      return;
+    }
+    const read = await readRecordingRange(follow.offset, Math.min(RECORDER_READ_BYTES, size - follow.offset));
+    follow.offset += read.bytes.length;
+
+    const merged = new Uint8Array(follow.pending.length + read.bytes.length);
+    merged.set(follow.pending, 0);
+    merged.set(read.bytes, follow.pending.length);
+
+    const chunkSeconds = Number(el('rec-chunk').value) || 8;
+    const perSliceSamples = chunkSeconds * 16000;
+    const split = splitFrames(merged, 0);
+    let index = 0;
+    let consumed = 0;
+    // 一次最多转写 4 片：直播时永远只有一片在路上，补录时能把积压按 4 倍速追完
+    let budget = 4;
+    while (budget > 0) {
+      const start = index;
+      let samples = 0;
+      while (index < split.frames.length && samples < perSliceSamples) {
+        samples += 1024;
+        index += 1;
+      }
+      if (samples < perSliceSamples) {
+        index = start; // 剩下的凑不满一整片，留到下次
+        break;
+      }
+      const lastFrame = split.frames[index - 1];
+      const to = lastFrame.offset + lastFrame.length;
+      const done = await transcribeAndFeed(merged.slice(split.frames[start].offset, to));
+      consumed = to;
+      budget -= 1;
+      if (done !== true) break;
+    }
+    // 一个字都不能丢：整帧没凑够时，要从第一个整帧处留起（不是 from split.rest）
+    if (consumed > 0) follow.pending = merged.slice(consumed);
+    else if (split.frames.length > 0) follow.pending = merged.slice(split.frames[0].offset);
+    else follow.pending = merged.slice(split.rest > merged.length ? merged.length : split.rest);
+    setFollowStat(size);
+  } catch (error) {
+    say('跟随出错了：' + String(error && error.message ? error.message : error), 'bad');
+  } finally {
+    follow.busy = false;
+  }
+}
+
+async function startFollowing() {
+  await loadRecordings();
+  const item = pickedRecording() || follow.items[0] || null;
+  if (item === null) {
+    say('没有可跟随的录音文件：先在腾讯会议里开「录音笔」，再点「重新扫描」。这节课可以先手动粘贴。', 'bad');
+    return false;
+  }
+  el('rec-file').value = item.session + '|' + item.name;
+  follow.session = item.session;
+  follow.name = item.name;
+  follow.pending = new Uint8Array(0);
+  follow.slices = 0;
+  follow.chars = 0;
+  const fromHead = el('rec-position').value === 'head';
+  follow.offset = fromHead ? 0 : Number(item.size || 0);
+  setFollowStat(Number(item.size || 0));
+  if (fromHead) {
+    say('从文件开头补录：' + item.name + '（' + formatBytes(item.size) + '），转写速度大约是实时的 20 倍。', 'ok');
+  } else {
+    say('从当前结尾开始跟随：' + item.name + '。老师说完大约 ' + String(Number(el('rec-chunk').value) || 8) + ' 秒后文字会出现在下面。', 'ok');
+  }
+  const period = (Number(el('rec-chunk').value) || 8) * 1000;
+  follow.timer = window.setInterval(() => { followTick().catch(() => {}); }, period);
+  followTick().catch(() => {});
+  return true;
+}
+
+function stopFollowing() {
+  if (follow.timer !== null) window.clearInterval(follow.timer);
+  follow.timer = null;
+  follow.session = '';
+  follow.name = '';
+  follow.pending = new Uint8Array(0);
+  follow.busy = false;
+  el('rec-stat').textContent = '没有在跟随。';
+}
+
+function syncRecorderRow() {
+  const on = el('source').value === 'recorder';
+  el('recorder-row').style.display = on ? 'flex' : 'none';
+  el('recorder-stat-row').style.display = on ? 'flex' : 'none';
+  if (on && follow.items.length === 0) loadRecordings().catch(() => {});
+}
+
+/* ------------------------------------------------------------ 启动 */
+
+async function boot() {
+  el('diag-url').textContent = location.href;
+  el('diag-api').textContent = API;
+  const remembered = window.localStorage.getItem('study-assistant.lecture.course');
+  if (remembered !== null) {
+    el('course').value = remembered;
+    const option = document.createElement('option');
+    option.value = remembered;
+    el('course-history').appendChild(option);
+  }
+
+  const health = await getJson('health');
+  if (health.data.ok !== true) {
+    say('读不到插件接口：' + String(health.status) + ' —— 宿主代码改过之后要重启 DSH。', 'bad');
+    return;
+  }
+  const lecture = health.data.lecture || {};
+  el('who').textContent = lecture.studentName ? lecture.studentName : '—';
+
+  const speech = health.data.speech || {};
+  state.speechReady = speech.available === true;
+  if (state.speechReady) {
+    const provider = (speech.providers || [])[0] || {};
+    el('speech-state').className = 'banner ok';
+    el('speech-state').textContent = '语音服务就绪：' + (provider.name || provider.id || '未知') +
+      '（' + (provider.location || '?') + '）';
+  } else {
+    el('speech-state').className = 'banner bad';
+    el('speech-state').textContent = '语音服务不可用：' + (speech.hint || '未启用语音实验包') + '（听课台不受影响）';
+  }
+
+  say('准备就绪。填课程名 → 文本来源选「录音笔实时跟随」→ 开始听课，就不用管了。', 'ok');
+  if (lecture.running === true) {
+    setRunning(true);
+    await refresh();
+    startPolling();
+  } else {
+    setRunning(false);
+  }
+  loadDevices();
+  syncRecorderRow();
+}
+
+el('start').addEventListener('click', () => { startSession().catch((error) => { say('开课异常：' + error, 'bad'); }); });
+el('stop').addEventListener('click', () => { stopSession().catch((error) => { say('结束异常：' + error, 'bad'); }); });
+el('source').addEventListener('change', syncRecorderRow);
+el('rec-reload').addEventListener('click', () => { loadRecordings().catch(() => {}); });
+el('feed').addEventListener('click', () => {
+  const box = el('frame');
+  const text = box.value;
+  if (text.trim() === '') {
+    say('粘贴框是空的。', 'bad');
+    return;
+  }
+  box.value = '';
+  feed(text, '手动粘贴').catch((error) => { say('喂文本异常：' + error, 'bad'); });
+});
+el('paste-clip').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    el('frame').value = text;
+    say('已从剪贴板取到 ' + String(text.length) + ' 个字符，点「追加这一帧」送进去。', 'ok');
+  } catch (error) {
+    say('读剪贴板失败：' + (error && error.message ? error.message : error) + '（可以直接手动粘贴）', 'bad');
+  }
+});
+el('refresh').addEventListener('click', () => { refresh().catch(() => {}); });
+el('rec-start').addEventListener('click', () => {
+  startRecording().catch((error) => { el('asr-out').textContent = '录音异常：' + error; });
+});
+el('rec-stop').addEventListener('click', () => {
+  stopRecording().catch((error) => { el('asr-out').textContent = '停止异常：' + error; });
+});
+el('to-frame').addEventListener('click', () => {
+  if (state.lastAsr === '') return;
+  el('frame').value = state.lastAsr;
+  say('已把转写结果放进粘贴框 —— 点「追加这一帧」才会进逐字稿。', 'ok');
+});
+
+window.addEventListener('beforeunload', () => { stopPolling(); });
+
+boot().catch((error) => { say('初始化失败：' + error, 'bad'); });
+</script>
+</body>
+</html>

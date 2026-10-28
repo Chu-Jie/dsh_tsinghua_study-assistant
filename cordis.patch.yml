@@ -1,0 +1,17 @@
+# 学习台插件在 profile 里的装载行。
+#
+# ⚠️ dataDir 要么不写（默认 `$HOME/study-assistant-data`），要么写**绝对路径**。
+#    踩过的坑：写相对路径 `学习台` 时，宿主进程的 cwd 不是工作区，插件会在
+#    cwd 下另建一套空数据，真正的工作区数据完全没被读到（表现为界面全是空的）。
+#    用正斜杠可避免 YAML 里的反斜杠转义歧义。
+#
+# 这里故意不放 dataDir：默认值按用户主目录推导，任何机器开箱可用；
+# 想让数据落在作业工作区旁边（例如 `<工作区>/学习台`）时，在插件设置页或下面
+# 的 config 里显式配绝对路径即可。
+- insert:
+    - id: study-assistant
+      name: 'dsh-study-assistant'
+      config:
+        locale: zh
+        gpaMode: 4.0-weighted
+        backupKeep: 10

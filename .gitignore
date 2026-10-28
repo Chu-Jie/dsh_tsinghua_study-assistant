@@ -1,0 +1,33 @@
+# 依赖
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 运行期数据：插件默认把数据目录放在 ~/study-assistant-data/，但作者本地常常
+# 直接指向仓库旁边的目录，别把这类真实数据提交上来。
+study-assistant-data/
+data/
+*.local.json
+
+# 听课/录音产物与临时中间物
+_recordings/
+*.aac
+*.m4a
+*.wemta
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+*.bak-*
+npx-debug*
+.dsh/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 解包/抓包留下的临时目录（只忽略仓库根的探针；tools/ 下的探测脚本是正式产物，要提交）
+_dsh3-src/
+_tmp*/
+/probe-*.mjs

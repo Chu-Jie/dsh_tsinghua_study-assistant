@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="大学生学习辅助系统">
+  <g fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="10" y="16" width="44" height="34" rx="5" />
+    <path d="M10 27h44" />
+    <path d="M22 16V9" />
+    <path d="M42 16V9" />
+  </g>
+  <g fill="currentColor">
+    <rect x="17" y="33" width="8" height="5" rx="1.5" />
+    <rect x="28" y="33" width="8" height="5" rx="1.5" />
+    <rect x="39" y="33" width="8" height="5" rx="1.5" />
+    <rect x="17" y="41" width="8" height="5" rx="1.5" />
+    <rect x="28" y="41" width="19" height="5" rx="1.5" />
+  </g>
+</svg>

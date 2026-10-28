@@ -1,0 +1,81 @@
+{
+  "name": "dsh-study-assistant",
+  "version": "1.0.0",
+  "description": "DSH 学习台插件：课表、DDL、成绩与 GPA 面板，网络学堂同步、课堂听课提醒、知识点网络与课程资料检索。",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "study-assistant",
+    "course-schedule",
+    "homework",
+    "learning"
+  ],
+  "homepage": "https://github.com/Chu-Jie/dsh_tsinghua_study-assist#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chu-Jie/dsh_tsinghua_study-assist.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Chu-Jie/dsh_tsinghua_study-assist/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./core": "./lib/core.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "client.full.js",
+    "client.skeleton.js",
+    "cordis.patch.yml",
+    "lib/*.js",
+    "lib/lecture/*.js",
+    "lib/lecture/*.html",
+    "vendor/pdfjs/*.mjs",
+    "vendor/pdfjs/LICENSE",
+    "locale/*.json",
+    "docs/*.md",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "大学生学习辅助系统",
+    "description": "课表、DDL 汇总、成绩与 GPA 一体的学习台面板，并作为工具供会话调用。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "verify:dsh": "node tools/verify-tool-output.mjs && node tools/verify-slot-dispatch.mjs && node tools/audit-theme-tokens.mjs",
+    "verify:installed": "node tools/verify-installed.mjs",
+    "panel:smoke": "node tools/panel-smoke.mjs",
+    "kp-notes:export": "node tools/kp-notes-export.mjs",
+    "knowledge:weave": "node tools/knowledge-weave.mjs",
+    "knowledge:outline": "node tools/knowledge-outline.mjs",
+    "knowledge:audit": "node tools/knowledge-audit.mjs",
+    "homework:split": "node tools/split-homework.mjs",
+    "analysis": "node tools/analysis.mjs",
+    "analysis:validate": "node tools/analysis.mjs --validate",
+    "analysis:init": "node tools/analysis.mjs --init"
+  }
+}

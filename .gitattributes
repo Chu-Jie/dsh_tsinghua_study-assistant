@@ -1,0 +1,12 @@
+# 统一换行：源码与文档一律 LF（Windows 上 checkout 也保持 LF，避免整仓 CRLF 噪音）
+* text=auto eol=lf
+
+# 二进制资源不参与换行转换 / diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.zst binary

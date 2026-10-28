@@ -1,0 +1,45 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # 插件零依赖、零编译：装上就能跑测试，不需要 npm install
+      - name: 运行测试
+        run: npm test
+
+  # 跨平台可移植性：作者只在 Windows 上验证过，这里把 Linux 结果作为参考信息跑出来。
+  # 允许失败（continue-on-error），避免第一次推送就因为平台差异把 CI 弄红；
+  # 真出现系统性失败时再按报错修。
+  portability:
+    name: 可移植性参考 · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: 运行测试（仅供参考）
+        run: npm test

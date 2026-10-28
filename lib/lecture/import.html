@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>录音导入 · 识别率实测</title>
+<style>
+  :root { --line: #e3e5ea; --fg: #1c1e21; --dim: #6b7280; --accent: #2f6feb; --bad: #c0392b; --ok: #1e7f4f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 18px; font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: var(--fg); background: #f6f7f9; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .lead { color: var(--dim); margin: 0 0 16px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+  label { color: var(--dim); }
+  select, input[type=number], input[type=text], textarea { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--fg); }
+  select { max-width: 46vw; }
+  input[type=number] { width: 90px; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .say { margin-top: 6px; color: var(--dim); white-space: pre-wrap; }
+  .say.bad { color: var(--bad); }
+  .say.ok { color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 6px; text-align: left; vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; white-space: nowrap; }
+  td.text { min-width: 40%; }
+  .mono { font-family: Consolas, "Cascadia Mono", monospace; }
+  textarea { width: 100%; }
+  dl.kv { display: grid; grid-template-columns: 180px 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+  dl.kv dt { color: var(--dim); }
+  dl.kv dd { margin: 0; word-break: break-all; }
+  .lite { color: var(--dim); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<h1>录音导入 · 识别率实测</h1>
+<p class="lead">把腾讯会议「录音笔」留下的音频按时间切片喂给本地 SenseVoice，量出这台机器在真实课堂音频上的识别率。
+页面自己解码（Chromium 自带 AAC 解码器），宿主只负责吐字节。</p>
+
+<section class="card">
+  <div class="row">
+    <label>录音</label>
+    <select id="pick"></select>
+    <button id="reload">重新扫描</button>
+  </div>
+  <div class="row">
+    <label>起始位置</label><input id="startSec" type="number" value="0" min="0" step="5"><span class="lite">秒</span>
+    <label>本次处理</label>
+    <select id="takeSec">
+      <option value="30">30 秒</option>
+      <option value="60" selected>60 秒</option>
+      <option value="180">3 分钟</option>
+      <option value="300">5 分钟</option>
+      <option value="0">直到文件末尾</option>
+    </select>
+    <label>切片</label>
+    <select id="sliceSec">
+      <option value="8">8 秒</option>
+      <option value="15" selected>15 秒</option>
+      <option value="30">30 秒</option>
+    </select>
+    <label>语种</label>
+    <select id="lang">
+      <option value="auto" selected>自动</option>
+      <option value="zh">中文</option>
+      <option value="en">英语</option>
+    </select>
+    <label>增益</label>
+    <select id="gain">
+      <option value="1" selected>原始</option>
+      <option value="4">4×</option>
+      <option value="16">16×</option>
+      <option value="auto">自动归一化到 -3 dB</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="run" class="primary">开始导入并识别</button>
+    <button id="stop" disabled>停止</button>
+    <button id="clearRows">清空表格</button>
+    <label class="lite"><input type="checkbox" id="scanOnly"> 只扫电平不识别（可以几分钟扫完整个文件）</label>
+  </div>
+  <div id="status" class="say">先点「重新扫描」，选中一条录音，再点开始。</div>
+</section>
+
+<section class="card">
+  <h2>分片结果</h2>
+  <table>
+    <thead>
+      <tr><th>位置</th><th>峰值</th><th>均方根</th><th>有声占比</th><th>字数</th><th>推理</th><th>端到端</th><th>实时率</th><th class="text">识别文本</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="lite" id="summary">还没有结果。</p>
+</section>
+
+<section class="card">
+  <h2>合并文本</h2>
+  <div class="row">
+    <button id="copyAll">复制全部</button>
+    <button id="clearAll">清空</button>
+    <span class="lite" id="counts">0 字</span>
+  </div>
+  <textarea id="all" rows="10" placeholder="识别的文字会累积到这里"></textarea>
+</section>
+
+<section class="card">
+  <h2>接着测试提醒链路</h2>
+  <p class="lite">把上面的文字按片段喂给听课台，就能在没有真实教室的情况下试点名/提问提醒。</p>
+  <div class="row">
+    <label>课程名</label><input id="course" type="text" value="数据结构" size="18">
+    <button id="feed">开始一节课并把文字喂进去</button>
+    <a href="./panel" target="_blank" rel="noreferrer">打开听课台 ↗</a>
+    <span class="lite" id="feedSay"></span>
+  </div>
+</section>
+
+<section class="card">
+  <h2>排障信息</h2>
+  <dl class="kv" id="diag"></dl>
+</section>
+
+<script type="module">
+import { float32ToWavPcm16, levelPercent } from './wav.js';
+import { inspectAdts, splitFrames } from './adts.js';
+
+// 页面挂在 /lecture/import 上，所以相对路径天然落在同一前缀下。
+var BASE = new URL('./recording/list', location.href).pathname.replace(/\/recording\/list$/, '');
+var LIST_URL = BASE + '/recording/list';
+var FILE_URL = BASE + '/recording/file';
+var CHUNK_URL = BASE + '/chunk';
+var FEED_URL = BASE + '/feed';
+var START_URL = BASE + '/session/start';
+var HEADER = { 'X-Study-Request': '1' };
+
+// 录音笔的音频是 32 kHz 单声道 ADPCM…不，是 ADTS AAC：1024 采样一帧、512 字节一帧
+// ⇒ 每秒正好 31.25 帧 = 16000 字节。用它把「秒」换算成字节偏移（再对齐到帧边界）。
+var NOMINAL_BYTES_PER_SECOND = 16000;
+var SAMPLE_RATE = 32000;
+var SAMPLES_PER_SECOND = SAMPLE_RATE;
+var MAX_SLICE_SAMPLES = 30 * SAMPLES_PER_SECOND;
+
+var el = function (id) { return document.getElementById(id); };
+var state = { items: [], running: false, stop: false, chars: 0, slices: 0, okSlices: 0, emptySlices: 0, audioContext: null, diag: {} };
+
+function say(text, kind) {
+  var box = el('status');
+  box.textContent = text;
+  box.className = 'say' + (kind ? ' ' + kind : '');
+}
+
+function diag(key, value) {
+  state.diag[key] = value;
+  var dl = el('diag');
+  dl.textContent = '';
+  Object.keys(state.diag).forEach(function (k) {
+    var dt = document.createElement('dt');
+    dt.textContent = k;
+    var dd = document.createElement('dd');
+    dd.textContent = String(state.diag[k]);
+    dl.appendChild(dt);
+    dl.appendChild(dd);
+  });
+}
+
+function bytesForSeconds(seconds) {
+  // 对齐到 512 字节的帧边界，免得一上来就落在帧中间（splitFrames 也能自己重新同步，
+  // 但少一次重同步就少丢一帧）。
+  var frames = Math.floor((seconds * NOMINAL_BYTES_PER_SECOND) / 512);
+  return frames * 512;
+}
+
+function formatBytes(size) {
+  if (size >= 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB';
+  if (size >= 1024) return (size / 1024).toFixed(0) + ' KB';
+  return size + ' B';
+}
+
+function formatClock(seconds) {
+  var s = Math.max(0, Math.round(seconds));
+  var m = Math.floor(s / 60);
+  var rest = s % 60;
+  return (m < 10 ? '0' : '') + m + ':' + (rest < 10 ? '0' : '') + rest;
+}
+
+async function loadList() {
+  el('pick').textContent = '';
+  say('正在扫描录音目录…');
+  var response;
+  try {
+    response = await fetch(LIST_URL, { headers: HEADER });
+  } catch (error) {
+    say('扫描失败：' + error.message, 'bad');
+    return;
+  }
+  var data = await response.json();
+  diag('录音目录', data.recordingDir === null ? '（没配置）' : data.recordingDir);
+  diag('目录状态', data.exists ? '存在' : '不存在（' + (data.error || 'no-dir') + '）');
+  state.items = Array.isArray(data.items) ? data.items : [];
+  diag('扫到文件', state.items.length + ' 个');
+
+  if (state.items.length === 0) {
+    say('这家目录里还没有音频。先在腾讯会议里开一次录音笔，录完再来。', 'bad');
+    return;
+  }
+  state.items.forEach(function (item) {
+    var option = document.createElement('option');
+    option.value = item.session + '\u0000' + item.name;
+    option.textContent = item.session + ' / ' + item.name + '（' + formatBytes(item.size) + '）';
+    el('pick').appendChild(option);
+  });
+  el('pick').selectedIndex = 0;
+  say('扫到 ' + state.items.length + ' 个录音文件，选一条开始。');
+}
+
+function currentItem() {
+  var index = el('pick').selectedIndex;
+  if (index < 0 || index >= state.items.length) return null;
+  return state.items[index];
+}
+
+async function readRange(item, offset, maxBytes) {
+  var url = FILE_URL
+    + '?session=' + encodeURIComponent(item.session)
+    + '&name=' + encodeURIComponent(item.name)
+    + '&offset=' + offset
+    + '&maxBytes=' + maxBytes;
+  var response = await fetch(url, { headers: HEADER });
+  if (!response.ok) throw new Error('读取录音失败 HTTP ' + response.status);
+  var buffer = await response.arrayBuffer();
+  return {
+    bytes: new Uint8Array(buffer),
+    end: Number(response.headers.get('X-Study-End') || 0),
+    size: Number(response.headers.get('X-Study-Size') || 0),
+    eof: response.headers.get('X-Study-Eof') === '1',
+  };
+}
+
+function peakDb(samples) {
+  var peak = 0;
+  for (var i = 0; i < samples.length; i += 1) {
+    var value = samples[i] < 0 ? -samples[i] : samples[i];
+    if (value > peak) peak = value;
+  }
+  return peak === 0 ? -Infinity : 20 * Math.log10(peak);
+}
+
+/**
+ * 均方根（dBFS）。
+ *
+ * 比峰值有用得多：峰值只说明「某一瞬间有多响」（一次椅子响、一声咳嗽就能到 -3 dB），
+ * 均方根才说明**这一片整体有没有连续的人声**。判断「老师到底有没有被录进来」看它。
+ */
+function rmsDb(samples) {
+  if (samples.length === 0) return -Infinity;
+  var sum = 0;
+  for (var i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
+  var value = Math.sqrt(sum / samples.length);
+  return value === 0 ? -Infinity : 20 * Math.log10(value);
+}
+
+/**
+ * 增益。
+ *
+ * 固定倍数直接乘；`auto` 把峰值抬到 -3 dBFS（上限 64×，免得把纯噪声也放大成一片轰鸣）。
+ * 已经超过 ±1 的样本会夹住，不会绕回反向爆音。
+ */
+function applyGain(samples, mode) {
+  if (mode === '1' || samples.length === 0) return samples;
+  var factor;
+  if (mode === 'auto') {
+    var peak = 0;
+    for (var i = 0; i < samples.length; i += 1) {
+      var value = samples[i] < 0 ? -samples[i] : samples[i];
+      if (value > peak) peak = value;
+    }
+    if (peak <= 0) return samples;
+    factor = Math.min(64, 0.7079 / peak);
+  } else {
+    factor = Number(mode) || 1;
+  }
+  var out = new Float32Array(samples.length);
+  for (var j = 0; j < samples.length; j += 1) {
+    var scaled = samples[j] * factor;
+    out[j] = scaled > 1 ? 1 : (scaled < -1 ? -1 : scaled);
+  }
+  return out;
+}
+
+/** 有多少比例的 1024 采样窗口「像人声」：窗口峰值高于 -50 dBFS 就算。 */
+function voicedRatio(samples) {
+  if (samples.length === 0) return 0;
+  var window = 1024;
+  var voiced = 0;
+  var total = 0;
+  for (var start = 0; start < samples.length; start += window) {
+    var peak = 0;
+    var end = Math.min(start + window, samples.length);
+    for (var i = start; i < end; i += 1) {
+      var value = samples[i] < 0 ? -samples[i] : samples[i];
+      if (value > peak) peak = value;
+    }
+    total += 1;
+    if (peak > 0.00316) voiced += 1; // -50 dBFS
+  }
+  return total === 0 ? 0 : voiced / total;
+}
+
+function audioContext() {
+  if (state.audioContext === null) {
+    // 请求 16 kHz：decodeAudioData 会顺手把 32 kHz 的录音重采样成我们需要的采样率。
+    state.audioContext = new AudioContext({ sampleRate: 16000 });
+  }
+  return state.audioContext;
+}
+
+async function decodeFrames(frameBytes) {
+  var copy = new Uint8Array(frameBytes.length);
+  copy.set(frameBytes);
+  var decoded = await audioContext().decodeAudioData(copy.buffer);
+  return { samples: decoded.getChannelData(0), seconds: decoded.duration };
+}
+
+function addRow(info) {
+  var tr = document.createElement('tr');
+  var cells = [
+    info.position,
+    info.peak,
+    info.rms,
+    info.voiced,
+    info.chars,
+    info.inference,
+    info.wall,
+    info.rate,
+  ];
+  cells.forEach(function (value) {
+    var td = document.createElement('td');
+    td.textContent = value;
+    tr.appendChild(td);
+  });
+  var td = document.createElement('td');
+  td.className = 'text';
+  td.textContent = info.text === '' ? '（空）' : info.text;
+  tr.appendChild(td);
+  el('rows').appendChild(tr);
+}
+
+function appendText(text) {
+  if (text === '') return;
+  var box = el('all');
+  box.value = box.value === '' ? text : box.value + '\n' + text;
+  box.scrollTop = box.scrollHeight;
+  state.chars += text.length;
+  el('counts').textContent = state.chars + ' 字';
+}
+
+async function run() {
+  var item = currentItem();
+  if (item === null) { say('先选一条录音。', 'bad'); return; }
+  if (state.running) return;
+
+  state.running = true;
+  state.stop = false;
+  el('run').disabled = true;
+  el('stop').disabled = false;
+
+  var sliceSeconds = Number(el('sliceSec').value);
+  var sliceSamples = Math.min(sliceSeconds * SAMPLES_PER_SECOND, MAX_SLICE_SAMPLES);
+  var takeSeconds = Number(el('takeSec').value);
+  var takeSamples = takeSeconds > 0 ? takeSeconds * SAMPLES_PER_SECOND : Infinity;
+  var language = el('lang').value;
+  var startOffset = bytesForSeconds(Number(el('startSec').value) || 0);
+
+  var pending = new Uint8Array(0);   // 还没凑成完整帧的尾巴
+  var offset = startOffset;          // 下一次要从文件的哪个字节继续读
+  var consumedBytes = 0;             // 已处理的字节（相对 startOffset）
+  var doneSamples = 0;               // 已识别的采样数
+
+  try {
+    diag('起点偏移', offset + ' 字节（约 ' + formatClock(offset / NOMINAL_BYTES_PER_SECOND) + '）');
+    while (!state.stop && doneSamples < takeSamples) {
+      var wantBytes = Math.ceil((sliceSamples / SAMPLES_PER_SECOND) * NOMINAL_BYTES_PER_SECOND) + 8192;
+      var read = await readRange(item, offset, Math.max(pending.length + 4096, wantBytes));
+      if (read.size > 0) diag('文件大小', formatBytes(read.size));
+      var joined = new Uint8Array(pending.length + read.bytes.length);
+      joined.set(pending, 0);
+      joined.set(read.bytes, pending.length);
+      offset = read.end;
+
+      var split = splitFrames(joined, 0);
+      if (split.frames.length === 0) {
+        pending = joined;
+        if (read.eof) break;
+        say('这一片没凑出完整帧（已读 ' + formatBytes(offset) + '），继续读。');
+        continue;
+      }
+      var format = inspectAdts(joined);
+      if (format.ok) diag('音频格式', format.sampleRate + ' Hz / ' + format.channels + ' 声道 / 每帧 ' + (split.frames[0].length) + ' 字节');
+
+      // 攒够一片（或到文件末尾）就解码识别
+      var samplesInFrames = 0;
+      var lastFrame = -1;
+      for (var i = 0; i < split.frames.length; i += 1) {
+        if (samplesInFrames >= sliceSamples) break;
+        samplesInFrames += 1024;
+        lastFrame = i;
+      }
+      if (lastFrame < 0) {
+        pending = joined.slice(split.rest);
+        continue;
+      }
+      if (samplesInFrames < sliceSamples && !read.eof) {
+        // 还没攒够一片，而且文件还有后续：留着下次一起解
+        pending = joined;
+        continue;
+      }
+
+      var last = split.frames[lastFrame];
+      var end = last.offset + last.length;
+      var sliceBytes = joined.slice(0, end);
+      pending = joined.slice(split.rest > end ? split.rest : end);
+
+      var decoded;
+      try {
+        decoded = await decodeFrames(sliceBytes);
+      } catch (error) {
+        say('解码失败（' + error.message + '）。这一片 ' + formatBytes(sliceBytes.length)
+          + '，如果是第一片就失败，说明这个容器 Chromium 解不开，得换条路。', 'bad');
+        break;
+      }
+
+      var samples = applyGain(decoded.samples, el('gain').value);
+      var peak = peakDb(samples);
+      var rms = rmsDb(samples);
+      var voiced = voicedRatio(samples);
+      var seconds = samples.length / 16000;
+      var position = formatClock((consumedBytes + sliceBytes.length) / NOMINAL_BYTES_PER_SECOND + startOffset / NOMINAL_BYTES_PER_SECOND);
+      var level = {
+        // 位置后面挂上「解出多少秒」：解码器要是只吐了一小段，峰值和字数都会骗人
+        position: position + ' · 解出 ' + seconds.toFixed(1) + ' 秒',
+        peak: peak === -Infinity ? '-∞' : peak.toFixed(1) + ' dB',
+        rms: rms === -Infinity ? '-∞' : rms.toFixed(1) + ' dB',
+        voiced: (voiced * 100).toFixed(0) + '%',
+      };
+
+      // 只扫电平：整节课的电平画像不需要识别，跳过推理能快两个数量级。
+      if (el('scanOnly').checked) {
+        state.slices += 1;
+        addRow(Object.assign({ chars: '—', inference: '—', wall: '—', rate: '—', text: '（只扫电平）' }, level));
+        consumedBytes += sliceBytes.length;
+        doneSamples += samples.length;
+        el('summary').textContent = '已扫 ' + state.slices + ' 片（' + formatClock(doneSamples / 16000) + ' 音频）。';
+        say('扫电平中… ' + formatClock(doneSamples / 16000) + '，峰值 ' + level.peak + '、均方根 ' + level.rms + '、有声 ' + level.voiced);
+        if (read.eof) break;
+        continue;
+      }
+
+      var wav = float32ToWavPcm16(samples, 16000);
+      var started = performance.now();
+      var response = await fetch(CHUNK_URL + '?language=' + encodeURIComponent(language), {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/octet-stream' }, HEADER),
+        body: wav,
+      });
+      var wall = performance.now() - started;
+      var payload = await response.json();
+
+      if (!response.ok || payload.ok !== true) {
+        state.emptySlices += 1;
+        addRow(Object.assign({ chars: '—', inference: '—', wall: Math.round(wall) + ' ms', rate: '—',
+          text: '❌ ' + (payload.error || 'HTTP ' + response.status) + (payload.reason ? ' / ' + payload.reason : '') }, level));
+        say('识别失败：' + (payload.error || response.status) + '；已停止。', 'bad');
+        break;
+      }
+
+      var text = String(payload.text || '');
+      state.slices += 1;
+      if (text === '') state.emptySlices += 1; else state.okSlices += 1;
+      addRow(Object.assign({
+        chars: String(text.length),
+        inference: Number(payload.inferenceSeconds || 0).toFixed(2) + ' 秒',
+        wall: Math.round(wall) + ' ms',
+        rate: Number(payload.inferenceSeconds || 0) > 0 && seconds > 0
+          ? (seconds / Number(payload.inferenceSeconds)).toFixed(1) + ' 倍'
+          : '—',
+        text: text,
+      }, level));
+      appendText(text);
+      consumedBytes += sliceBytes.length;
+      doneSamples += samples.length;
+      el('summary').textContent = '已处理 ' + state.slices + ' 片（' + formatClock(doneSamples / 16000) + ' 音频），'
+        + '有文字 ' + state.okSlices + ' 片、空 ' + state.emptySlices + ' 片。';
+      say('识别中… 已处理 ' + state.slices + ' 片，' + formatClock(doneSamples / 16000) + '（峰值 '
+        + (peak === -Infinity ? '-∞' : peak.toFixed(1) + ' dB') + '，有声 ' + (voiced * 100).toFixed(0) + '%）');
+      if (read.eof) break;
+    }
+    if (state.stop) say('已停止。处理了 ' + state.slices + ' 片。');
+    else say('做完了：' + state.slices + ' 片，有文字 ' + state.okSlices + ' 片、空 ' + state.emptySlices + ' 片。看上面的表格判断识别率。', 'ok');
+  } catch (error) {
+    say('出错了：' + (error && error.message ? error.message : error), 'bad');
+  } finally {
+    state.running = false;
+    el('run').disabled = false;
+    el('stop').disabled = true;
+  }
+}
+
+async function feedToLecture() {
+  var text = el('all').value.trim();
+  if (text === '') { el('feedSay').textContent = '先把文字识别出来。'; return; }
+  var course = el('course').value.trim() || '未命名课程';
+  el('feedSay').textContent = '正在开课…';
+  var started = await fetch(START_URL, {
+    method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, HEADER),
+    body: JSON.stringify({ course: course, source: 'paste' }),
+  }).then(function (r) { return r.json(); });
+  if (started.ok !== true) { el('feedSay').textContent = '开课失败：' + (started.error || '未知'); return; }
+
+  // 一句一句喂：逐字稿本来就是一段段来的，整篇一次塞进去反而测不出跨帧拼名。
+  var parts = text.split(/\n+/);
+  var alerts = 0;
+  for (var i = 0; i < parts.length; i += 1) {
+    var result = await fetch(FEED_URL, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, HEADER),
+      body: JSON.stringify({ text: parts[i], source: 'paste' }),
+    }).then(function (r) { return r.json(); });
+    if (result.ok === true && Array.isArray(result.alerts)) alerts += result.alerts.length;
+    el('feedSay').textContent = '已喂 ' + (i + 1) + '/' + parts.length + ' 段，提醒 ' + alerts + ' 条';
+  }
+  el('feedSay').textContent = '喂完了：' + parts.length + ' 段，共 ' + alerts + ' 条提醒。去听课台看。';
+}
+
+el('reload').addEventListener('click', function () { loadList(); });
+el('run').addEventListener('click', function () { run(); });
+el('stop').addEventListener('click', function () { state.stop = true; say('收到停止指令，等这一片做完…'); });
+el('clearRows').addEventListener('click', function () { el('rows').textContent = ''; el('summary').textContent = '还没有结果。'; });
+el('clearAll').addEventListener('click', function () { el('all').value = ''; state.chars = 0; el('counts').textContent = '0 字'; });
+el('copyAll').addEventListener('click', async function () {
+  try { await navigator.clipboard.writeText(el('all').value); say('已复制到剪贴板。', 'ok'); }
+  catch (error) { say('复制失败：' + error.message, 'bad'); }
+});
+el('feed').addEventListener('click', function () { feedToLecture(); });
+
+diag('页面地址', location.href);
+diag('接口前缀', BASE);
+diag('解码器', typeof AudioContext === 'undefined' ? '没有 AudioContext' : 'Chromium 自带');
+loadList();
+</script>
+</body>
+</html>
