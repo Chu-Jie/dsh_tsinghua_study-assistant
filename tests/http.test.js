@@ -1839,6 +1839,24 @@ test('网络学堂：/learn/renew 验活后才换 Cookie，失败时一个字都
 
 test('网络学堂：续期失败（浏览器说登不上）把原因透出来，不动配置', async () => {
   const browser = fakeLearnBrowser({ renew: { ok: false, reason: 'needs-manual-login' }, readCookie: { ok: false, reason: 'edge-idle' } });
+  // 续期失败后 handler 会「直连再问一次」（bareLearnCheck）。真去问学堂的话，
+  // 结果取决于跑测试的机器能不能连上 —— CI 上连不上会得到 alive:null，
+  // 本地连得上才得到 false。这里把 fetch 打成「登录超时」页，结论就固定了。
+  const realFetch = globalThis.fetch;
+  const staleLoginPage = {
+    status: 200,
+    ok: true,
+    url: 'https://learn.tsinghua.edu.cn/f/wlxt/index/course/student/',
+    headers: new Map(),
+    text: async () => '<html><title>登录超时</title></html>',
+    json: async () => null,
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : String(input?.url ?? '');
+    // 只拦学堂那条，测试自己访问本机 server 的请求照旧走真 fetch
+    if (url.includes('learn.tsinghua.edu.cn')) return staleLoginPage;
+    return realFetch(input, init);
+  };
   const server = await startServer({ learnBrowser: browser });
   const configPath = path.join(server.dir, '网络学堂.json');
   try {
@@ -1851,6 +1869,7 @@ test('网络学堂：续期失败（浏览器说登不上）把原因透出来�
     assert.equal(browser.calls.renew, 1);
     assert.equal(await fs.readFile(configPath, 'utf8'), JSON.stringify(LEARN_CONFIG_FIXTURE));
   } finally {
+    globalThis.fetch = realFetch;
     await server.close();
   }
 });
