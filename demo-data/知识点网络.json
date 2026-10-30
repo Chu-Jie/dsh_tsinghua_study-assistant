@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "id": "k_demo_1",
+      "name": "时间复杂度",
+      "courseId": "c_demo_ds",
+      "chapter": "第1章 绪论",
+      "section": "1.2",
+      "aliases": [],
+      "mastery": 2,
+      "marked": false,
+      "reviewedAt": null,
+      "note": "",
+      "evidence": [],
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "k_demo_2",
+      "name": "二分查找",
+      "courseId": "c_demo_ds",
+      "chapter": "第2章 向量",
+      "section": "2.6",
+      "aliases": [],
+      "mastery": 1,
+      "marked": false,
+      "reviewedAt": null,
+      "note": "",
+      "evidence": [],
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "k_demo_3",
+      "name": "电场强度",
+      "courseId": "c_demo_phy",
+      "chapter": "第1章 静电场",
+      "section": "1.2",
+      "aliases": [],
+      "mastery": 1,
+      "marked": false,
+      "reviewedAt": null,
+      "note": "",
+      "evidence": [],
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "k_demo_4",
+      "name": "电势",
+      "courseId": "c_demo_phy",
+      "chapter": "第2章 电势",
+      "section": "2.1",
+      "aliases": [],
+      "mastery": 0,
+      "marked": false,
+      "reviewedAt": null,
+      "note": "",
+      "evidence": [],
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    }
+  ],
+  "edges": [],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

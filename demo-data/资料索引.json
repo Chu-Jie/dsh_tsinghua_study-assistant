@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "数据结构（示例）/教材/数据结构示例教材.pdf",
+      "courseId": "c_demo_ds",
+      "kind": "textbook",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "数据结构（示例）/教材/ppt/L01.pptx",
+      "courseId": "c_demo_ds",
+      "kind": "material",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "数据结构（示例）/教材/ppt/L02.pptx",
+      "courseId": "c_demo_ds",
+      "kind": "material",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "数据结构（示例）/教材/ppt/L03.pptx",
+      "courseId": "c_demo_ds",
+      "kind": "material",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "大学物理（示例）/教材/大学物理示例教材.pdf",
+      "courseId": "c_demo_phy",
+      "kind": "textbook",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "大学物理（示例）/教材/ppt/L01.pptx",
+      "courseId": "c_demo_phy",
+      "kind": "material",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    },
+    {
+      "path": "大学物理（示例）/教材/ppt/L02.pptx",
+      "courseId": "c_demo_phy",
+      "kind": "material",
+      "textLayer": true,
+      "ocr": null,
+      "text": null
+    }
+  ],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "courses": [
+    {
+      "courseId": "c_demo_ds",
+      "name": "数据结构（示例）",
+      "book": "示例教材",
+      "chapters": [
+        {
+          "no": 1,
+          "title": "绪论",
+          "page": 1,
+          "sections": [
+            {
+              "no": "1.1",
+              "title": "算法",
+              "page": 2,
+              "subs": [
+                {
+                  "no": "1.1.1",
+                  "title": "示例小节",
+                  "page": 2
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "no": 2,
+          "title": "向量",
+          "page": 20,
+          "sections": [
+            {
+              "no": "2.6",
+              "title": "查找",
+              "page": 40,
+              "subs": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "courseId": "c_demo_phy",
+      "name": "大学物理B(2)（示例）",
+      "book": "示例教材",
+      "chapters": [
+        {
+          "no": 1,
+          "title": "静电场",
+          "page": 1,
+          "sections": [
+            {
+              "no": "1.2",
+              "title": "电场强度",
+              "page": 8,
+              "subs": []
+            }
+          ]
+        },
+        {
+          "no": 2,
+          "title": "电势",
+          "page": 30,
+          "sections": [
+            {
+              "no": "2.1",
+              "title": "电势",
+              "page": 31,
+              "subs": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

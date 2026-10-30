@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "courses": [],
+  "rules": {
+    "mode": "4.0-weighted",
+    "formula": "linear-50"
+  },
+  "targets": [],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

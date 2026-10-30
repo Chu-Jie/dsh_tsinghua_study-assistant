@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "courses": [
+    {
+      "id": "c_demo_ds",
+      "name": "数据结构（示例）",
+      "aliases": [
+        "数据结构示例"
+      ],
+      "teacher": "",
+      "credits": 4,
+      "type": "必修",
+      "sessions": [
+        {
+          "weekday": 1,
+          "startPeriod": 1,
+          "endPeriod": 2,
+          "weeks": "1-16",
+          "location": "示例楼 A101"
+        },
+        {
+          "weekday": 3,
+          "startPeriod": 3,
+          "endPeriod": 4,
+          "weeks": "1-16",
+          "location": "示例楼 A101"
+        }
+      ],
+      "note": "示例数据，仅用于演示，非真实课程。",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "c_demo_phy",
+      "name": "大学物理B(2)（示例）",
+      "aliases": [
+        "物理示例"
+      ],
+      "teacher": "",
+      "credits": 4,
+      "type": "必修",
+      "sessions": [
+        {
+          "weekday": 2,
+          "startPeriod": 5,
+          "endPeriod": 6,
+          "weeks": "1-16",
+          "location": "示例楼 B202"
+        },
+        {
+          "weekday": 4,
+          "startPeriod": 1,
+          "endPeriod": 2,
+          "weeks": "1-16",
+          "location": "示例楼 B202"
+        }
+      ],
+      "note": "示例数据，仅用于演示，非真实课程。",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    }
+  ],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

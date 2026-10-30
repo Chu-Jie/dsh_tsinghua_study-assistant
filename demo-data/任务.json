@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "t_demo_1",
+      "title": "数据结构 第03周 课后习题",
+      "courseId": "c_demo_ds",
+      "kind": "homework",
+      "due": "2026-11-06",
+      "status": "pending",
+      "priority": "normal",
+      "estimateHours": 2,
+      "progress": 0,
+      "doneAt": null,
+      "note": "",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "t_demo_2",
+      "title": "大学物理 第05周 课后习题",
+      "courseId": "c_demo_phy",
+      "kind": "homework",
+      "due": "2026-11-09",
+      "status": "pending",
+      "priority": "normal",
+      "estimateHours": 2,
+      "progress": 0,
+      "doneAt": null,
+      "note": "",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "t_demo_3",
+      "title": "数据结构 第02章 复习",
+      "courseId": "c_demo_ds",
+      "kind": "review",
+      "due": "2026-11-12",
+      "status": "pending",
+      "priority": "high",
+      "estimateHours": 3,
+      "progress": 0,
+      "doneAt": null,
+      "note": "",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "t_demo_4",
+      "title": "期中项目：小工具实现",
+      "courseId": "c_demo_ds",
+      "kind": "project",
+      "due": "2026-11-20",
+      "status": "in_progress",
+      "priority": "normal",
+      "estimateHours": 6,
+      "progress": 40,
+      "doneAt": null,
+      "note": "",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    },
+    {
+      "id": "t_demo_5",
+      "title": "大学物理 第02周 课后习题",
+      "courseId": "c_demo_phy",
+      "kind": "homework",
+      "due": "2026-10-20",
+      "status": "done",
+      "priority": "normal",
+      "estimateHours": 2,
+      "progress": 100,
+      "doneAt": "2026-10-19T12:00:00.000Z",
+      "note": "",
+      "createdAt": "2026-10-30T00:00:00.000Z"
+    }
+  ],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

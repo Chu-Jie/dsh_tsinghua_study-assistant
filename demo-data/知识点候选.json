@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "candidates": [
+    {
+      "courseId": "c_demo_ds",
+      "name": "时间复杂度",
+      "aliases": [
+        "大O"
+      ],
+      "chapter": "第1章 绪论",
+      "evidence": []
+    },
+    {
+      "courseId": "c_demo_ds",
+      "name": "二分查找",
+      "aliases": [],
+      "chapter": "第2章 向量",
+      "evidence": []
+    },
+    {
+      "courseId": "c_demo_phy",
+      "name": "电场强度",
+      "aliases": [],
+      "chapter": "第1章 静电场",
+      "evidence": []
+    },
+    {
+      "courseId": "c_demo_phy",
+      "name": "电势",
+      "aliases": [],
+      "chapter": "第2章 电势",
+      "evidence": []
+    }
+  ],
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}

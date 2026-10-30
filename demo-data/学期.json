@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "terms": [
+    {
+      "id": "s_demo_2026fall",
+      "name": "2026 秋（示例学期）",
+      "startDate": "2026-09-14",
+      "endDate": "2027-01-03",
+      "totalWeeks": 16,
+      "isCurrent": true
+    }
+  ],
+  "currentId": "s_demo_2026fall",
+  "updatedAt": "2026-10-30T00:00:00.000Z"
+}
