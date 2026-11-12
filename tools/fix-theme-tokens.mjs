@@ -36,6 +36,13 @@ export const OFFICIAL_TOKENS = new Set([
   '--dsw-alias-bg-layer-1',
   '--dsw-alias-bg-layer-2',
   '--dsw-alias-bg-overlay',
+  // 静态调色板（2026-10-29 实证加白）：宿主 CSS 的 :root 里有一整条 --dsw-static-neutral-bluish-*
+  // 色阶（--dsw-static-neutral-bluish-00:#fff、-875:#232324、-850:#2c2c2e…，app.asar 里搜定义块
+  // 可复查，别处用法还有 288 处）。要给某块面垫「不透明纸底」时只能读它们：--dsw-alias-bg-layer-1/2/3
+  // 与 --dsw-alias-bg-base 会被本机的 dsh-plugin-wallpaper-engine 在 body 上改写成 45~59% 不透明
+  // 的玻璃色，拿它当底色等于没铺；--dsw-static-* 这些插件都不改写。
+  '--dsw-static-neutral-bluish-00',
+  '--dsw-static-neutral-bluish-875',
   '--dsw-alias-border-l1',
   '--dsw-alias-border-l2',
   '--dsw-alias-border-l3',

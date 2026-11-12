@@ -17,14 +17,34 @@
  *                    sources[{file, page, quote}], generatedAt, model }],
  *       chapters: [{ no, title, exercises[{ no, prompt, knowledge[], method, answer, source{file,page} }] }],
  *       ppt:      [{ lecture, title, titlePoints[{ title, kind, note, source{file,slide} }] }],
- *       homework: [{ seq, file, questions[{ no, prompt, knowledge[], method, difficulty, source{file,page} }] }]
+ *       homework: [{ seq, file, questions[{ no, prompt, knowledge[], method, difficulty, source{file,page} }] }],
+ *       lectures: [{ no, title, source, applicability?, styles[style], variants[style] }]
  *     }],
  *     runs: [{ id, at, courseId, kind, unit, model, provider, points, exercises, chars, ok, note }]
  *   }
  *
+ * 讲义可追溯（2026-10-30 加，W4）：每份讲义（= 一章 × 一个风格档）都要能回答「谁生成的、什么时候、
+ * 第几版、还适用什么范围」，而且**新版本不许静默覆盖旧版本**。
+ *   style = { key, label, file, chars, generatedAt,
+ *             model,          // 生成模型（产品名或模型名，见 modelSource 说明它从哪来）
+ *             modelSource,    // 'run-record'（runs[] 里查到真实模型名）/ 'lecture-source'（沿用讲义 source）
+ *                             // / 'unknown'（只知道生成产品，具体模型名没记录——不编造）
+ *             version,        // 正整数；同一 (章, 风格 key) 内单调递增，从 1 起
+ *             parent?,        // variants[] 里的并列风格（C2/C3 挂在 C 下）
+ *             supersededBy?,  // 仅历史版本：被哪个 version 取代（整数）
+ *             supersededAt? } // 仅历史版本：归档时刻（ISO 8601）
+ *   lecture.applicability? = { chapter?, textbook?, points?[] }  // 适用范围：章名 / 教材版本 / 知识点 id
+ *
+ * 为什么 version 用「单调递增整数」而不是内容哈希前缀：哈希只能说明「内容不同」，回答不了「谁取代谁」，
+ * 而且内容改一个字就换哈希，看不出这是第几版；整数能直接比大小（v3 > v2 > v1），面板与脚本都能读，
+ * 老数据没有版本号时也能确定地补成 1（它就是第 1 版，不是猜的）。同 key 同 file 重跑视为**同一版**，
+ * 只刷新元数据、不涨版本号——否则反复跑 lectures-sync 会把版本号冲上天。
+ *
  * 合并语义（可安全重跑）：
  *   - 课程按 `courseId` 合并；`points` 按 `id` 原位替换；`chapters` 按 `no` 合并、章内 `exercises` 按 `no`；
  *   - `ppt` 按 `lecture`、`homework` 按 `seq` 合并；
+ *   - `lectures` 按 `no` 合并；章内 `styles`/`variants` 按 `key` 合并，但**换了 file 就是新版本**：
+ *     旧条目搬进 `variants[]` 并标 `supersededBy`，绝不用新文件直接盖掉旧记录（见上方「讲义可追溯」）；
  *   - `runs` 按 `id` 去重后追加（同一单元重跑只留最新一条）；
  *   - patch 里没提到的字段一律保持原样（不是整份覆盖）。
  *
@@ -32,6 +52,7 @@
  *   node tools/analysis.mjs --init                       # 首次创建空的 资料分析.json
  *   node tools/analysis.mjs                              # 统计（默认动作，dry）
  *   node tools/analysis.mjs --validate                   # 结构校验（含与 知识点网络.json 的 id 对照）
+ *   node tools/analysis.mjs --backfill-trace [--apply]    # 给老讲义补 model/version/applicability（可重跑）
  *   node tools/analysis.mjs --merge <patch.json>         # 预览合并结果（不写盘）
  *   node tools/analysis.mjs --merge <patch.json> --gate  # 预览 + 质量闸门（字数/条数/出处真实性，2026-10-25 加）
  *   node tools/analysis.mjs --merge <patch.json> --apply # 真写（经 store，自动留 备份/）
@@ -81,8 +102,155 @@ function mergeByKey(baseList, patchList, keyOf) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// 讲义可追溯（model / version / applicability / supersededBy）
+// ---------------------------------------------------------------------------
+
+/** 讲义风格版本号：正整数才算数；缺省/非法一律当 0（=「还没有版本号」，由合并或迁移补上）。 */
+function styleVersion(style) {
+  const value = Number(style?.version);
+  return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+/** 把 `supersededBy`（指向新版本号）当版本号读：只认正整数。 */
+const supersededTo = (style) => styleVersion({ version: style?.supersededBy });
+
+/** 本机时区的 ISO 8601（`2026-10-30T12:34:56+08:00`），与 `runs[].at` 同一写法；面板直接显示。 */
+function localIso(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  const offset = -date.getTimezoneOffset();
+  const sign = offset >= 0 ? '+' : '-';
+  const abs = Math.abs(offset);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+    + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
+
+/** 日期文本是否合法：`YYYY-MM-DD` 或完整 ISO 8601 时间戳（含/不含时区）。 */
+export function isLectureDateText(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(text)) return false;
+  return Number.isFinite(Date.parse(text));
+}
+
+/** 同一章讲义内、同一风格 key 已经出现过的最大版本号（`styles` 与 `variants` 一起算）。 */
+function maxStyleVersion(lecture, key) {
+  let max = 0;
+  for (const style of [...arr(lecture?.styles), ...arr(lecture?.variants)].filter(isObj)) {
+    if (keyText(style.key) !== key) continue;
+    max = Math.max(max, styleVersion(style), supersededTo(style));
+  }
+  return max;
+}
+
+/**
+ * 给一条风格条目补齐「能推出来的」可追溯字段：版本号缺省补 1；模型缺省沿用讲义级 `source`
+ * （`source` 是生成产品，例如 notebooklm —— 这是文档里本来就写着的值，不是编的）。
+ * 没有 source 时留空，交给校验去 warn，绝不猜一个模型名。
+ */
+function fillStyleTrace(style, lectureSource) {
+  const out = { ...style };
+  if (styleVersion(out) === 0) out.version = 1;
+  const source = str(lectureSource).trim();
+  if (str(out.model).trim() === '' && source !== '') {
+    out.model = source;
+    out.modelSource = str(out.modelSource).trim() === '' ? 'lecture-source' : out.modelSource;
+  }
+  return out;
+}
+
+/** 历史条目的身份 = `key@version`：同一份历史重复合并不会叠加成两条。 */
+const historyKeyOf = (style) => `${keyText(style?.key)}@${styleVersion(style)}`;
+
+/**
+ * 合并一组风格条目并维护版本历史。
+ *
+ * 规则（W4 定，勿随意放宽）：
+ *   1. 同 key 同 file = **同一版**：只刷新元数据（chars / generatedAt / label / model），版本号不变；
+ *   2. 同 key 不同 file = **新版本**：旧条目搬进历史数组（`variants[]`），标 `supersededBy`=<新版本号>、
+ *      `supersededAt`=<时刻>，然后新条目占住当前位——旧记录永远留在文档里，不许静默覆盖；
+ *   3. 新 key = 第 1 版（或 patch 显式给的、且大于历史最大值 的版本号）。
+ *
+ * 合并 `styles` 时 target=styles、history=variants；合并 `variants` 时两者都是 variants 自己
+ * （并列风格与历史版本同住 `variants[]`，靠 `supersededBy` 区分）。
+ *
+ * @param {{target: object[], history: object[], versionScan: object[], incoming: object[], now: string, lectureSource: string}} input
+ * @returns {{target: object[], history: object[]}}
+ */
+function mergeStyleList({ target, history, versionScan, incoming, now, lectureSource }) {
+  const list = arr(target).filter(isObj).map((item) => ({ ...item }));
+  // `history === target` 表示「同一数组既当当前位又当历史位」（合并 variants 自身时）。
+  // 判等前必须确认两个都真是数组：新讲义 base 为空时 target 与 history **都是 undefined**，
+  // 直接 `history === target` 会得到 true，让 archive 与 list 变成同一引用，
+  // 于是 `list.push` 把当前风格也推进了 variants（index-keeper 2026-10-30 报的别名 bug）。
+  const sameRef = Array.isArray(target) && history === target;
+  const archive = sameRef ? list : arr(history).filter(isObj).map((item) => ({ ...item }));
+  // 算版本号时要把 styles + variants 都看一遍：历史里可能已有 v3，新条目就不能从 1 开始
+  const scan = () => ({ styles: [...arr(versionScan), ...list], variants: archive });
+
+  for (const item of arr(incoming).filter(isObj)) {
+    const key = keyText(item.key);
+    const file = str(item.file).trim();
+    // 「当前生效」的同 key 条目：variants 里标了 supersededBy 的是历史，不算当前
+    const at = key === ''
+      ? -1
+      : list.findIndex((entry) => keyText(entry.key) === key && entry.supersededBy === undefined);
+    if (at === -1) {
+      const version = styleVersion(item) || maxStyleVersion(scan(), key) + 1;
+      list.push(fillStyleTrace({ ...item, version }, lectureSource));
+      continue;
+    }
+    const currentStyle = list[at];
+    if (str(currentStyle.file).trim() === file) {
+      // 同 key 同 file：同一版，版本号不涨
+      const version = styleVersion(currentStyle) || styleVersion(item) || 1;
+      list[at] = fillStyleTrace({ ...currentStyle, ...item, version }, lectureSource);
+      continue;
+    }
+    // 不同 file：新版本。旧的那条进历史（标 supersededBy），新的占住当前位
+    const version = Math.max(styleVersion(item), maxStyleVersion(scan(), key) + 1);
+    const archived = fillStyleTrace({ ...currentStyle, version: styleVersion(currentStyle) || 1 }, lectureSource);
+    archived.supersededBy = version;
+    archived.supersededAt = now;
+    const atArchive = archive.findIndex((entry) => entry.supersededBy !== undefined && historyKeyOf(entry) === historyKeyOf(archived));
+    if (atArchive === -1) archive.push(archived);
+    else archive[atArchive] = archived;
+    list[at] = fillStyleTrace({ ...currentStyle, ...item, version }, lectureSource);
+  }
+  return { target: list, history: archive };
+}
+
+function mergeLecture(base, patch, options = {}) {
+  const next = { ...(isObj(base) ? base : {}), ...(isObj(patch) ? patch : {}) };
+  if (patch?.styles === undefined && patch?.variants === undefined) return next;
+  const now = str(options.now).trim() !== '' ? str(options.now).trim() : localIso();
+  const lectureSource = str(next.source).trim();
+  // ① 当前生效的风格（styles）：历史归档进 variants[]
+  const current = mergeStyleList({
+    target: base?.styles,
+    history: base?.variants,
+    versionScan: [],
+    incoming: patch?.styles,
+    now,
+    lectureSource,
+  });
+  // ② 并列风格 / 历史条目（variants）：自身既是当前位也是历史位
+  const variants = mergeStyleList({
+    target: current.history,
+    history: current.history,
+    versionScan: current.target,
+    incoming: patch?.variants,
+    now,
+    lectureSource,
+  });
+  next.styles = current.target;
+  next.variants = variants.target;
+  return next;
+}
+
 /** 合并一门课程：只覆盖 patch 里出现的字段，没提到的原样保留。 */
-export function mergeCourse(current, patch) {
+export function mergeCourse(current, patch, options = {}) {
   const base = isObj(current) ? current : {};
   const next = { ...base };
   for (const field of ['courseId', 'name', 'book']) {
@@ -106,11 +274,22 @@ export function mergeCourse(current, patch) {
   }
   if (patch.ppt !== undefined) next.ppt = mergeByKey(base.ppt, patch.ppt, (item) => item.lecture);
   if (patch.homework !== undefined) next.homework = mergeByKey(base.homework, patch.homework, (item) => item.seq);
+  if (patch.lectures !== undefined) {
+    const merged = mergeByKey(base.lectures, patch.lectures, (item) => item.no);
+    next.lectures = merged.map((item) => {
+      const original = arr(base.lectures).find((old) => keyText(old?.no) === keyText(item?.no));
+      const incoming = arr(patch.lectures).find((fresh) => keyText(fresh?.no) === keyText(item?.no));
+      return incoming === undefined ? item : mergeLecture(original, incoming, options);
+    });
+  }
   return next;
 }
 
-/** 把一份 patch 合并进整份文档。patch: { courses:[{...}] , runs:[...] } 或单门课的简写 { courseId, points... }。 */
-export function mergeAnalysis(doc, patch) {
+/**
+ * 把一份 patch 合并进整份文档。patch: { courses:[{...}] , runs:[...] } 或单门课的简写 { courseId, points... }。
+ * 第三个参数 `options.now` 可固定「归档时刻」（测试用），不传就取本机当前时间。
+ */
+export function mergeAnalysis(doc, patch, options = {}) {
   const base = isObj(doc) ? doc : emptyAnalysisDoc();
   const next = {
     version: DOC_VERSION,
@@ -122,18 +301,119 @@ export function mergeAnalysis(doc, patch) {
     const courseId = str(patchCourse.courseId);
     if (courseId === '') continue;
     const at = next.courses.findIndex((item) => str(item.courseId) === courseId);
-    if (at === -1) next.courses.push(mergeCourse({ courseId }, patchCourse));
-    else next.courses[at] = mergeCourse(next.courses[at], patchCourse);
+    if (at === -1) next.courses.push(mergeCourse({ courseId }, patchCourse, options));
+    else next.courses[at] = mergeCourse(next.courses[at], patchCourse, options);
   }
   if (Array.isArray(patch?.runs)) next.runs = mergeByKey(next.runs, patch.runs, (item) => item.id);
   return next;
 }
 
-/** 统计：每门课的知识点/章/习题/PPT 讲次/作业次数，以及总点数与生成记录数。 */
+/** 讲义 md 文件的真实 mtime（本机时区 ISO）；文件不在/读不到返回 null。 */
+function lectureFileMtime(root, file) {
+  const rel = str(file).trim().replace(/\\/g, '/');
+  if (str(root).trim() === '' || rel === '') return null;
+  try {
+    const full = path.join(root, ...rel.split('/').filter(Boolean));
+    const stat = fs.statSync(full);
+    return stat.isFile() ? localIso(stat.mtime) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 给历史讲义补可追溯字段（一次性迁移，可重跑、幂等）。**只写能从文档或文件系统里查到的值。**
+ *
+ * 取值口径（W4）：
+ *   - `version`：老数据没有版本号 → 补 1。它是这一档的第 1 版，这是事实不是猜的。
+ *   - `model`：`runs[]` 的 441 条记录全是知识点/习题/PPT 批次（kind 里没有讲义类），
+ *     **查不到讲义生成用的真实模型名**。所以退回讲义自己的 `source` 字段（现值为 `notebooklm`，
+ *     那是生成产品），并把 `modelSource` 标成 `'lecture-source'` —— 明确表示「只知道生成产品，
+ *     具体模型名没记录」，不编造具体模型名。若某天 runs[] 里出现讲义批次，这里应改成按 run 回填。
+ *   - `generatedAt`：老值只到日（`YYYY-MM-DD`）。讲义 md 还在、且文件 mtime 的**日期**与记录日期一致时，
+ *     用 mtime 的时间部分补成完整时间戳，并标 `generatedAtSource:'file-mtime'`（实测值，不是编的）；
+ *     日期对不上或文件不在，保留原值并标 `'date-only'`，绝不凭空造时刻。
+ *   - `applicability`：章名（第 N 章 + 讲义标题）与教材版本（课程 `book`）都来自文档自身字段。
+ *
+ * @param {object} doc 资料分析.json 文档
+ * @param {{root?: string, now?: string}} [options] root = 工作区根（讲义 file 路径的基准），不传就不读 mtime
+ * @returns {{doc: object, changed: number, upgradedTimes: number, missingFiles: string[]}}
+ */
+export function backfillLectureTrace(doc, options = {}) {
+  const base = isObj(doc) ? doc : emptyAnalysisDoc();
+  const root = str(options.root).trim();
+  const missingFiles = [];
+  let changed = 0;
+  let upgradedTimes = 0;
+
+  const fixStyle = (style, lecture) => {
+    const out = { ...style };
+    const before = JSON.stringify(out);
+    if (styleVersion(out) === 0) out.version = 1;
+    if (str(out.model).trim() === '') {
+      const source = str(lecture.source).trim();
+      out.model = source !== '' ? source : 'unknown';
+      // `lecture-source` = 「只知道生成产品（如 notebooklm），具体模型名没记录」，不是编的模型名；
+      // source 也空就是彻底不知道，标 `missing`
+      out.modelSource = source !== '' ? 'lecture-source' : 'missing';
+    }
+    if (out.generatedAtSource === undefined) {
+      const raw = str(out.generatedAt).trim();
+      const dateOnly = /^(\d{4}-\d{2}-\d{2})$/.exec(raw);
+      if (dateOnly !== null) {
+        const mtime = lectureFileMtime(root, out.file);
+        if (mtime !== null && mtime.startsWith(dateOnly[1])) {
+          out.generatedAt = mtime;
+          out.generatedAtSource = 'file-mtime';
+          upgradedTimes += 1;
+        } else {
+          out.generatedAtSource = 'date-only';
+          if (mtime === null && str(out.file).trim() !== '') missingFiles.push(str(out.file).trim());
+        }
+      } else if (raw !== '') {
+        out.generatedAtSource = 'recorded';
+      }
+    }
+    if (JSON.stringify(out) !== before) changed += 1;
+    return out;
+  };
+
+  const courses = arr(base.courses).filter(isObj).map((course) => {
+    const nextCourse = { ...course };
+    if (course.lectures === undefined) return nextCourse;
+    nextCourse.lectures = arr(course.lectures).filter(isObj).map((lecture) => {
+      const nextLecture = { ...lecture };
+      if (!isObj(nextLecture.applicability)) {
+        const chapterNo = keyText(lecture.no);
+        const chapterTitle = str(lecture.title).trim();
+        const applicability = {};
+        if (chapterNo !== '') applicability.chapter = chapterTitle === '' ? `第${chapterNo}章` : `第${chapterNo}章 ${chapterTitle}`;
+        const book = str(course.book).trim();
+        if (book !== '') applicability.textbook = book;
+        if (Object.keys(applicability).length > 0) {
+          nextLecture.applicability = applicability;
+          changed += 1;
+        }
+      }
+      if (lecture.styles !== undefined) nextLecture.styles = arr(lecture.styles).filter(isObj).map((style) => fixStyle(style, lecture));
+      if (lecture.variants !== undefined) nextLecture.variants = arr(lecture.variants).filter(isObj).map((style) => fixStyle(style, lecture));
+      return nextLecture;
+    });
+    return nextCourse;
+  });
+  return { doc: { ...base, courses }, changed, upgradedTimes, missingFiles: [...new Set(missingFiles)] };
+}
+
+/** 统计：每门课的知识点/章/习题/PPT 讲次/作业次数/讲义，以及总点数、生成记录数与讲义可追溯覆盖率。 */
 export function analysisStats(doc) {
   const courses = arr(doc?.courses).filter(isObj).map((course) => {
     const points = arr(course.points);
     const chapters = arr(course.chapters);
+    const lectureStyles = arr(course.lectures).reduce((sum, lecture) => (
+      sum + [...arr(lecture.styles), ...arr(lecture.variants)].filter(isObj).length
+    ), 0);
+    const allLectureStyles = arr(course.lectures)
+      .flatMap((lecture) => [...arr(lecture.styles), ...arr(lecture.variants)].filter(isObj));
     return {
       courseId: str(course.courseId),
       name: str(course.name),
@@ -146,6 +426,13 @@ export function analysisStats(doc) {
       pptPoints: arr(course.ppt).reduce((sum, lecture) => sum + arr(lecture.titlePoints).length, 0),
       homework: arr(course.homework).length,
       homeworkQuestions: arr(course.homework).reduce((sum, item) => sum + arr(item.questions).length, 0),
+      lectures: arr(course.lectures).length,
+      lectureStyles: arr(course.lectures).reduce((sum, item) => sum + arr(item.styles).length + arr(item.variants).length, 0),
+      // 可追溯覆盖（W4）：有多少份讲义记得住 model / version，有多少旧版被归档，有多少章写了适用范围
+      lectureStylesWithModel: allLectureStyles.filter((style) => str(style.model).trim() !== '').length,
+      lectureStylesWithVersion: allLectureStyles.filter((style) => styleVersion(style) > 0).length,
+      supersededLectureStyles: allLectureStyles.filter((style) => supersededTo(style) > 0).length,
+      lecturesWithApplicability: arr(course.lectures).filter((lecture) => isObj(lecture.applicability)).length,
     };
   });
   return {
@@ -153,6 +440,12 @@ export function analysisStats(doc) {
     totalPoints: courses.reduce((sum, item) => sum + item.points, 0),
     totalExercises: courses.reduce((sum, item) => sum + item.exercises, 0),
     runs: arr(doc?.runs).length,
+    lectures: courses.reduce((sum, item) => sum + item.lectures, 0),
+    lectureStyles: courses.reduce((sum, item) => sum + item.lectureStyles, 0),
+    lectureStylesWithModel: courses.reduce((sum, item) => sum + item.lectureStylesWithModel, 0),
+    lectureStylesWithVersion: courses.reduce((sum, item) => sum + item.lectureStylesWithVersion, 0),
+    supersededLectureStyles: courses.reduce((sum, item) => sum + item.supersededLectureStyles, 0),
+    lecturesWithApplicability: courses.reduce((sum, item) => sum + item.lecturesWithApplicability, 0),
   };
 }
 
@@ -292,6 +585,79 @@ export function validateAnalysis(doc, options = {}) {
     if (courseId === '') push('error', 'missing-course-id', '有一门课没有 courseId');
     else if (seenCourse.has(courseId)) push('error', 'duplicate-course', `课程 ${courseId} 重复`);
     else seenCourse.add(courseId);
+    const seenLectures = new Set();
+    for (const lecture of arr(course.lectures).filter(isObj)) {
+      const no = keyText(lecture.no);
+      const label = `${courseId} 第 ${no === '' ? '?' : no} 章讲义`;
+      if (no === '') push('warn', 'lecture-without-no', `${courseId} 有章讲义没有章号`);
+      else if (seenLectures.has(no)) push('error', 'lecture-duplicate-no', `${courseId} 章讲义重复：${no}`);
+      else seenLectures.add(no);
+
+      // 适用范围：可选字段；写了就必须是对象，且 chapter/textbook 是字符串、points 是数组
+      if (lecture.applicability !== undefined) {
+        if (!isObj(lecture.applicability)) push('error', 'lecture-applicability-invalid', `${label} 的 applicability 必须是对象`);
+        else {
+          for (const field of ['chapter', 'textbook', 'book']) {
+            if (lecture.applicability[field] !== undefined && typeof lecture.applicability[field] !== 'string') {
+              push('error', 'lecture-applicability-invalid', `${label} 的 applicability.${field} 必须是字符串`);
+            }
+          }
+          if (lecture.applicability.points !== undefined && !Array.isArray(lecture.applicability.points)) {
+            push('error', 'lecture-applicability-invalid', `${label} 的 applicability.points 必须是数组`);
+          }
+        }
+      }
+
+      // 可追溯字段：缺字段容忍（老数据），字段存在时类型必须对
+      const seenStyleKeys = new Set();
+      for (const [where, list] of [['styles', arr(lecture.styles)], ['variants', arr(lecture.variants)]]) {
+        for (const style of list.filter(isObj)) {
+          const key = keyText(style.key);
+          const styleLabel = `${label} ${key === '' ? '(无 key)' : key} 档（${where}）`;
+          const file = str(style.file).trim();
+          if (!file.endsWith('.md')) push('warn', 'lecture-style-file-missing', `${courseId} 第 ${no} 章讲义文件不是 md：${file}`);
+          if (where === 'styles') {
+            if (key === '') push('warn', 'lecture-style-without-key', `${label} 有一档没有 key`);
+            else if (seenStyleKeys.has(key)) push('error', 'lecture-style-duplicate-key', `${label} 的 styles 里 ${key} 档重复`);
+            else seenStyleKeys.add(key);
+          }
+          if (style.version === undefined) push('warn', 'lecture-style-without-version', `${styleLabel} 没有 version（老数据，跑 --backfill-trace 补）`);
+          else if (styleVersion(style) === 0) push('error', 'lecture-style-version-invalid', `${styleLabel} 的 version 必须是正整数，实际 ${String(style.version)}`);
+          if (style.model !== undefined && typeof style.model !== 'string') push('error', 'lecture-style-model-invalid', `${styleLabel} 的 model 必须是字符串，实际 ${JSON.stringify(style.model)}`);
+          else if (str(style.model).trim() === '') push('warn', 'lecture-style-without-model', `${styleLabel} 没有 model（不知道是谁生成的）`);
+          if (style.generatedAt !== undefined && !isLectureDateText(style.generatedAt)) {
+            push('error', 'lecture-style-generatedAt-invalid', `${styleLabel} 的 generatedAt 不是合法日期：${String(style.generatedAt)}`);
+          }
+          if (style.supersededBy !== undefined && supersededTo(style) === 0) {
+            push('error', 'lecture-style-supersededBy-invalid', `${styleLabel} 的 supersededBy 必须是正整数（被哪一版取代），实际 ${String(style.supersededBy)}`);
+          }
+          if (style.supersededAt !== undefined && !isLectureDateText(style.supersededAt)) {
+            push('error', 'lecture-style-supersededAt-invalid', `${styleLabel} 的 supersededAt 不是合法日期：${String(style.supersededAt)}`);
+          }
+        }
+      }
+
+      // 不许静默覆盖：当前版本号 > 1 的，必须在 variants[] 里留下「被它取代的那一版」
+      const archivedVersions = new Map();
+      for (const style of arr(lecture.variants).filter(isObj)) {
+        const target = supersededTo(style);
+        if (target === 0) continue;
+        const key = keyText(style.key);
+        if (!archivedVersions.has(key)) archivedVersions.set(key, new Set());
+        archivedVersions.get(key).add(styleVersion(style));
+      }
+      for (const style of arr(lecture.styles).filter(isObj)) {
+        const key = keyText(style.key);
+        const version = styleVersion(style);
+        if (version <= 1) continue;
+        const kept = archivedVersions.get(key) ?? new Set();
+        const gaps = [];
+        for (let v = 1; v < version; v += 1) if (!kept.has(v)) gaps.push(v);
+        if (gaps.length > 0) {
+          push('error', 'lecture-silent-overwrite', `${label} 的 ${key} 档是 v${version}，但 variants[] 里缺 v${gaps.join('/v')} 的记录（疑似静默覆盖，旧版没留痕）`);
+        }
+      }
+    }
     for (const point of arr(course.points).filter(isObj)) {
       const id = str(point.id);
       if (id === '') { push('error', 'missing-point-id', `${courseId} 有知识点没有 id`); continue; }
@@ -450,6 +816,8 @@ function parseArgs(argv) {
     gate: false,
     merge: '',
     createNodes: false,
+    backfillTrace: false,
+    root: '',
     quiet: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -460,8 +828,10 @@ function parseArgs(argv) {
     else if (arg === '--validate') out.validate = true;
     else if (arg === '--gate') out.gate = true;
     else if (arg === '--create-nodes') out.createNodes = true;
+    else if (arg === '--backfill-trace') out.backfillTrace = true;
     else if (arg === '--quiet') out.quiet = true;
     else if (arg === '--data') { i += 1; out.dataDir = path.resolve(argv[i] ?? out.dataDir); }
+    else if (arg === '--root') { i += 1; out.root = path.resolve(argv[i] ?? ''); }
     else if (arg === '--merge') { i += 1; out.merge = path.resolve(argv[i] ?? ''); }
     else if (arg === '--help' || arg === '-h') out.help = true;
   }
@@ -517,7 +887,8 @@ async function loadImageIndex(dataDir) {
 async function main(argv) {
   const args = parseArgs(argv);
   if (args.help) {
-    console.log('用法：node tools/analysis.mjs [--init] [--validate] [--merge <patch.json> [--gate] [--create-nodes] [--apply]] [--data <目录>] [--json]');
+    console.log('用法：node tools/analysis.mjs [--init] [--validate] [--backfill-trace [--root <工作区根>] [--apply]]'
+      + ' [--merge <patch.json> [--gate] [--create-nodes] [--apply]] [--data <目录>] [--json]');
     return 0;
   }
   const store = createStore(args.dataDir);
@@ -549,6 +920,15 @@ async function main(argv) {
     patchStats = { before: analysisStats(doc), after: analysisStats(nextDoc) };
   }
 
+  // --backfill-trace：给老讲义补 version / model / generatedAt 精度 / applicability（幂等，可重跑）
+  let backfill = null;
+  if (args.backfillTrace) {
+    // 讲义 file 是相对**工作区根**的路径（如 `数据结构/讲义/第01章-…-A-….md`），默认取数据目录的上一级
+    const root = args.root !== '' ? args.root : path.dirname(args.dataDir);
+    backfill = backfillLectureTrace(nextDoc, { root });
+    nextDoc = backfill.doc;
+  }
+
   // --create-nodes：把 patch 里「知识点网络.json 还没有的」知识点补成节点（先规划，写盘放到校验通过之后）
   let nodePlan = null;
   let nextNetwork = null;
@@ -577,12 +957,12 @@ async function main(argv) {
     });
   }
 
-  const summary = { dataDir: args.dataDir, applied: false, stats, validation, patch: patchStats, nodes: nodePlan, gate };
+  const summary = { dataDir: args.dataDir, applied: false, stats, validation, patch: patchStats, nodes: nodePlan, gate, backfill };
 
   if (args.validate && !validation.ok) summary.failed = true;
   if (gate !== null && !gate.ok) summary.failed = true;
 
-  if (args.apply && args.merge !== '') {
+  if (args.apply && (args.merge !== '' || args.backfillTrace)) {
     if (!validation.ok) {
       console.error('校验没过（有 error），拒绝写盘：');
       for (const issue of validation.issues.filter((item) => item.level === 'error')) console.error(`  - ${issue.code}: ${issue.message}`);
@@ -614,11 +994,21 @@ async function main(argv) {
   } else if (!args.quiet) {
     const lines = [];
     lines.push(`文档：${path.join(args.dataDir, DOC_FILES.knowledgeAnalysis)}`);
-    lines.push(`合计：${stats.totalPoints} 个知识点 / ${stats.totalExercises} 道教材习题 / ${stats.runs} 条生成记录`);
+    lines.push(`合计：${stats.totalPoints} 个知识点 / ${stats.totalExercises} 道教材习题 / ${stats.runs} 条生成记录 / ${stats.lectures} 章讲义（${stats.lectureStyles} 份）`);
+    lines.push(`讲义可追溯：有 model ${stats.lectureStylesWithModel}/${stats.lectureStyles} 份`
+      + ` / 有 version ${stats.lectureStylesWithVersion}/${stats.lectureStyles} 份`
+      + ` / 已归档旧版 ${stats.supersededLectureStyles} 份`
+      + ` / 写了适用范围 ${stats.lecturesWithApplicability}/${stats.lectures} 章`);
     for (const course of stats.courses) {
-      if (course.points === 0 && course.exercises === 0 && course.ppt === 0 && course.homework === 0) continue;
+      if (course.points === 0 && course.exercises === 0 && course.ppt === 0 && course.homework === 0 && course.lectures === 0) continue;
       lines.push(`  ${course.courseId} ${course.name}：知识点 ${course.points}（有详解 ${course.withExplain}、带例题 ${course.withExample}）`
-        + ` / 章 ${course.chapters}（习题 ${course.exercises}）/ PPT ${course.ppt} 讲（要点 ${course.pptPoints}）/ 作业 ${course.homework} 次（题 ${course.homeworkQuestions}）`);
+        + ` / 章 ${course.chapters}（习题 ${course.exercises}）/ PPT ${course.ppt} 讲（要点 ${course.pptPoints}）/ 作业 ${course.homework} 次（题 ${course.homeworkQuestions}）`
+        + ` / 讲义 ${course.lectures} 章（${course.lectureStyles} 份；model ${course.lectureStylesWithModel}、version ${course.lectureStylesWithVersion}、旧版 ${course.supersededLectureStyles}）`);
+    }
+    if (backfill !== null) {
+      lines.push(`补追溯字段（--backfill-trace）：改动 ${backfill.changed} 处，generatedAt 按文件 mtime 精化 ${backfill.upgradedTimes} 处`
+        + (backfill.missingFiles.length > 0 ? `，找不到文件 ${backfill.missingFiles.length} 个（保留原日期，标 date-only）` : ''));
+      for (const file of backfill.missingFiles.slice(0, 5)) lines.push(`  [缺文件] ${file}`);
     }
     if (patchStats) {
       lines.push(`合并前：${patchStats.before.totalPoints} 点 / ${patchStats.before.totalExercises} 习题 / ${patchStats.before.runs} run`);

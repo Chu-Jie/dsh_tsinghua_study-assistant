@@ -352,8 +352,8 @@ test('study_status 工具：真实执行并返回数据健康', async () => {
     const value = await tool.execute({}, {});
     assert.equal(value.healthy, true, '刚初始化后应当健康');
     assert.equal(value.dataDir, dir);
-    // 四份学习数据 + 作业流 + 三份取字产物（资料索引 / 题目 / 知识点候选）+ 知识网络
-    assert.equal(value.files.length, 11);
+    // 四份学习数据 + 作业流 + 三份取字产物（资料索引 / 题目 / 知识点候选）+ 知识网络 + 批注 + 知识映射（第 13 份）
+    assert.equal(value.files.length, 13);
     for (const file of value.files) {
       assert.equal(file.ok, true, `${file.file} 应可读`);
       assert.equal(file.exists, true);

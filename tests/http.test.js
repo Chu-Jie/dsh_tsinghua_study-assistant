@@ -67,8 +67,8 @@ test('GET /health：数据正常时 200', async () => {
     assert.equal(response.status, 200);
     const payload = await response.json();
     assert.equal(payload.ok, true);
-    // 四份学习数据 + 作业流 + 三份取字产物（资料索引 / 题目 / 知识点候选）+ 知识网络
-    assert.equal(payload.files.length, 11);
+    // 四份学习数据 + 作业流 + 三份取字产物（资料索引 / 题目 / 知识点候选）+ 知识网络 + 批注 + 知识映射（第 13 份）
+    assert.equal(payload.files.length, 13);
   } finally {
     await server.close();
   }
@@ -963,6 +963,115 @@ test('网络学堂：同步按平台状态落完成，并修复早先被写成�
   }
 });
 
+/**
+ * 2026-11-04 的真实故障：`网络学堂.json` 里 `courses` 是空的，于是所有
+ * `[learn:xszyid:…]` 任务点开详情都回 `course-unmapped`，界面上就是
+ * 「DDL 打不开附件和详细信息」。
+ *
+ * 根因不在解析、不在 Cookie：**同步从来不写课程映射** —— 只有连上和换学期写。
+ * 而界面对 `course-unmapped` 给的建议恰恰是「先跑一次同步」，等于让用户
+ * 去点那个修不好它的按钮。这条用例钉死「同步自己就把映射写好」。
+ */
+test('网络学堂：/learn/sync 顺手把课程映射写进凭据文件（否则详情永远 course-unmapped）', async () => {
+  const dir = await makeTempDir('study-assistant-sync-map-');
+  const store = createStore(dir);
+  await store.init();
+  // 课程表有这门课，但凭据文件里的映射是**空**的 —— 正是故障现场的样子
+  await store.writeDocument('courses', {
+    ...((await store.readDocument('courses')).doc),
+    courses: [
+      { id: 'c_phy', name: '大学物理B(2)', aliases: [], color: null, note: '' },
+      { id: 'c_ds', name: '数据结构', aliases: [], color: null, note: '' },
+    ],
+  });
+  await fs.writeFile(
+    path.join(dir, '网络学堂.json'),
+    JSON.stringify({
+      version: 1,
+      cookie: 'JSESSIONID=SECRET-VALUE; XSRF-TOKEN=tok',
+      manual: {},
+      courses: [],
+      semesterId: '2026-2027-1',
+      semesters: ['2026-2027-1'],
+      updatedAt: '2026-09-30T00:00:00.000Z',
+    }),
+    'utf8',
+  );
+
+  const handler = createApiHandler({ store, dataDir: dir, backupKeep: 3, logger: { error() {}, warn() {} } });
+  const server = http.createServer((req, res) => {
+    handler(req, res).catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}${API_PREFIX}`;
+
+  const realFetch = globalThis.fetch;
+  const envelope = (rows) => ({ result: 'success', msg: null, object: { iTotalRecords: rows.length, aaData: rows } });
+  const due = (y, m, d) => Date.UTC(y, m - 1, d, 23 - 8, 59);
+
+  try {
+    globalThis.fetch = async (url, init = {}) => {
+      const href = String(url);
+      if (!href.startsWith('https://learn.tsinghua.edu.cn')) return realFetch(url, init);
+      const respond = (payload, text) => ({
+        status: 200,
+        ok: true,
+        url: href,
+        headers: new Map(),
+        text: async () => (text === undefined ? JSON.stringify(payload) : text),
+        json: async () => payload,
+      });
+      if (href.includes('/f/wlxt/index/course/student/')) return respond(null, '<html><span id="userid">x</span></html>');
+      if (href.includes('queryxnxq')) return respond([null, '2026-2027-1']);
+      if (href.includes('loadCourseBySemesterId')) {
+        return respond([
+          { wlkcid: 'W-PHY', kcm: '大学物理B(2)', xf: 3 },
+          { wlkcid: 'W-DS', kcm: '数据结构', xf: 4 },
+        ]);
+      }
+      if (href.includes('zyListWj')) {
+        return respond(envelope([{ xszyid: 7, bt: '第四次作业', jzsj: due(2026, 11, 12), jzsjStr: '2026-11-12 23:59' }]));
+      }
+      if (href.includes('zyListYjwg')) return respond(envelope([]));
+      if (href.includes('zyListYpg')) return respond(envelope([]));
+      throw new Error(`测试没有为这个网络学堂请求准备响应：${href}`);
+    };
+
+    const response = await jsonRequest(`${baseUrl}/learn/sync`, {});
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.ok, true);
+    // 同步的返回里要能看见映射结果，否则排障时只能靠猜
+    assert.equal(payload.mapping.saved, true);
+    assert.equal(payload.mapping.courses, 2);
+    assert.equal(payload.mapping.matched, 2);
+
+    // 落盘：两门课都对上了本地课程
+    const saved = JSON.parse(await fs.readFile(path.join(dir, '网络学堂.json'), 'utf8'));
+    const byWlkcid = new Map((saved.courses ?? []).map((c) => [c.wlkcid, c]));
+    assert.equal(byWlkcid.get('W-PHY').courseId, 'c_phy');
+    assert.equal(byWlkcid.get('W-PHY').matched, true);
+    assert.equal(byWlkcid.get('W-DS').courseId, 'c_ds');
+    assert.equal(byWlkcid.get('W-DS').matched, true);
+    assert.equal(saved.semesterId, '2026-2027-1');
+    // 写映射不能把凭据弄没
+    assert.equal(saved.cookie, 'JSESSIONID=SECRET-VALUE; XSRF-TOKEN=tok');
+
+    // 现在详情找得到课堂号了：哪怕解析失败，也**不该**再回 course-unmapped
+    const state = await (await fetch(`${baseUrl}/state?doc=tasks`)).json();
+    const task = state.doc.tasks.find((item) => String(item.note ?? '').includes('xszyid:7'));
+    assert.ok(task, '同步没把作业导进来，后面的断言就没意义');
+    assert.equal(task.courseId, 'c_phy', '导入时就该按新映射挂上课程');
+  } finally {
+    globalThis.fetch = realFetch;
+    await new Promise((resolve) => server.close(resolve));
+    await removeTempDir(dir);
+  }
+});
+
 // ─────────────────── 网络学堂：检查更新（平台改过截止时间） ───────────────────
 
 /**
@@ -1443,6 +1552,106 @@ test('网络学堂：/learn/detail 挑课堂号、解析详情、短期缓存', 
     await removeTempDir(dir);
   }
 });
+/**
+ * 同一个故障的另一半：详情**必须自己救一次**。
+ *
+ * 修好了「同步写映射」之后，仍然有一种情况会撞上 `course-unmapped`：
+ * 用户从没手动重连过、自动续期换了票，映射文件还是旧的。这时候最不该做的就是
+ * 弹一句「先跑一次同步」（那条建议在修之前根本无效）。这里钉死：映射空着时，
+ * 详情请求会自己去拉一次课程列表补上，然后把详情正常取回来。
+ */
+test('网络学堂：/learn/detail 遇到空映射会就地补一次，而不是回 course-unmapped', async () => {
+  const dir = await makeTempDir('study-assistant-detail-heal-');
+  const store = createStore(dir);
+  await store.init();
+  await store.writeDocument('courses', {
+    ...((await store.readDocument('courses')).doc),
+    courses: [{ id: 'c_phy', name: '大学物理B(2)', aliases: [], color: null, note: '' }],
+  });
+  // 故障现场：已连接，但 `courses` 是空的
+  await fs.writeFile(
+    path.join(dir, '网络学堂.json'),
+    JSON.stringify({
+      version: 1,
+      cookie: 'JSESSIONID=SECRET-VALUE; XSRF-TOKEN=tok',
+      manual: {},
+      courses: [],
+      semesterId: '2026-2027-1',
+      semesters: ['2026-2027-1'],
+      updatedAt: '2026-11-04T00:00:00.000Z',
+    }),
+    'utf8',
+  );
+
+  const handler = createApiHandler({ store, dataDir: dir, backupKeep: 3, logger: { error() {}, warn() {} } });
+  const server = http.createServer((req, res) => {
+    handler(req, res).catch(() => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}${API_PREFIX}`;
+
+  const realFetch = globalThis.fetch;
+  try {
+    await jsonRequest(`${baseUrl}/mutate`, {
+      doc: 'tasks',
+      action: 'create',
+      item: { title: '第四次作业', kind: 'homework', due: '2026-11-12 23:59', courseId: 'c_phy', note: '[learn:xszyid:7]' },
+    });
+    const state = await (await fetch(`${baseUrl}/state?doc=tasks`)).json();
+    const task = state.doc.tasks.find((item) => String(item.note ?? '').includes('xszyid:7'));
+    assert.ok(task, '任务没建上，后面的断言就没意义');
+
+    const asked = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const href = String(url);
+      if (!href.startsWith('https://learn.tsinghua.edu.cn')) return realFetch(url, init);
+      const respond = (payload, text) => ({
+        status: 200,
+        ok: true,
+        url: href,
+        headers: new Map(),
+        text: async () => (text === undefined ? JSON.stringify(payload) : text),
+        json: async () => payload,
+      });
+      if (href.includes('queryxnxq')) { asked.push('semesters'); return respond([null, '2026-2027-1']); }
+      if (href.includes('loadCourseBySemesterId')) {
+        asked.push('courses');
+        return respond([{ wlkcid: 'W-PHY', kcm: '大学物理B(2)', xf: 3 }]);
+      }
+      if (href.includes('viewYxzy')) {
+        asked.push('detail');
+        return respond(null, '<html><span id="userid">2025000000</span>'
+          + '<div class="ttee">作业内容及要求：</div>'
+          + '<div class="list"><div class="fl left">作业标题</div><div class="right"><p>第四次作业</p></div></div>'
+          + '<div class="list"><div class="fl left">截止日期(GMT+8)</div><div class="right">2026-11-12 23:59</div></div>');
+      }
+      throw new Error(`测试没有为这个网络学堂请求准备响应：${href}`);
+    };
+
+    const got = await (await fetch(`${baseUrl}/learn/detail?taskId=${task.id}`)).json();
+    assert.equal(got.ok, true, '补上映射之后必须把详情取回来');
+    assert.notEqual(got.error, 'course-unmapped');
+    assert.equal(got.wlkcid, 'W-PHY');
+    assert.equal(got.detail.title, '第四次作业');
+    // 顺序也要对：先补映射，再去取详情
+    assert.deepEqual(asked, ['semesters', 'courses', 'detail']);
+
+    // 自愈结果要落盘：下次点开别的作业不必再拉一遍课程列表
+    const saved = JSON.parse(await fs.readFile(path.join(dir, '网络学堂.json'), 'utf8'));
+    const mapped = (saved.courses ?? []).find((c) => c.wlkcid === 'W-PHY');
+    assert.ok(mapped, '补出来的映射必须写回凭据文件');
+    assert.equal(mapped.courseId, 'c_phy');
+    assert.equal(saved.cookie, 'JSESSIONID=SECRET-VALUE; XSRF-TOKEN=tok');
+  } finally {
+    globalThis.fetch = realFetch;
+    await new Promise((resolve) => server.close(resolve));
+    await removeTempDir(dir);
+  }
+});
+
 test('凭据隔离：会话 Cookie 不进 /state，也不能被 /reset-doc 碰', async () => {
   const dir = await makeTempDir('study-assistant-cred-');
   const store = createStore(dir);
@@ -1626,7 +1835,7 @@ test('提交件归档：命中不唯一时只提示、绝不猜（宁可漏判�
 
 /** 造一个「专用浏览器」替身：不启进程，只按剧本回话。 */
 function fakeLearnBrowser(script = {}) {
-  const calls = { renew: 0, openLoginWindow: 0, stop: 0, readCookie: 0, renewOptions: null };
+  const calls = { renew: 0, silentRelogin: 0, openLoginWindow: 0, stop: 0, readCookie: 0, renewOptions: null, silentReloginArgs: null };
   return {
     calls,
     edgeAvailable: script.edgeAvailable !== false,
@@ -1639,6 +1848,13 @@ function fakeLearnBrowser(script = {}) {
       calls.renew += 1;
       calls.renewOptions = options;
       return script.renew ?? { ok: true, cookie: 'JSESSIONID=NEW; XSRF-TOKEN=tok2', source: 'renewed' };
+    },
+    // 2026-11-12 拟人化「一键重连」：静默模拟点击登录（默认按「没有可填的凭据」失败，
+    // 免得没显式设定时把别人的测试带偏；指定 script.silentRelogin 才走成功分支）
+    silentRelogin: async (credentials) => {
+      calls.silentRelogin += 1;
+      calls.silentReloginArgs = credentials;
+      return script.silentRelogin ?? { ok: false, reason: 'no-credential' };
     },
     // 只读当前浏览器里的 Cookie（不导航）—— 手动登录后靠它把票收下来
     readCookie: async () => {
@@ -2537,6 +2753,122 @@ test('网络学堂：浏览器那条喂不动 SSO、但票还活着时，会话�
     assert.equal(manual.ok, false);
     assert.equal(manual.error, 'needs-manual-login');
     assert.equal(manual.session.alive, false);
+  } finally {
+    globalThis.fetch = realFetch;
+    await server.close();
+  }
+});
+
+/* ── 2026-11-12 拟人化「一键重连」：静默模拟点击登录，绝不再弹可见窗 ───────────
+ *
+ * 用户的原话：「肯定要静默，不能突然弹出窗口」+「我点『一键重连』后能模拟鼠标点击登录」。
+ * 这两件事必须一起钉住：
+ *   1. /learn/credential 能把账号密码存进本机独立文件，但**永不回显密码**；
+ *   2. needs-manual-login 时，renew 先走 silentRelogin（静默点登录）；成功就换票，
+ *      只有静默失败才贴封条 —— 且**全程不调用 openLoginWindow**（那就是弹窗）。
+ */
+
+test('网络学堂：/learn/credential 存账号密码，只在本地、绝不回显密码', async () => {
+  const server = await startServer({ learnBrowser: fakeLearnBrowser() });
+  try {
+    // 一开始没存 ⇒ credentialPresent=false
+    let session = await (await fetch(`${server.baseUrl}/learn/session`)).json();
+    assert.equal(session.credentialPresent, false);
+
+    // 存一份
+    const saveRes = await (await jsonRequest(`${server.baseUrl}/learn/credential`, { user: '2025000000', pass: 'hunter2' })).json();
+    assert.equal(saveRes.ok, true);
+    assert.equal(saveRes.present, true);
+    assert.equal(JSON.stringify(saveRes).includes('hunter2'), false, '返回值里绝不能出现密码');
+
+    // 独立文件存在（在数据目录下，dotfile），内容含 user/pass
+    const credFile = path.join(server.dir, '.learn-credential.json');
+    const stored = JSON.parse(await fs.readFile(credFile, 'utf8'));
+    assert.equal(stored.user, '2025000000');
+    assert.equal(stored.pass, 'hunter2');
+
+    // 会话状态反映已存，但仍然不回显密码
+    session = await (await fetch(`${server.baseUrl}/learn/session`)).json();
+    assert.equal(session.credentialPresent, true);
+    assert.equal(JSON.stringify(session).includes('hunter2'), false, '会话状态绝不能回密码');
+
+    // 传空 = 清除
+    const clearRes = await (await jsonRequest(`${server.baseUrl}/learn/credential`, { user: '', pass: '' })).json();
+    assert.equal(clearRes.ok, true);
+    assert.equal(clearRes.present, false);
+    await assert.rejects(fs.stat(credFile), /ENOENT/, '清空后文件应被删除');
+  } finally {
+    await server.close();
+  }
+});
+
+test('网络学堂：needs-manual-login 时先静默点登录；成功就换票，且全程不弹窗', async () => {
+  const healthy = 'JSESSIONID=NEW; XSRF-TOKEN=tok2';
+  const browser = fakeLearnBrowser({
+    // 不提供可用 renew —— 让 renewLearnCookie 走到 needs-manual-login 分支
+    renew: { ok: false, reason: 'needs-manual-login' },
+    // 静默模拟点击登录成功，返回一张新票
+    silentRelogin: { ok: true, cookie: healthy, source: 'silent-relogin', clicked: true },
+  });
+  const server = await startServer({ learnBrowser: browser });
+  const realFetch = globalThis.fetch;
+  try {
+    await fs.writeFile(path.join(server.dir, '网络学堂.json'), JSON.stringify(LEARN_CONFIG_FIXTURE), 'utf8');
+    await jsonRequest(`${server.baseUrl}/learn/credential`, { user: '2025000000', pass: 'hunter2' });
+
+    globalThis.fetch = async (url, init = {}) => {
+      const href = String(url);
+      if (!href.startsWith('https://learn.tsinghua.edu.cn')) return realFetch(url, init);
+      const sent = String(init.headers?.Cookie ?? init.headers?.cookie ?? '');
+      const ok = sent.includes('JSESSIONID=NEW');
+      return {
+        status: 200, ok: true, url: href, headers: new Map(),
+        text: async () => (ok ? '<html><span id="userid">2025000000</span></html>' : '<html><title>登录超时</title></html>'),
+        json: async () => null,
+      };
+    };
+
+    const renewed = await (await jsonRequest(`${server.baseUrl}/learn/renew`, {})).json();
+    assert.equal(renewed.ok, true, '静默点登录成功就该换到票');
+    assert.equal(renewed.source, 'silent-relogin');
+    assert.equal(browser.calls.silentRelogin, 1, '应走静默重连');
+    assert.equal(browser.calls.openLoginWindow, 0, '静默成功时绝不许弹窗');
+
+    const saved = JSON.parse(await fs.readFile(path.join(server.dir, '网络学堂.json'), 'utf8'));
+    assert.equal(saved.cookie, healthy, '验证过的新票才落盘');
+  } finally {
+    globalThis.fetch = realFetch;
+    await server.close();
+  }
+});
+
+test('网络学堂：静默点登录也失败（比如风控验证码）才贴封条，且仍不弹窗', async () => {
+  const browser = fakeLearnBrowser({
+    renew: { ok: false, reason: 'needs-manual-login' },
+    silentRelogin: { ok: false, reason: 'captcha-shown' },
+  });
+  const server = await startServer({ learnBrowser: browser });
+  const realFetch = globalThis.fetch;
+  try {
+    await fs.writeFile(path.join(server.dir, '网络学堂.json'), JSON.stringify(LEARN_CONFIG_FIXTURE), 'utf8');
+    await jsonRequest(`${server.baseUrl}/learn/credential`, { user: '2025000000', pass: 'hunter2' });
+
+    globalThis.fetch = async (url, init = {}) => {
+      const href = String(url);
+      if (!href.startsWith('https://learn.tsinghua.edu.cn')) return realFetch(url, init);
+      return {
+        status: 200, ok: true, url: href, headers: new Map(),
+        text: async () => '<html><title>登录超时</title></html>',
+        json: async () => null,
+      };
+    };
+
+    const result = await (await jsonRequest(`${server.baseUrl}/learn/renew`, {})).json();
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'needs-manual-login', '静默过不去就如实报要人工登录');
+    assert.equal(browser.calls.silentRelogin, 1);
+    assert.equal(browser.calls.openLoginWindow, 0, '哪怕失败也绝不自动弹窗');
+    assert.equal(result.session.alive, false);
   } finally {
     globalThis.fetch = realFetch;
     await server.close();

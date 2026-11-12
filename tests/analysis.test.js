@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -17,7 +19,10 @@ import {
   planNodeCreations,
   applyNodeCreations,
   ensurePointIds,
+  backfillLectureTrace,
+  isLectureDateText,
 } from '../tools/analysis.mjs';
+import { validateDoc } from '../lib/core.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -107,6 +112,26 @@ test('analysis：统计与索引', () => {
   const index = buildPointIndex(doc);
   assert.equal(index.get('p1').title, '甲');
   assert.equal(index.size, 2);
+});
+
+test('analysis：章讲义按 no 合并，统计章数与风格份数，重复章号报 error', () => {
+  const doc = mergeAnalysis(emptyAnalysisDoc(), {
+    courseId: 'c_digital',
+    lectures: [{
+      no: '1', title: '数制和码制', styles: [{ key: 'A', file: '数电/讲义/a.md' }],
+      variants: [{ key: 'C2', file: '数电/讲义/c2.md', parent: 'C' }],
+    }],
+  });
+  const next = mergeAnalysis(doc, {
+    courseId: 'c_digital',
+    lectures: [{ no: 1, styles: [{ key: 'B', file: '数电/讲义/b.md' }] }],
+  });
+  assert.equal(next.courses[0].lectures.length, 1);
+  assert.deepEqual(next.courses[0].lectures[0].styles.map((item) => item.key), ['A', 'B']);
+  assert.equal(analysisStats(next).lectures, 1);
+  assert.equal(analysisStats(next).lectureStyles, 3);
+  const bad = validateAnalysis({ version: 1, courses: [{ courseId: 'c_digital', lectures: [{ no: '1' }, { no: 1 }] }], runs: [] });
+  assert.ok(bad.issues.some((item) => item.code === 'lecture-duplicate-no'));
 });
 
 test('analysis：校验能分出错/警告/提示，并据此判 ok', () => {
@@ -284,4 +309,196 @@ test('analysis：--gate 只查 patch 要写的点（旧点不连坐），缺 id 
   const missing = gatePatchQuality(wrongId, merged, {});
   assert.ok(missing.issues.some((item) => item.code === 'gate-point-missing'));
   assert.equal(missing.ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// W4：讲义可追溯（model / version / supersededBy / applicability）
+// ---------------------------------------------------------------------------
+
+const lecturePatch = (styles, extra = {}) => ({
+  courseId: 'c_digital',
+  lectures: [{ no: '1', title: '数制和码制', source: 'notebooklm', styles, ...extra }],
+});
+
+test('analysis：新讲义首版合并后 variants 为空，且不与 styles 同引用（别名 bug 防回归）', () => {
+  // index-keeper 2026-10-30 报过：base 为空时 target 与 history 都是 undefined，
+  // `history === target` 误判成「同一数组」，于是 styles 被同时推进 variants。
+  const doc = mergeAnalysis(emptyAnalysisDoc(), lecturePatch([{ key: 'A', label: '严谨体系式', file: '数电/讲义/a.md', chars: 1 }]));
+  const lecture = doc.courses[0].lectures[0];
+  assert.deepEqual(lecture.styles.map((item) => item.key), ['A']);
+  assert.deepEqual(lecture.variants, [], '首版不该凭空多出一条历史');
+  assert.notEqual(lecture.styles, lecture.variants, 'styles 与 variants 不能是同一个数组');
+  lecture.styles.push({ key: 'ZZZ' });
+  assert.deepEqual(lecture.variants, [], '改 styles 不能串到 variants');
+});
+
+test('analysis：同 key 同 file 重跑版本号不涨；同 key 换 file 才升版本并把旧版搬进 variants', () => {
+  const first = mergeAnalysis(emptyAnalysisDoc(), lecturePatch([{ key: 'A', file: '数电/讲义/第01章-A.md' }]));
+  const style = first.courses[0].lectures[0].styles[0];
+  assert.equal(style.version, 1);
+  assert.equal(style.model, 'notebooklm', 'model 缺省沿用讲义级 source');
+  assert.equal(style.modelSource, 'lecture-source');
+
+  // 同一份文件再同步一次：只刷元数据，版本还是 1，历史仍空
+  const again = mergeAnalysis(first, lecturePatch([{ key: 'A', file: '数电/讲义/第01章-A.md', chars: 99 }]));
+  const sameStyle = again.courses[0].lectures[0].styles[0];
+  assert.equal(sameStyle.version, 1);
+  assert.equal(sameStyle.chars, 99);
+  assert.deepEqual(again.courses[0].lectures[0].variants, []);
+
+  // 换了文件 = 新版本：旧版留在 variants 里，标 supersededBy 指向新版
+  const next = mergeAnalysis(again, lecturePatch([{ key: 'A', file: '数电/讲义/第01章-A-重写.md' }]), { now: '2026-10-30T12:00:00+08:00' });
+  const lecture = next.courses[0].lectures[0];
+  assert.equal(lecture.styles[0].version, 2);
+  assert.equal(lecture.styles[0].file, '数电/讲义/第01章-A-重写.md');
+  assert.equal(lecture.variants.length, 1, '旧版必须留痕');
+  assert.equal(lecture.variants[0].file, '数电/讲义/第01章-A.md');
+  assert.equal(lecture.variants[0].version, 1);
+  assert.equal(lecture.variants[0].supersededBy, 2);
+  assert.equal(lecture.variants[0].supersededAt, '2026-10-30T12:00:00+08:00');
+
+  // 再跑一次同样的 patch：历史不叠加、版本不涨（幂等）
+  const repeat = mergeAnalysis(next, lecturePatch([{ key: 'A', file: '数电/讲义/第01章-A-重写.md' }]), { now: '2026-10-30T13:00:00+08:00' });
+  const repeatLecture = repeat.courses[0].lectures[0];
+  assert.equal(repeatLecture.styles[0].version, 2);
+  assert.equal(repeatLecture.variants.length, 1);
+  assert.equal(repeatLecture.variants[0].supersededAt, '2026-10-30T12:00:00+08:00', '重跑不能改写归档时刻');
+});
+
+test('analysis：校验拦下静默覆盖、非法版本号、非字符串 model、坏日期与坏 applicability', () => {
+  const codes = (doc) => validateAnalysis(doc).issues;
+  const base = () => ({ version: 1, runs: [], courses: [{ courseId: 'c_digital' }] });
+
+  // v2 却没有 v1 的归档 → 静默覆盖
+  const overwritten = base();
+  overwritten.courses[0].lectures = [{ no: '1', styles: [{ key: 'A', file: 'a.md', version: 2 }], variants: [] }];
+  assert.ok(codes(overwritten).some((item) => item.code === 'lecture-silent-overwrite'));
+
+  // 有归档就合法
+  const ok = base();
+  ok.courses[0].lectures = [{
+    no: '1',
+    styles: [{ key: 'A', file: 'a2.md', version: 2, model: 'notebooklm' }],
+    variants: [{ key: 'A', file: 'a.md', version: 1, supersededBy: 2, supersededAt: '2026-10-30T12:00:00+08:00' }],
+  }];
+  assert.deepEqual(codes(ok).filter((item) => item.level === 'error'), []);
+
+  const badVersion = base();
+  badVersion.courses[0].lectures = [{ no: '1', styles: [{ key: 'A', file: 'a.md', version: 0 }] }];
+  assert.ok(codes(badVersion).some((item) => item.code === 'lecture-style-version-invalid'));
+
+  const badModel = base();
+  badModel.courses[0].lectures = [{ no: '1', styles: [{ key: 'A', file: 'a.md', model: 42 }] }];
+  assert.ok(codes(badModel).some((item) => item.code === 'lecture-style-model-invalid'));
+
+  const badDate = base();
+  badDate.courses[0].lectures = [{ no: '1', styles: [{ key: 'A', file: 'a.md', generatedAt: '昨天' }] }];
+  assert.ok(codes(badDate).some((item) => item.code === 'lecture-style-generatedAt-invalid'));
+
+  const badApplicability = base();
+  badApplicability.courses[0].lectures = [{ no: '1', applicability: '第1章' }];
+  assert.ok(codes(badApplicability).some((item) => item.code === 'lecture-applicability-invalid'));
+
+  // 老数据没这些字段：只 warn，不报 error（迁移前必须能过校验）
+  const legacy = base();
+  legacy.courses[0].lectures = [{ no: '1', styles: [{ key: 'A', file: 'a.md' }] }];
+  const legacyIssues = codes(legacy);
+  assert.equal(legacyIssues.filter((item) => item.level === 'error').length, 0);
+  assert.ok(legacyIssues.some((item) => item.code === 'lecture-style-without-version'));
+  assert.ok(legacyIssues.some((item) => item.code === 'lecture-style-without-model'));
+});
+
+test('analysis：core.validateDoc 同步拦住非法追溯字段（面板读之前就要拒）', () => {
+  const doc = (lectures) => ({ version: 1, courses: [{ courseId: 'c_digital', lectures }], runs: [] });
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md', version: 1, model: 'notebooklm' }] }])).ok, true);
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md', version: 0 }] }])).reason, 'lecture-style-version-invalid');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md', model: [] }] }])).reason, 'lecture-style-model-invalid');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md', generatedAt: 'x' }] }])).reason, 'lecture-style-generatedAt-invalid');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md', supersededBy: 'two' }] }])).reason, 'lecture-style-superseded-invalid');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', applicability: [] }])).reason, 'lecture-applicability-invalid');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md' }, { key: 'A', file: 'b.md' }] }])).reason, 'lecture-style-duplicate-key');
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a2.md', version: 2 }], variants: [] }])).reason, 'lecture-silent-overwrite');
+  // 老数据（无追溯字段）仍然可写：迁移前后都能过
+  assert.equal(validateDoc('knowledgeAnalysis', doc([{ no: '1', styles: [{ key: 'A', file: 'a.md' }] }])).ok, true);
+});
+
+test('analysis：--backfill-trace 给老讲义补 version/model/applicability，generatedAt 只按真实 mtime 精化', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-backfill-'));
+  try {
+    const lectureDir = path.join(root, '数电', '讲义');
+    fs.mkdirSync(lectureDir, { recursive: true });
+    const file = path.join(lectureDir, '第01章-A.md');
+    fs.writeFileSync(file, '# 讲义\n', 'utf8');
+    const when = new Date(2026, 9, 29, 19, 21, 15); // 本地时间 2026-10-29 19:21:15
+    fs.utimesSync(file, when, when);
+
+    const doc = {
+      version: 1,
+      runs: [],
+      courses: [{
+        courseId: 'c_digital',
+        name: '数字电子技术基础',
+        book: '数字电子技术基础（第6版）',
+        lectures: [{
+          no: '1',
+          title: '数制和码制',
+          source: 'notebooklm',
+          styles: [
+            { key: 'A', label: '严谨体系式', file: '数电/讲义/第01章-A.md', generatedAt: '2026-10-29' },
+            { key: 'B', label: '图示直觉式', file: '数电/讲义/第01章-B.md', generatedAt: '2026-10-20' },
+          ],
+          variants: [],
+        }],
+      }],
+    };
+
+    const result = backfillLectureTrace(doc, { root });
+    const lecture = result.doc.courses[0].lectures[0];
+    for (const style of lecture.styles) {
+      assert.equal(style.version, 1);
+      assert.equal(style.model, 'notebooklm');
+      assert.equal(style.modelSource, 'lecture-source');
+    }
+    // 文件在、且 mtime 日期与记录日期一致 → 升级成完整时间戳
+    assert.equal(new Date(lecture.styles[0].generatedAt).getTime(), when.getTime());
+    assert.equal(lecture.styles[0].generatedAtSource, 'file-mtime');
+    assert.equal(result.upgradedTimes, 1);
+    // 文件不在 / 日期对不上 → 保留原值，标 date-only，绝不编时刻
+    assert.equal(lecture.styles[1].generatedAt, '2026-10-20');
+    assert.equal(lecture.styles[1].generatedAtSource, 'date-only');
+    assert.deepEqual(result.missingFiles, ['数电/讲义/第01章-B.md']);
+    // applicability 由文档自身字段推出来
+    assert.deepEqual(lecture.applicability, { chapter: '第1章 数制和码制', textbook: '数字电子技术基础（第6版）' });
+
+    // 幂等：再跑一次没有改动，且结果仍能过校验
+    const second = backfillLectureTrace(result.doc, { root });
+    assert.equal(second.changed, 0);
+    assert.equal(second.upgradedTimes, 0);
+    const checked = validateAnalysis(result.doc);
+    assert.deepEqual(checked.issues.filter((item) => item.level === 'error'), []);
+    assert.equal(validateDoc('knowledgeAnalysis', result.doc).ok, true);
+
+    assert.equal(isLectureDateText('2026-10-29'), true);
+    assert.equal(isLectureDateText('2026-10-29T19:21:15+08:00'), true);
+    assert.equal(isLectureDateText('2026-13-40'), false);
+    assert.equal(isLectureDateText(''), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('analysis：统计里能看出讲义可追溯覆盖率', () => {
+  const doc = mergeAnalysis(emptyAnalysisDoc(), {
+    courseId: 'c_digital',
+    book: '数字电子技术基础（第6版）',
+    lectures: [{ no: '1', title: '数制和码制', source: 'notebooklm', styles: [{ key: 'A', file: '数电/讲义/a.md' }] }],
+  });
+  const filled = backfillLectureTrace(doc).doc;
+  const stats = analysisStats(filled);
+  assert.equal(stats.lectureStyles, 1);
+  assert.equal(stats.lectureStylesWithModel, 1);
+  assert.equal(stats.lectureStylesWithVersion, 1);
+  assert.equal(stats.supersededLectureStyles, 0);
+  assert.equal(stats.lecturesWithApplicability, 1);
+  assert.equal(stats.courses[0].lectureStylesWithModel, 1);
 });

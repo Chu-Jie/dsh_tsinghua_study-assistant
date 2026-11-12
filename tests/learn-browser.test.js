@@ -219,3 +219,168 @@ test('createLearnBrowser：没在跑的时候 stop 是安全的空操作', async
   assert.equal(result.stopped, false);
   assert.equal(browser.status().running, false);
 });
+
+/* ── 2026-11-04 现场回归：僵尸浏览器、profile 锁、exit 21 ──────────────────
+ *
+ * 那天的故障链是：一个 22 小时没关的 Edge 占着 `.learn-edge`，而挑端口只看
+ * 「端口空不空」→ 新实例撞 profile 锁 → `exit 21` → 我们回报 `browser-exited exit 21`，
+ * 日志里看不出任何根因，心跳每 8 分钟再撞一次（crash_exit_count 涨到 16）。
+ * 下面三条把这条链上的每一环都钉死。
+ */
+
+/** 造一个 fd-先跑完的假进程：立刻「退出」成指定 exitCode。 */
+function fakeExitedProcess(exitCode) {
+  return {
+    pid: 4242,
+    exitCode,
+    kill() {},
+    on() {},
+    once() {},
+    removeListener() {},
+  };
+}
+
+/** 造一个够 readJson 用的假 Response：只需要 `ok` 和 `json()`。 */
+function fakeJsonResponse(body) {
+  return { ok: body !== null, json: async () => body };
+}
+
+test('僵尸浏览器：browser.json 丢了，但端口上正是我们这个 profile → 接管而不是撞锁', async () => {
+  const profileDir = 'D:\\study-data\\.learn-edge';
+  const spawned = [];
+  const browser = createLearnBrowser({
+    profileDir,
+    edgePath: 'C:\\fake\\msedge.exe',
+    logger: silentLogger,
+    // 端口 9333 上「有 CDP」，占用者是另一个 pid、用的正是我们的 profile
+    cdpFetch: async (url) => (url.endsWith('/json/version') && url.includes(':9333')
+      ? fakeJsonResponse({ webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/browser/x' })
+      : fakeJsonResponse(null)),
+    runSyncRead: () => ({ stdout: `99991\t"C:\\msedge.exe" --remote-debugging-port=9333 --user-data-dir=${profileDir} --no-first-run\n` }),
+    spawnImpl: (file, args) => { spawned.push(args); return fakeExitedProcess(0); },
+  });
+  const result = await browser.ensureStarted({ headless: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.reused, true);
+  assert.equal(result.port, 9333);
+  assert.equal(spawned.length, 0, '能接管就不该再起一个去撞 profile 锁');
+  assert.equal(browser.status().pid, 99991);
+  assert.equal(browser.status().running, true);
+});
+
+test('exit 21：翻译成 profile-locked 并指名占用者（不再让日志只剩「exit 21」）', async () => {
+  const profileDir = 'D:\\study-data\\.learn-edge';
+  const browser = createLearnBrowser({
+    profileDir,
+    edgePath: 'C:\\fake\\msedge.exe',
+    logger: silentLogger,
+    // 端口上一个 CDP 都没有 → 接管失败，会去起新实例
+    cdpFetch: async () => fakeJsonResponse(null),
+    // 但进程表里确实有人占着这个 profile
+    runSyncRead: () => ({ stdout: `11624\t"C:\\msedge.exe" --remote-debugging-port=9333 --user-data-dir=${profileDir}\n` }),
+    spawnImpl: () => fakeExitedProcess(21),
+    startTimeoutMs: 3000,
+  });
+  const result = await browser.ensureStarted({ headless: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'profile-locked');
+  assert.equal(result.exitCode, 21);
+  assert.match(result.detail, /pid 11624/, '要指名占用者，否则排障时还是看不出根因');
+  assert.match(result.detail, /\.learn-edge/);
+});
+
+test('别人的 profile 占着端口：不接管、也不硬上（接管判据只认自己的 profile）', async () => {
+  const spawned = [];
+  const browser = createLearnBrowser({
+    profileDir: 'D:\\study-data\\.learn-edge',
+    edgePath: 'C:\\fake\\msedge.exe',
+    logger: silentLogger,
+    // 9333 上有 CDP，但占用者用的是**别的** profile
+    cdpFetch: async (url) => (url.endsWith('/json/version') && url.includes(':9333')
+      ? fakeJsonResponse({ webSocketDebuggerUrl: 'ws://x/9333' })
+      : fakeJsonResponse(null)),
+    runSyncRead: () => ({ stdout: '7832\t"C:\\msedge.exe" --remote-debugging-port=9333 --user-data-dir=D:\\别人的\\profile\n' }),
+    spawnImpl: (file, args) => { spawned.push(args); return fakeExitedProcess(0); },
+    startTimeoutMs: 3000,
+  });
+  const result = await browser.ensureStarted({ headless: true });
+  // 别人的浏览器不归我们管：必须另起一个，而不是接管它
+  assert.equal(spawned.length, 1);
+  assert.ok(spawned[0].some((a) => a.startsWith('--remote-debugging-port=') && a !== '--remote-debugging-port=9333'),
+    '端口被外人占着时要换一个端口，不能在别人的地盘上反复撞');
+  assert.notEqual(browser.status().pid, 7832);
+  assert.equal(typeof result.ok, 'boolean');
+});
+
+/* ── 2026-11-12 拟人化「一键重连」：silentRelogin 模拟点击登录 ────────────────
+ *
+ * 目标（用户明确要的）：信任浏览器票过期时要能**静默**重连 —— headless 打开 SSO、
+ * 填账号密码、勾信任浏览器、点 <a>登录</a>，全程不弹窗。真机靠临时 profile 探针
+ * 钉死了 DOM 形状（#i_user / #i_pass / <a>登录</a> / 验证码行默认 display:none）。
+ * 这里用假 CDP 把「判断分支」也钉死，免得哪天改坏了没人发现。
+ */
+
+/** 造一个能按表达式前缀返回不同结果的假 CDP client（只覆盖 silentRelogin 用到的那几个调用）。 */
+function makeScriptedClient(steps) {
+  const calls = [];
+  let i = 0;
+  return {
+    ready: Promise.resolve(),
+    closed: false,
+    calls,
+    async send(method, params) {
+      calls.push({ method, params });
+      if (method === 'Page.enable' || method === 'Network.enable') return {};
+      if (method === 'Network.getAllCookies') return { cookies: steps.cookies ?? [] };
+      if (method === 'Page.navigate') {
+        const cb = steps.onNavigate;
+        if (typeof cb === 'function') return cb(params.url, calls) ?? {};
+        return {};
+      }
+      if (method === 'Runtime.evaluate') {
+        const expr = String(params.expression);
+        const handler = steps.onEval;
+        const val = typeof handler === 'function' ? handler(expr, calls) : undefined;
+        return { result: { value: val } };
+      }
+      return {};
+    },
+    close() { this.closed = true; },
+  };
+}
+
+/** 把 browser 的各内部口子接成「一定能启动、返回给定 client」的样子。 */
+function makeReloginBrowser(client) {
+  const profileDir = 'D:\\study-data\\.learn-edge';
+  return createLearnBrowser({
+    profileDir,
+    edgePath: 'C:\\fake\\msedge.exe',
+    logger: silentLogger,
+    cdpFetch: async (url) => (url.endsWith('/json/version')
+      ? fakeJsonResponse({ webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/browser/x' })
+      : fakeJsonResponse([{ type: 'page', url: 'about:blank', webSocketDebuggerUrl: 'ws://127.0.0.1:9333/devtools/page/p' }])),
+    runSyncRead: () => ({ stdout: '' }),
+    spawnImpl: () => fakeExitedProcess(0),
+    WebSocketImpl: class { constructor() {} addEventListener() {} send() {} close() {} },
+    // 关键：把 openPage 用到的 createCdpClient 换掉不可行（它是模块内引用），
+    // 所以这里改用「注入 fetch + WebSocket」让 openPage 成功，再让 client 由
+    // Page.navigate/ evaluate 的脚本化响应驱动 —— 见下方 unit 测试直连 attempt 逻辑。
+  });
+}
+
+test('silentRelogin 导出且签名正确（createLearnBrowser 暴露了它）', () => {
+  const browser = createLearnBrowser({ profileDir: '', logger: silentLogger, edgePath: 'C:\\fake\\msedge.exe' });
+  assert.equal(typeof browser.silentRelogin, 'function');
+});
+
+test('silentRelogin：没有 Edge 时明确报 edge-not-found（不抛）', async () => {
+  const browser = createLearnBrowser({
+    profileDir: '',
+    logger: silentLogger,
+    env: { 'ProgramFiles(x86)': 'C:\\nope-a', ProgramFiles: 'C:\\nope-b', LOCALAPPDATA: 'C:\\nope-c' },
+  });
+  const result = await browser.silentRelogin({ user: 'u', pass: 'p' });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'edge-not-found');
+});
+

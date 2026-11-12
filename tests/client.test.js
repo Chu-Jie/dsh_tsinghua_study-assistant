@@ -24,7 +24,12 @@ const CLIENT_FILE = path.join(HERE, '..', 'client.js');
 function createFakeReact() {
   const React = {
     createElement(type, props, ...children) {
-      return { __el: true, type, props: props ?? {}, children: children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false) };
+      const flat = children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false);
+      // 真 React 把 children 放在 `props.children` 上；元素上那份是本项目测试的旧约定，
+      // 保留它是因为 100+ 处断言直接读 `.children`（2026-11-12 决定不迁移）。
+      // 两份都给，等于让「只在假形状下成立」的写法同时暴露在两种读法下——
+      // 批注渲染链 2026-10-31 就是只认元素上那份，浏览器里一条批注都画不出来。
+      return { __el: true, type, props: { ...(props ?? {}), children: flat }, children: flat };
     },
     useState(initial) {
       return [typeof initial === 'function' ? initial() : initial, () => {}];
@@ -98,6 +103,8 @@ function loadClient(options = {}) {
     clearTimeout,
     setInterval,
     clearInterval,
+    // 浏览器全局：client.js 的取正文 helper 用 URLSearchParams 拼查询串，vm 里得给它一份真的
+    URLSearchParams,
     // 最小 document 替身：只提供「注入样式表」这条路径需要的部分。
     // client.js 的 Style 组件只在渲染期把 <style> 追加到 document.head，
     // 绝不把 style 节点渲染进槽位（详见 client.js 里那段为什么的注释）。
@@ -126,10 +133,10 @@ function loadClient(options = {}) {
         return injectedStyles.find((el) => el.attributes['data-plugin-css'] === match[1]) || null;
       },
     },
-    fetch: async () => ({
+    fetch: options.fetch ?? (async () => ({
       status: 200,
       json: async () => ({ ok: true, dataDir: '测试目录', healthy: true, files: [], docs: {}, hashes: {}, problems: [] }),
-    }),
+    })),
   };
   context.window.__ModuleLoader__ = {
     load(registration) {
@@ -192,14 +199,14 @@ function loadClient(options = {}) {
     };
   }
   half.apply(ctx);
-  return { half, registrations, tabTypes, openedKinds, logs, ctx, serviceReads, injectedStyles, document: context.document };
+  return { half, registrations, tabTypes, openedKinds, logs, ctx, serviceReads, injectedStyles, document: context.document, window: context.window };
 }
 
-function statefulClient() {
+function statefulClient(options = {}) {
  const cells=[];let cursor=0;const base=createFakeReact();
  const react={...base,useState(initial){const i=cursor++;if(!cells[i])cells[i]={value:typeof initial==='function'?initial():initial};return [cells[i].value,v=>{cells[i].value=typeof v==='function'?v(cells[i].value):v;}];},
  useRef(v){const i=cursor++;if(!cells[i])cells[i]={current:v};return cells[i];},useCallback(fn){cursor++;return fn;}};
- const loaded=loadClient({react});return {...loaded,begin(){cursor=0;},flat(tree){const out=[];function walk(n){if(Array.isArray(n))return n.forEach(walk);if(!n||typeof n!=='object')return;out.push(n);(n.children||[]).forEach(walk);}walk(tree);return out;}};
+ const loaded=loadClient({...options,react});return {...loaded,begin(){cursor=0;},flat(tree){const out=[];function walk(n){if(Array.isArray(n))return n.forEach(walk);if(!n||typeof n!=='object')return;out.push(n);(n.children||[]).forEach(walk);}walk(tree);return out;}};
 }
 function renderFullKnowledge(docs,view,memory={}) {
  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;lib.readKnowledgeUi(memory);probe.begin();const tree=lib.knowledgeTab({docs,initialView:view});
@@ -212,6 +219,26 @@ test('client.js：模块注册 id 正确、只 require react', () => {
   // 跨 realm 的数组不能直接 deepEqual（原型不同），先转成本地数组
   assert.deepEqual([...half.inject], ['slots'], '客户端半边必须声明 inject: ["slots"]');
   assert.equal(typeof half.apply, 'function');
+});
+
+test('client.js：知识点章讲义入口读取 lectures 并复用资料正文', () => {
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(source.includes('lectureCourses'), '知识点页要读取资料分析里的 lectures');
+  // 2026-10-29 用户定：章这一级就是「章详解」，点章名＝在右侧读讲义；
+  // 左边那排「讲义 A/B/C」小按钮已删，版本统一在讲义正文上方切。
+  assert.ok(source.includes('openChapter'), '点章名要有「打开这一章讲义」的逻辑');
+  assert.ok(source.includes('lectureHintCard'), '没有讲义的章要有说明卡，不能点了没反应');
+  assert.ok(source.includes('openLecture'), '讲义入口要有打开正文逻辑');
+  assert.ok(source.includes('openLectureRow'), '要能反查当前打开的是哪一份讲义（版本切换行靠它高亮）');
+  assert.ok(source.includes('await showMaterial(selectedLecture.file)'), '讲义正文要复用资料正文卡');
+  // W6（2026-10-30）起按钮文案后面可能跟 ` · v{version}`，用正则只钉「讲义 ${style.key}」这段
+  assert.ok(/讲义 \$\{style\.key\}/.test(source), '版本切换行文案要带讲义和风格键');
+  assert.ok(!source.includes('sa-lecture-links compact'), '左边章行不再挂讲义版本按钮');
+  // 2026-10-30：说明卡不许写死某个科目的覆盖率（旧文案「目前只有第 1–4 章有 A / B / C 三版」是数电口径，
+  // 数据结构/物理/离散也走同一张卡，写死就是错的）。
+  assert.ok(!source.includes('目前只有第 1–4 章'), '没有讲义的说明卡不能写死数电的章节范围');
+  assert.ok(source.includes('这一章的讲义还没生成。'), '说明卡要给出与科目无关的通用措辞');
+  assert.ok(source.includes('各科「讲义/_讲义索引.md」'), '说明卡里的生成流程要指向各科自己的索引');
 });
 
 test('宿主 Config：在 cordis resolveConfig 的真实读取路径上可用', async () => {
@@ -1421,7 +1448,7 @@ test('client.js：点知识点看到预生成的详解（含例题与来历）�
               title: '无序向量去重',
               level: '核心',
               keywords: ['去重', '唯一化'],
-              explain: '第一段：先讲人话。\n\n第二段：再上符号。',
+              explain: '先讲人话。先讲人话。\n\n再上符号，再上符号。',
               analogy: '像把一筐苹果里的坏果挑掉。',
               formulas: [{ tex: 'O(n^2)', plain: '最坏情况下比较次数按平方增长' }],
               pitfalls: ['忘了先排序就二分'],
@@ -1434,7 +1461,7 @@ test('client.js：点知识点看到预生成的详解（含例题与来历）�
     },
     children: [],
   });
-  for (const piece of ['第一段：先讲人话。', '第二段：再上符号。', '打个比方：', '易错', '✗ 忘了先排序就二分', '例题', '答：', '套路：', '来历', '第 62 页', '看原文页', '核心', '去重']) {
+  for (const piece of ['先讲人话。', '再上符号', '打个比方：', '易错', '✗ 忘了先排序就二分', '例题', '答：', '套路：', '来历', '第 62 页', '看原文页', '核心', '去重']) {
     assert.ok(analyzed.includes(piece), `详解卡应包含「${piece}」`);
   }
   assert.ok(!analyzed.includes('未分析'), '有分析产物时不该再显示未分析');
@@ -2365,9 +2392,12 @@ test('详解渲染：**粗体**、行内代码、$公式$ 不再原样露出，�
   const textOf = (node) => (typeof node === 'string' ? node : (node.children || []).map(textOf).join(''));
   // 行内：原文里的三种轻量标记都要变成元素，普通文字仍是字符串
   const inline = lib.analysisInline('用 **单极型** 器件，栅极电压 `v_GS` 决定 $I_D$ 的大小', 'k0');
-  assert.equal(inline.map((node) => (typeof node === 'string' ? 'text' : node.type)).join('|'), 'text|strong|text|code|text|span|text');
+  // 2026-11-12：反引号里是 `v_GS` 这种带下标的公式，按公式排（span）而不是等宽代码
+  assert.equal(inline.map((node) => (typeof node === 'string' ? 'text' : node.type)).join('|'), 'text|strong|text|span|text|span|text');
   assert.equal(textOf(inline[1]), '单极型');
-  assert.equal(textOf(inline[3]), 'v_GS');
+  // `v_GS` 的 `_` 已经被排成真正的下标（节点文本只剩 `vGS`），符号本身不再露出 —— 这正是本轮要的效果
+  assert.equal(textOf(inline[3]), 'vGS');
+  assert.ok(inline[3].children.some((node) => node.type === 'sub'), '`v_GS` 必须排成下标');
   assert.equal(textOf(inline[5]), 'ID');
   assert.equal(inline[0], '用 ');
   // 没有标记时不许造元素（否则纯文本讲解会被拆成碎片）
@@ -2418,6 +2448,53 @@ test('详解渲染：**粗体**、行内代码、$公式$ 不再原样露出，�
   const source = fs.readFileSync(CLIENT_FILE, 'utf8');
   assert.ok(source.includes('/materials/image?path='), '插图要经 /materials/image 取字节');
   assert.ok(source.includes('selectedPoint.figures'), '详解要读 point.figures');
+});
+
+test('纯文本公式：下标/分式/积分上下限/大算子都真排（2026-11-12）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || typeof node !== 'object') return '';
+    const kids = node.children ?? node.props?.children ?? [];
+    return (Array.isArray(kids) ? kids : [kids]).map(textOf).join('');
+  };
+  const toTex = (source) => lib.plainMathToTex(source);
+
+  // 下标直接变成 `_{}`（不是露出下划线）
+  assert.equal(toTex('A_12'), 'A_{12}');
+  assert.equal(toTex('ε₀'), '\\varepsilon_{0}');
+  // `/` 上下叠：`Q / (…)` 也认（中间一个空格）
+  assert.equal(toTex('E = Q / (4π ε₀ r²)'), 'E = \\frac{Q}{\\left(4\\pi \\varepsilon_{0} r^{2}\\right)}');
+  // 积分上下限里的整体必须是「一个」脚本体，不能被分式拆坏
+  assert.equal(toTex('∫_{-π/2}^{π/2} cos θ dθ'), '\\int _{\\frac{-\\pi }{2}}^{\\frac{\\pi }{2}} cos \\theta d\\theta');
+  // `^` 后面带括号 → 上标组
+  assert.equal(toTex('n^(log_b a)'), 'n^{\\left(log_{b} a\\right)}');
+  // `Σ` 与 `∑` 都当大算子
+  assert.equal(toTex('∑'), '\\sum');
+  assert.equal(toTex('F_x = Σ F_ix'), 'F_{x} = \\sum F_{ix}');
+  // 纯文字不碰
+  assert.equal(toTex('r = 5.3 m'), 'r = 5.3 m');
+
+  // 反引号里像公式就按公式排：`F_x` → 真的 <sub>，且不再露下划线
+  const bt = lib.analysisInline('力 `F_x` 的方向', 'k9');
+  const btText = bt.map((node) => textOf(node)).join('');
+  assert.ok(!btText.includes('_'), `反引号公式不许露出下划线：${btText}`);
+  const allNodes = [];
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    allNodes.push(node);
+    walk(node.children ?? node.props?.children);
+  };
+  walk(bt);
+  assert.ok(allNodes.some((node) => node.type === 'sub'), '`F_x` 必须排成 <sub>');
+
+  // 整行公式（独立成段、含 `=` 且不短）：按行间公式排；含义模糊的短行不放大
+  assert.ok(lib.plainMathLineNodes('Φ_e = ∮ E·dS = q/ε₀', 'p1') !== null);
+  assert.equal(lib.plainMathLineNodes('x^2', 'p2'), null);
+  assert.equal(lib.plainMathLineNodes('第一段：先讲人话，这里的 x_1 只是例子。', 'p3'), null);
 });
 
 test('公式排版：formulas[].tex 与行内 $…$ 都转成符号，界面不再露出 LaTeX 源码', () => {
@@ -2481,6 +2558,157 @@ test('公式排版：formulas[].tex 与行内 $…$ 都转成符号，界面不�
   assert.ok(tagged.includes('12.11'), `编号数字要保留：${tagged}`);
 });
 
+test('环境排版：cases / array / pmatrix / aligned 与 \\left…\\right 排成本地结构（2026-10-29）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => (typeof node === 'string' || typeof node === 'number'
+    ? String(node)
+    : (node === null || node === undefined || node === false ? '' : (node.children || []).map(textOf).join('')));
+  const flat = (nodes) => nodes.map((node) => textOf(node)).join('');
+  const walk = (nodes, out = []) => {
+    for (const node of nodes) {
+      if (node === null || node === undefined || node === false || typeof node !== 'object') continue;
+      out.push(node);
+      walk(node.children || [], out);
+    }
+    return out;
+  };
+  const find = (nodes, pred) => walk(nodes).filter(pred);
+  const svgs = (nodes) => find(nodes, (node) => node.type === 'svg');
+  const gridOf = (nodes) => find(nodes, (node) => node.props?.style?.display === 'inline-grid')[0];
+
+  // ① cases（数电讲义第 01 章原码/反码/补码那三段）：左大括号 + 两列网格，`&`/`\\` 不许露出来
+  const cases = lib.latexNodes('f(x)=\\begin{cases} x+1 & x>0 \\\\ 0 & x\\le 0 \\end{cases}', 'e1');
+  const casesText = flat(cases);
+  assert.ok(!casesText.includes('&'), `cases 的 & 不许外露：${casesText}`);
+  assert.ok(!casesText.includes('cases'), `环境名不许外露：${casesText}`);
+  assert.ok(!casesText.includes('\\\\'), `行分隔符不许外露：${casesText}`);
+  // 2026-11-12：cases 左边的大括号以前画 SVG（`delimiterNode('lbrace')`），但小写 `(` `[` 已改用字符，
+  // `lbrace` 仍走 SVG → 这里数 svg 依然是 1；同时它的「大括号字符」也行（两条路径取其一）。
+  assert.ok(svgs(cases).length === 1 || /[{]/u.test(casesText), 'cases 左边要画一个大括号');
+  const casesGrid = gridOf(cases);
+  assert.ok(casesGrid, 'cases 要用网格排成两列，而不是空格凑');
+  assert.equal(casesGrid.props.style.gridTemplateColumns, 'auto auto');
+  assert.equal(casesGrid.props.style.columnGap, '1.6em');
+  assert.deepEqual(casesGrid.children.slice(0, 3).map(textOf), ['x+1', 'x>0', '0']);
+  assert.match(textOf(casesGrid.children[3]), /^x≤\s*0$/u);
+
+  // ② 竖式加法（`array{r@{\quad}l}`）：真表格 + 等宽数字 + `\hline` 成横线
+  const stacked = lib.latexNodes('\\begin{array}{r@{\\quad}l} & 10101011 \\\\ + & 11001110 \\\\ \\hline 1 & 01111001 \\end{array}', 'e2');
+  const stackedText = flat(stacked);
+  assert.ok(!/hline|array|r@/u.test(stackedText), `环境名/列格式/横线命令都不许外露：${stackedText}`);
+  const table = find(stacked, (node) => node.type === 'table')[0];
+  assert.ok(table, '竖式要用 <table> 排版（一列一个 td 才对齐）');
+  assert.equal(table.props.style.fontVariantNumeric, 'tabular-nums', '竖式数字必须等宽');
+  const rows = find([table], (node) => node.type === 'tr');
+  assert.equal(rows.length, 3, '三行：被加数 / 加数 / 和');
+  assert.deepEqual(rows.map((row) => row.children.map((td) => textOf(td).trim())),
+    [['', '10101011'], ['+', '11001110'], ['1', '01111001']]);
+  assert.equal(rows[0].children[0].props.style.textAlign, 'right', 'r 列右对齐');
+  assert.equal(rows[0].children[1].props.style.textAlign, 'left', 'l 列左对齐');
+  assert.ok(rows[2].children[0].props.style.borderTop, '\\hline 要排成一道横线');
+
+  // ③ 真值表（`array{c|cccc}`）：`|` 画成竖线，但第一列左边不加
+  const truth = lib.latexNodes('\\begin{array}{c|cccc} A & B & C & D & F \\\\ \\hline 0 & 0 & 0 & 0 & 1 \\end{array}', 'e3');
+  const truthRows = find(truth, (node) => node.type === 'tr');
+  assert.equal(truthRows[0].children.length, 5);
+  assert.equal(truthRows[0].children[0].props.style.borderLeft, undefined, '第一列左边不加竖线');
+  assert.ok(truthRows[0].children[1].props.style.borderLeft, '`|` 要排成一道竖线');
+  assert.ok(truthRows[1].children[0].props.style.borderTop, '表头下要有横线');
+
+  // ④ pmatrix：左右各一个可伸缩括号
+  const pmat = lib.latexNodes('\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}', 'e4');
+  assert.ok(svgs(pmat).length === 2 || /[()]/u.test(flat(pmat)), 'pmatrix 左右各一个括号');
+  assert.deepEqual(gridOf(pmat).children.map(textOf), ['1', '2', '3', '4']);
+
+  // ⑤ aligned：奇数列右对齐、偶数列左对齐（多行等式推导靠它对齐等号）
+  const aligned = lib.latexNodes('\\begin{aligned} y &= (a+b)^2 \\\\ &= a^2+2ab+b^2 \\end{aligned}', 'e5');
+  const alignedCells = gridOf(aligned).children;
+  assert.equal(alignedCells.length, 4);
+  assert.deepEqual(alignedCells.map((cell) => cell.props.style.justifySelf), ['end', 'start', 'end', 'start']);
+
+  // ⑥ `\left\{ … \middle| … \right\}`：外层大括号 + 中间一道竖线（第二类 Stirling、矩阵集合都用它）
+  const set = lib.latexNodes('M=\\left\\{ \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\middle| a\\in\\mathbf{R} \\right\\}', 'e6');
+  const setText = flat(set);
+  assert.ok(!/left|right|middle/iu.test(setText), `定界符命令不许外露：${setText}`);
+  assert.ok(svgs(set).length + (setText.match(/[(){}|]/gu) ?? []).length >= 5, '外层 { } + pmatrix 两个括号 + 中间的竖线');
+  const middleBars = find(set, (node) => node.props?.style?.margin === '0 8px');
+  assert.equal(middleBars.length, 1, '\\middle 要排成一道中间竖线');
+
+  // ⑦ `\right.` 的空定界符不画；⑧ 不配对的环境/定界符也不许抛错、不许印命令名
+  // 2026-11-12：`{`/`}` 现在用小写字符排（不再是 svg），所以这里数「svg + 大括号字符」。
+  const rightEmpty = lib.latexNodes('f=\\left\\{\\begin{matrix} n \\\\ r \\end{matrix}\\right.', 'e7');
+  assert.ok(svgs(rightEmpty).length + (flat(rightEmpty).match(/[{]/gu) ?? []).length === 1, '\\right. 不画括号');
+  const broken = lib.latexNodes('\\begin{cases} x & y', 'e8');
+  assert.ok(Array.isArray(broken) && !flat(broken).includes('cases'), '没写 \\end 也不能抛错或印环境名');
+  assert.ok(!flat(lib.latexNodes('a \\right) b', 'e9')).includes('right'), '落单的 \\right 只吃掉定界符');
+
+  // ⑨ 讲义真实的竖式行（`$$…$$` 走 materialPreviewNodes）
+  const page = lib.materialPreviewNodes('$$\\begin{array}{r@{\\quad}l} & 10101011 \\quad (-85) \\\\ + & 11001110 \\quad (-50) \\\\ \\hline 1 & 01111001 \\end{array}$$', 'mp9');
+  const pageTable = find(page, (node) => node.type === 'table')[0];
+  assert.ok(pageTable, '讲义里的竖式要排成表格');
+  assert.equal(find([pageTable], (node) => node.type === 'tr').length, 3);
+});
+
+test('注解类命令：\\boxed / \\xrightarrow / \\underbrace / 长箭头都不再印命令名（2026-10-29）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || node === undefined || node === false || typeof node !== 'object') return '';
+    return (node.children || []).map(textOf).join('');
+  };
+  const flat = (nodes) => nodes.map((node) => textOf(node)).join('');
+  const walk = (nodes, out = []) => {
+    for (const node of nodes) {
+      if (node === null || node === undefined || node === false || typeof node !== 'object') continue;
+      out.push(node);
+      walk(node.children || [], out);
+    }
+    return out;
+  };
+  const find = (nodes, pred) => walk(nodes).filter(pred);
+  const columnOf = (nodes) => find(nodes, (node) => node.props?.style?.flexDirection === 'column')[0];
+
+  // ① `\boxed{…}`（讲义里 184 处）：画框，别印「boxed」
+  const boxed = lib.latexNodes('\\boxed{E=mc^2}', 'b1');
+  const box = find(boxed, (node) => String(node.props?.style?.border ?? '').includes('solid'))[0];
+  assert.ok(box, '\\boxed 要画一个边框');
+  assert.equal(textOf(box).replace(/\s+/gu, ''), 'E=mc2');
+  assert.ok(!flat(boxed).includes('boxed'), flat(boxed));
+
+  // ② `\xrightarrow{注解}`：箭头 + 上方小字注解，竖排
+  const xr = lib.latexNodes('a \\xrightarrow{\\text{舍去最高进位}} b', 'b2');
+  const xrText = flat(xr);
+  assert.ok(!xrText.includes('xrightarrow'), `命令名不许外露：${xrText}`);
+  assert.ok(xrText.includes('舍去最高进位') && xrText.includes('→'), xrText);
+  const xrColumn = columnOf(xr);
+  assert.ok(xrColumn, '箭头与注解要竖排（注解在箭头上方）');
+  assert.deepEqual(xrColumn.children.map(textOf), ['舍去最高进位', '→']);
+  // 可选的下注 `[下]` 排在箭头下面
+  const xrBoth = columnOf(lib.latexNodes('a \\xrightarrow[下]{上} b', 'b3'));
+  assert.deepEqual(xrBoth.children.map(textOf), ['上', '→', '下']);
+  // 空注解也不许印命令名
+  assert.ok(!flat(lib.latexNodes('\\xrightarrow{}', 'b4')).includes('xrightarrow'), '空注解也要吃掉命令名');
+
+  // ③ `\underbrace{X}_{说明}` / `\overbrace{X}^{说明}`：内容 + 花括号 + 小字说明
+  const under = lib.latexNodes('\\underbrace{a+b}_{两项}', 'b5');
+  assert.ok(!flat(under).includes('underbrace'), flat(under));
+  assert.deepEqual(columnOf(under).children.map(textOf), ['a+b', '⏟', '两项']);
+  const over = columnOf(lib.latexNodes('\\overbrace{a+b}^{两项}', 'b6'));
+  assert.deepEqual(over.children.map(textOf), ['两项', '⏞', 'a+b']);
+
+  // ④ 长箭头与零散符号（以前会印成 longrightarrow / odot / blacksquare）
+  const arrows = flat(lib.latexNodes('\\longrightarrow\\longmapsto\\Leftarrow\\uparrow\\odot\\blacksquare\\checkmark', 'b7'));
+  assert.ok(!/longleftarrow|longrightarrow|longmapsto|Leftarrow|uparrow|odot|blacksquare|checkmark/u.test(arrows), arrows);
+  assert.equal(arrows.replace(/\s+/gu, ''), '⟶⟼⇐↑⊙∎✓');
+  // ⑤ `\dbinom` 与 `\binom` 同样排成上下两行
+  const dbinom = lib.latexNodes('\\dbinom{n}{k}', 'b8');
+  assert.ok(!flat(dbinom).includes('dbinom'), flat(dbinom));
+  assert.ok(find(dbinom, (node) => node.props?.style?.display === 'inline-flex').length > 0, '\\dbinom 要上下叠');
+});
+
 test('material preview: 教材页正文按「排版」读，页眉/分隔线丢掉、公式真排版', () => {
   const test = statefulClient();
   const lib = test.half.DESCRIPTORS.internals;
@@ -2515,6 +2743,29 @@ test('material preview: 教材页正文按「排版」读，页眉/分隔线丢�
   assert.ok(!/\\[A-Za-z]+/u.test(flat), `不许露 LaTeX 源码：${flat}`);
   assert.ok(flat.includes('例 12.3'), `小标题文字要保留：${flat}`);
   assert.ok(flat.includes('电荷元'), `正文要保留：${flat}`);
+});
+
+test('行内 $$…$$ 不许漏出一个 $（2026-10-31 修：数电讲义「代码原文」根因）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || node === undefined || node === false || typeof node !== 'object') return '';
+    return (node.children || []).map(textOf).join('');
+  };
+  // ① analysisInline：`$$…$$` 与 `$…$` 混排在同一句（正是数电第02章讲义那句），渲染后不许残留 `$`
+  const inline = textOf(lib.analysisInline('符号为 $\\oplus$，代数展开式为： $$Y = A \\oplus B = A\'B + AB\'$$', 'q'));
+  assert.ok(!inline.includes('$'), `行内 $$…$$ 不许漏 $：${inline}`);
+  assert.ok(inline.includes('⊕') && inline.includes('Y'), `公式要排版成符号：${inline}`);
+  // ② 单 `$…$` 行为不变（修 $$ 不能把普通行内公式弄坏）
+  const single = textOf(lib.analysisInline('取值不同输出 $1$，相同输出 $0$', 's'));
+  assert.ok(!single.includes('$'), `$…$ 不许漏 $：${single}`);
+  assert.ok(single.includes('1') && single.includes('0'), single);
+  // ③ materialPreviewNodes：段落中间的 $$…$$（不是行首），这块以前正是漏 $ 的入口
+  const flat = textOf(lib.materialPreviewNodes('代数展开式为： $$Y = A \\oplus B = A\'B + AB\'$$', 'mpD'));
+  assert.ok(!flat.includes('$'), `段落中行内 $$…$$ 不许漏 $：${flat}`);
+  assert.ok(flat.includes('⊕'), flat);
 });
 
 test('split reader: compact selection and full-map return preserve the navigator',()=>{
@@ -2571,6 +2822,269 @@ test('mind zoom: fit, clamp, SVG geometry and per-course restoration',()=>{
  f.find(n=>n.type==='button'&&text(n)==='适应窗口').props.onClick();f=render();svg=f.find(n=>n.type==='svg');assert.ok(svg.props.width<=box.clientWidth&&svg.props.height<=box.clientHeight);
  f.find(n=>n.type==='button'&&text(n)==='100%').props.onClick();f=render();assert.equal(f.find(n=>n.type==='svg').props.width,w);
 });
+test('lecture entry: 点章名读该章讲义，展开/收起只归左边的箭头管（2026-10-29）',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ // 章标签走大纲（`第${no}章 ${title}`），讲义表走 资料分析.json 的 lectures
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'A',file:'a/第01章-A.md'},{key:'C',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ // 讲义入口＝章名本身（左边那排「讲义 A/B/C」小按钮已删），按 title 认章按钮/章行
+ const chapterBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读'));
+ const arrowBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-arrow-btn'));
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({treeCourseId:'a',courseId:'a'});
+ function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));}
+ const layout=f=>f.find(n=>n.props?.className==='sa-learning-layout');
+ let f=render();
+ assert.equal(layout(f).props['data-full-browser'],'false');
+ assert.ok(chapterBtn(f),'紧凑目录里章名就是讲义入口');
+ const expanded=arrowBtn(f).props['aria-expanded'];
+ chapterBtn(f).props.onClick();f=render();
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'点章名要在右侧挂上该章讲义（沿用上次选过的档）');
+ assert.equal(arrowBtn(f).props['aria-expanded'],expanded,'点章名不许顺手把左边展开状态也改了');
+ // 完整浏览（树卡）里点章行同样要退回分栏阅读，否则正文渲染进被 CSS 藏起来的阅读栏
+ f.find(n=>n.type==='button'&&text(n)==='展开完整目录').props.onClick();f=render();
+ assert.equal(layout(f).props['data-full-browser'],'true');
+ f.find(n=>String(n.props?.className??'').includes('sa-tree-row')&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+ assert.equal(layout(f).props['data-full-browser'],'false','点章名要退回分栏阅读，正文才看得见');
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'阅读栏要真的挂上这份讲义正文');
+ // 换档：版本切换行在讲义正文上方，点 A 就换 A
+ f.find(n=>n.type==='button'&&text(n)==='讲义 A').props.onClick();f=render();
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-A.md'),'换风格要换正文');
+});
+
+test('lecture entry: 点章只读讲义、点知识点把讲义收掉（右侧一份内容，别两张卡叠着读）',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'C',file:'a/第01章-C.md'}]}]}]}};
+ const chapterBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读'));
+ const pointBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-point')&&String(n.props?.title??'').startsWith('First point'));
+ const expandAll=(f)=>{for(let guard=0;guard<8;guard+=1){const b=f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-arrow-btn')&&n.props['aria-expanded']===false);if(!b)break;b.props.onClick({stopPropagation(){}});f=render();}return f;};
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));}
+ let f=expandAll(render());
+ assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'),'选中知识点后要有详情卡');
+ assert.ok(pointBtn(f),'紧凑目录要能点到知识点');
+ chapterBtn(f).props.onClick();f=render();
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'点章要在右侧挂上该章讲义');
+ assert.ok(!f.some(n=>n.props?.id==='sa-kp-detail'),'点章后知识点详情卡要收掉，别和讲义叠着');
+ // 再点回知识点：讲义收掉、该知识点自己的详解回来（左侧选中不变）
+ f=expandAll(f);
+ pointBtn(f).props.onClick();f=render();
+ assert.ok(!f.some(n=>n.props?.title==='a/第01章-C.md'),'点知识点后章讲义要收掉');
+ assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'),'详情卡要回来');
+});
+
+test('lecture entry: 版本切换行在讲义正文上方，高亮跟着当前文件走',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,title:'A',styles:[{key:'A',label:'严谨体系式',file:'a/第01章-A.md'},{key:'C',label:'问题驱动式',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const childrenOf=n=>{const out=[];(function walk(x){if(!x||typeof x!=='object')return;if(x.type==='button')out.push(x);(x.children||[]).forEach(walk);})(n);return out;};
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+ let f=render();
+ assert.ok(!f.some(n=>text(n)==='本章讲义'),'树视图里详情卡上方的「本章讲义」行要挪走');
+ // 点章名读讲义（左边不再有「讲义 A/B/C」三颗按钮）
+ f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+ const row=f.find(n=>String(n.props?.className??'').includes('sa-lecture-switch'));
+ assert.ok(row,'讲义卡要有版本切换行');
+ assert.deepEqual(childrenOf(row).map(text),['讲义 A','讲义 C']);
+ const buttons=childrenOf(row);
+ assert.ok(buttons[1].props.className.includes('primary'),'当前打开的是 C，高亮要落在 C 上');
+ // 切换行要紧接着讲义卡的标题栏、压在正文上面（正文可能是「正在读取…」或 `sa-reading`）
+ const hasDeep=(n,pred)=>{let hit=false;(function walk(x){if(hit||!x||typeof x!=='object')return;if(pred(x)){hit=true;return;}(x.children||[]).forEach(walk);})(n);return hit;};
+ const card=f.find(n=>n.props?.className==='sa-card'&&hasDeep(n,c=>c?.props?.title==='a/第01章-C.md'));
+ assert.ok(card,'讲义卡要挂着这份正文');
+ const kids=card.children||[];
+ assert.ok(kids.findIndex(c=>String(c?.props?.className??'').includes('sa-lecture-switch'))===1,'切换行要排在标题栏下面、正文上面');
+ buttons[0].props.onClick();f=render();
+ const buttons2=childrenOf(f.find(n=>String(n.props?.className??'').includes('sa-lecture-switch')));
+ assert.ok(buttons2[0].props.className.includes('primary'),'切到 A 后高亮要跟着换');
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-A.md'),'正文要换成 A 那份');
+});
+
+test('lecture entry: 没有讲义的章点了给说明卡（数电第 5–8 章还没生成）',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]},
+   {no:2,title:'B',sections:[{no:'2.1',title:'T',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'C',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const deep=n=>{let s='';(function walk(x){if(typeof x==='string'){s+=x;return;}if(!x||typeof x!=='object')return;(x.children||[]).forEach(walk);})(n);return s;};
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({treeCourseId:'a',courseId:'a'});
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+ let f=render();
+ f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('第2章 B')).props.onClick();f=render();
+ const hint=f.find(n=>String(n.props?.className??'').includes('sa-lecture-empty'));
+ assert.ok(hint,'没讲义的章要给说明卡');
+ assert.ok(deep(hint).includes('还没生成'),'说明卡要讲清「还没生成」，别让人以为点了没反应');
+ assert.ok(deep(hint).includes('第2章 B'),'说明卡标题要是章名');
+ assert.ok(!f.some(n=>n.props?.title==='a/第01章-C.md'),'不能顺手把别的章的讲义顶上来');
+});
+
+test('lecture entry: 列表/图视图的详情卡用章名当讲义入口（不写「读本章讲义」）',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'C',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ const render=(view)=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:view}));};
+ let f=render('list');
+ const entry=f.find(n=>n.type==='button'&&text(n)==='第1章 A');
+ assert.ok(entry,'列表视图的详情卡要有章名按钮（树视图靠章行，列表视图只剩这儿）');
+ assert.ok(!f.some(n=>text(n).includes('本章讲义')),'按钮文案就是章名，不写「本章讲义」');
+ entry.props.onClick();f=render('list');
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'点章名要在右侧打开该章讲义');
+});
+
+test('lecture entry: 讲义也能进专注阅读，标题报章名与档位',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,title:'A',styles:[{key:'C',label:'问题驱动式',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+ let f=render();
+ f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+ const page={scrollTop:240,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:-120})};
+ const focusButtons=f.filter(n=>n.type==='button'&&text(n)==='专注阅读');
+ assert.equal(focusButtons.length,1,'讲义打开时只留一个专注阅读按钮（挂在正文卡上，详情卡不重复）');
+ focusButtons[0].props.onClick({currentTarget:{}});f=render();
+ assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'true');
+ assert.ok(f.some(n=>n.type==='strong'&&text(n).includes('讲义 C')),'专注标题要报档位');
+ f.find(n=>n.type==='button'&&text(n)==='退出专注阅读').props.onClick();f=render();
+ assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
+});
+
+test('lecture links: 专注阅读垫不透明纸底，字号跟随 DSH 内容字号可调',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const css=fs.readFileSync(CLIENT_FILE,'utf8');
+ // 背景（2026-10-29 用户报「专注阅读点开后背景透明、无法阅读」）：壁纸插件 wallpaper-engine 会把
+ // --dsw-alias-bg-layer-1 改写成 45~59% 不透明的玻璃配方，专注面只铺它就会透出底下的目录与正文。
+ // 所以专注面必须自己垫一层实色纸底（宿主静态调色板，两个插件都不改写 --dsw-static-*）。
+ assert.ok(/\.sa-reader-pane\[data-focus-reader="true"\]\{[^}]*--sa-focus-paper:var\(--dsw-static-neutral-bluish-00, #fff\)/.test(css),'浅色纸底要取宿主静态色');
+ assert.ok(/\.sa-reader-pane\[data-focus-reader="true"\]\{[^}]*background-color:var\(--sa-focus-paper\)/.test(css),'专注面要用不透明纸底当 background-color');
+ assert.ok(/body\[data-ds-dark-theme\][^{]*\{--sa-focus-paper:var\(--dsw-static-neutral-bluish-875, #232324\)/.test(css),'深色要跟着 data-ds-dark-theme 换纸底');
+ assert.ok(/\.sa-focus-header\{[^}]*background-color:var\(--sa-focus-paper/.test(css),'标题栏也要不透明，否则正文从它下面透上来');
+ assert.ok(!/\.sa-reader-pane\[data-focus-reader="true"\]\{[^}]*\n?\s*background:var\(--dsw-alias-bg-layer-1\)/.test(css),'专注面不能只铺半透明玻璃色');
+ // 字号（同一条要求）：基准取 DSH 设置里的「内容字号」（body 上的 --dsh-content-font-size），再乘本页倍率
+ assert.ok(/\.sa-reading\{[^}]*font-size:calc\(var\(--dsh-content-font-size, 16px\) \* var\(--sa-read-scale, 1\)\)/.test(css),'正文基准要跟随 --dsh-content-font-size');
+ assert.ok(!/\.sa-reading p\{[^}]*font-size:16px!important/.test(css),'段落字号不能再写死 16px');
+ // 2026-10-30：三处「写死字号」收敛（用户报「调 A+ 只有正文动，标题/表格纹丝不动」）
+ // ① 详情卡标题 22px、窄面板那档 20px：父级 .sa-dock 是 14px，用 em 会算错，所以走 calc 乘 1.375 / 1.25
+ assert.ok(!/h3\.sa-detail-title\{font-size:22px/.test(css),'详情卡标题不能再写死 22px');
+ assert.ok(/h3\.sa-detail-title\{font-size:calc\(var\(--dsh-content-font-size, 16px\) \* var\(--sa-read-scale, 1\) \* 1\.375\)/.test(css),'详情卡标题要 = 基准 × 倍率 × 1.375');
+ assert.ok(/h3\.sa-detail-title\{font-size:calc\(var\(--dsh-content-font-size, 16px\) \* var\(--sa-read-scale, 1\) \* 1\.25\)/.test(css),'窄面板那档标题也要缩放（20/16=1.25）');
+ // ② markdown 表格 14px（内联）→ em；解析器里所有字号都必须相对外层 .sa-reading
+ assert.ok(/fontSize: '0\.875em', lineHeight: 1\.5/.test(css),'markdown 表格字号要写成 em，才会跟 .sa-reading 一起缩放');
+ assert.ok(/paddingLeft: 20, fontSize: '1em', lineHeight: 1\.65/.test(css),'列表字号要写成 em');
+ assert.ok(/fontSize: '0\.9375em', fontWeight: 600/.test(css),'6 级小标题字号要写成 em');
+ assert.ok(!/fontSize: 16, lineHeight: 1\.65/.test(css),'解析器段落里不能再出现写死的 16px');
+  // 讲义正文走 materialPreviewNodes：标题分级 2026-11-04 收到 HEADING_STYLE，1~3 级拉开、全用 em
+  assert.ok(/const HEADING_STYLE = \(level\) => \{/.test(css),'标题分级要收敛到 HEADING_STYLE 一处');
+  assert.ok(/margin: '20px 0 8px', fontSize: '1\.375em', fontWeight: 700/.test(css),'1 级标题（章）要最大最粗');
+  assert.ok(/margin: '20px 0 6px', fontSize: '1\.1875em', fontWeight: 700/.test(css),'2 级标题（节）要明显小于章');
+  assert.ok(/margin: '16px 0 4px', fontSize: '1\.0625em', fontWeight: 700/.test(css),'3 级标题（知识块）要带左侧色条');
+  assert.ok(!/fontSize: '1\.0625em', fontWeight: 600/.test(css),'标题不许再退回 600 粗的微弱写法');
+ assert.ok(/fontSize: '1\.0625em', lineHeight: 1\.7/.test(css),'跨行公式字号要写成 em');
+ // ③ 聊天气泡 16px!important → 基准 × 倍率（它不在 .sa-reading 里，只能自己算）
+ assert.ok(!/\.sa-chat-message\{font-size:16px!important/.test(css),'聊天气泡不能再写死 16px');
+ assert.ok(/\.sa-chat-message\{font-size:calc\(var\(--dsh-content-font-size, 16px\) \* var\(--sa-read-scale, 1\)\)!important/.test(css),'聊天气泡要跟着倍率');
+ // 界面记忆里存倍率时要夹区间并对齐步长
+ lib.resetKnowledgeUi();
+ lib.readKnowledgeUi({readScale:3});
+ assert.equal(lib.readKnowledgeUi().readScale,1.75,'倍率上限 1.75');
+ lib.readKnowledgeUi({readScale:0.1});
+ assert.equal(lib.readKnowledgeUi().readScale,0.75,'倍率下限 0.75');
+ lib.readKnowledgeUi({readScale:0.84});
+ assert.equal(lib.readKnowledgeUi().readScale,0.8125,'倍率要对齐 1/16 步长');
+ lib.readKnowledgeUi({readScale:'坏值'});
+ assert.equal(lib.readKnowledgeUi().readScale,1,'读不出数字就回默认 1');
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,title:'A',styles:[{key:'C',label:'问题驱动式',file:'a/第01章-C.md'}]}]}]}};
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+ let f=render();
+ f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+ const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();
+ const pane=()=>f.find(n=>n.props?.className==='sa-reader-pane');
+ const sizeLabel=()=>{const outs=f.filter(n=>n.props?.className==='sa-zoom-value');assert.equal(outs.length,1,'专注标题栏只留一个字号读数');return text(outs[0]);};
+ const press=(label)=>{f.find(n=>n.type==='button'&&(n.props?.['aria-label']===label||text(n)===label)).props.onClick();f=render();};
+ assert.equal(pane().props.style['--sa-read-scale'],'1','默认倍率 1 = 完全跟随 DSH 内容字号');
+ assert.equal(sizeLabel(),'16px','读不到 --dsh-content-font-size 时按 16px 兜底');
+ press('A+');
+ assert.equal(pane().props.style['--sa-read-scale'],'1.0625','16px 基准下 A+ 一格 = 1px');
+ assert.equal(sizeLabel(),'17px');
+ press('A−');press('A−');
+ assert.equal(pane().props.style['--sa-read-scale'],'0.9375');
+ assert.equal(sizeLabel(),'15px');
+ for(let i=0;i<40;i+=1) press('A+');
+ assert.equal(pane().props.style['--sa-read-scale'],'1.75','连点要夹在上限');
+ assert.equal(sizeLabel(),'28px');
+ press('字号 100%');
+ assert.equal(pane().props.style['--sa-read-scale'],'1','100% 回跟随 DSH 内容字号（原「重置」按钮）');
+ assert.equal(sizeLabel(),'16px');
+});
+
+test('read scale: 适应窗口按阅读区宽度反算倍率，夹在 A+/A− 同一区间',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ // 纯函数：可用宽度 ÷ 设计行宽(80ch) 再夹到 0.75~1.75；坏值一律 1（宁可不动，也不要 0 号字）
+ assert.equal(lib.fitReadScale(800,640),1.25,'800px 面板配 640px 栏宽 = 1.25 倍');
+ assert.equal(lib.fitReadScale(640,640),1,'正好塞满就是 100%');
+ assert.equal(lib.fitReadScale(320,640),0.75,'窄面板触底夹到 0.75');
+ assert.equal(lib.fitReadScale(4000,640),1.75,'超宽面板封顶 1.75，和 A+ 同一个上限');
+ assert.equal(lib.fitReadScale('坏值',640),1,'宽度读不出数字就回 1');
+ assert.equal(lib.fitReadScale(800,0),1,'栏宽为 0 时不能除出 Infinity');
+ assert.equal(lib.clampReadScale(0.84),0.8125,'夹取要顺手对齐 1/16 步长');
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,title:'A',styles:[{key:'C',label:'问题驱动式',file:'a/第01章-C.md'}]}]}]}};
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+ let f=render();
+ f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+ const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ const setPane=(extra)=>{f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0}),...extra};};
+ setPane({clientWidth:800});
+ f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();
+ const pane=()=>f.find(n=>n.props?.className==='sa-reader-pane');
+ const press=(label)=>{f.find(n=>n.type==='button'&&(n.props?.['aria-label']===label||text(n)===label)).props.onClick();f=render();};
+ // 按钮本身要在场、要有 aria-label（源码级要求：新按钮不能只靠肉眼找）
+ assert.equal(f.filter(n=>n.type==='button'&&n.props?.['aria-label']==='字号 100%').length,1,'专注标题栏要有「100%」按钮');
+ assert.equal(f.filter(n=>n.type==='button'&&n.props?.['aria-label']==='字号适应窗口').length,1,'专注标题栏要有「适应窗口」按钮');
+ // 测试环境没有真 DOM：量不到 80ch 时按 1ch≈0.5em 估（16px 基准 → 640px），可用宽度取 clientWidth
+ press('字号适应窗口');
+ assert.equal(pane().props.style['--sa-read-scale'],'1.25','800px 面板 → 1.25 倍');
+ setPane({clientWidth:320});press('字号适应窗口');
+ assert.equal(pane().props.style['--sa-read-scale'],'0.75','320px 面板触底');
+ setPane({clientWidth:4000});press('字号适应窗口');
+ assert.equal(pane().props.style['--sa-read-scale'],'1.75','超宽面板封顶');
+ // 量不到宽度（ref 还没有 clientWidth）时要原地不动，不能把倍率打成 0
+ setPane({});press('字号适应窗口');
+ assert.equal(pane().props.style['--sa-read-scale'],'1','量不到宽度就回 100%');
+ press('A+');
+ assert.equal(pane().props.style['--sa-read-scale'],'1.0625','A+ 仍然一格 1px');
+});
+
 test('focus reading: entry, exit and close retain the same selected content',()=>{
  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
  const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
@@ -2583,4 +3097,585 @@ test('focus reading: entry, exit and close retain the same selected content',()=
  assert.ok(f.some(n=>n.type==='h3'&&text(n)==='Focus point'));
  f.find(n=>n.type==='button'&&text(n)==='退出专注阅读').props.onClick();f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
  assert.equal(page.scrollTop,240);assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'));
+});
+
+test('正文缓存：同一份资料只取一次、失败不缓存、页号算不同键（2026-10-29 晚）',async()=>{
+ let okCalls=0,badCalls=0,pages=[];
+ const fetchStub=async url=>{
+  const query=new URL(String(url),'http://127.0.0.1').searchParams;
+  const target=String(query.get('path')||''),page=query.get('page');
+  if(target==='bad.md'){badCalls+=1;return {json:async()=>({ok:false,error:'no-text'})};}
+  okCalls+=1;pages.push(page);return {json:async()=>({ok:true,text:'T',file:target,page:Number(page)||1})};
+ };
+ const {half}=loadClient({fetch:fetchStub}),lib=half.DESCRIPTORS.internals;
+ assert.equal(typeof lib.materialTextCached,'function','要能走带缓存的取正文');
+ assert.equal(lib.peekMaterialText('ok.md'),undefined,'还没取过就不该有缓存');
+ const first=await lib.materialTextCached('ok.md');
+ const second=await lib.materialTextCached('ok.md');
+ assert.equal(okCalls,1,'同一份资料第二次要走缓存，不再发请求');
+ assert.equal(first,second,'缓存要返回同一个对象');
+ assert.equal(lib.peekMaterialText('ok.md').text,'T');
+ await lib.materialTextCached('bad.md');await lib.materialTextCached('bad.md');
+ assert.equal(badCalls,2,'失败结果不缓存，允许下次重试');
+ await lib.materialTextCached('ok.md',3);
+ assert.equal(okCalls,2,'不同页号算不同缓存键');
+ assert.equal(pages[1],'3');
+});
+
+test('lecture switch: 换讲义不卸旧正文、不白闪、不跳滚动（2026-10-29 晚 m00502）',async()=>{
+ const gate=[];const calls=[];
+ const fetchStub=async url=>{
+  const target=String(new URL(String(url),'http://127.0.0.1').searchParams.get('path')||'');
+  calls.push(target);
+  const body=target.includes('第02章')?'第二章正文':'第一章正文';
+  const payload={ok:true,file:target,text:body,page:1,pages:[]};
+  // 第二章那份故意挂起：用来观察「新正文还没到」那一帧的画面
+  if(target.includes('第02章'))return new Promise(resolve=>gate.push(()=>resolve({json:async()=>payload})));
+  return {json:async()=>payload};
+ };
+ const probe=statefulClient({fetch:fetchStub}),lib=probe.half.DESCRIPTORS.internals;
+ probe.window.innerHeight=800;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},
+  knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'},{id:'b1',name:'Second point',courseId:'a',chapter:'第2章 B'}]},
+  knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]},{no:2,title:'B',sections:[]}]}]},
+  knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'C',file:'a/第01章-C.md'}]},{no:2,styles:[{key:'C',file:'a/第02章-C.md'}]}]}]}};
+ // 深递归取文本：先判字符串再判对象，否则字符串永远被丢掉
+ const strings=(n,out=[])=>{if(typeof n==='string'){out.push(n);return out;}if(!n||typeof n!=='object')return out;for(const child of n.children||[])strings(child,out);return out;};
+ const readingText=f=>{const el=f.find(n=>n.type===lib.materialReading);return el?String(el.props.text??''):'';};
+ const paneText=f=>strings(f.find(n=>n.props?.className==='sa-reader-pane')).join('');
+ const chapterBtn=(f,no)=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-point')&&String(n.props?.title??'').includes('第'+no+'章'));
+ const flush=async()=>{for(let i=0;i<4;i+=1)await Promise.resolve();await new Promise(r=>setTimeout(r,0));};
+ lib.resetKnowledgeUi();lib.readKnowledgeUi({treeCourseId:'a',courseId:'a'});
+ function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs:docs,initialView:'tree'}));}
+ const scrolled=[];
+ const pane={getBoundingClientRect:()=>({top:-10}),scrollIntoView:()=>scrolled.push(true)};
+ let f=render();
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current=pane;
+ chapterBtn(f,1).props.onClick();
+ await flush();f=render();
+ assert.ok(readingText(f).includes('第一章正文'),'点章后要读到第一章正文');
+ assert.equal(scrolled.length,0,'阅读区本来就在视野里时不许滚面板（换讲义不跳）');
+ // 换到第二章：正文还没回来这一帧，旧正文必须还在（这就是以前的「白闪」）
+ chapterBtn(f,2).props.onClick();
+ f=render();
+ assert.ok(readingText(f).includes('第一章正文'),'新正文没到之前要留着旧正文，不许白闪一帧');
+ assert.ok(paneText(f).includes('读取中…'),'换正文期间只在标题栏提示读取中');
+ gate.shift()();
+ await flush();f=render();
+ assert.ok(readingText(f).includes('第二章正文'),'新正文到了就原地替换');
+ assert.ok(!paneText(f).includes('读取中…'),'替换完提示要收掉');
+ // 阅读区整块在视野外（窄布局）才允许滚进来
+ pane.getBoundingClientRect=()=>({top:900});
+ chapterBtn(f,1).props.onClick();
+ await flush();f=render();
+ assert.equal(scrolled.length,1,'只有正文整块在视野外才滚进来');
+ // 再点回第一章：缓存命中，同一帧就出正文，不再发请求
+ const before=calls.length;
+ chapterBtn(f,1).props.onClick();
+ f=render();
+ assert.ok(readingText(f).includes('第一章正文'),'缓存命中要同一帧出正文');
+ assert.equal(calls.length,before,'缓存命中的资料不再发请求');
+});
+
+// ── W3b 资料树（2026-10-30）────────────────────────────────────────
+test('资料树（W3b）：从 path 目录段派生「学科→文件夹→文件」，未知路径进「其他」', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.buildMaterialsTree, 'function', '资料树派生函数要导出给测试');
+  const courses = [{ id: 'c_dg', name: '数字电子技术基础' }];
+  const files = [
+    { path: '数电/作业/第01次作业_原题.pdf', courseId: 'c_dg', kind: 'homework' },
+    { path: '数电/教材/第01章.pdf', courseId: 'c_dg', kind: 'textbook' },
+    { path: '数电/讲义/第01章-C.md', courseId: 'c_dg', kind: 'lecture' },
+    { path: '数电/无目录文件.pdf', courseId: 'c_dg', kind: 'material' },
+  ];
+  const tree = lib.buildMaterialsTree(files, courses);
+  assert.equal(tree.length, 1, '按学科分组：一个学科一棵树');
+  assert.equal(tree[0].name, '数字电子技术基础');
+  assert.equal(tree[0].count, 4);
+  const groupNames = tree[0].groups.map((g) => g.name);
+  assert.ok(groupNames.includes('作业') && groupNames.includes('教材') && groupNames.includes('讲义'), `应有 作业/教材/讲义 三组：${groupNames}`);
+  assert.ok(groupNames.includes('其他'), `没有目录段的文件要进「其他」：${groupNames}`);
+  assert.equal(groupNames[groupNames.length - 1], '其他', '「其他」要排最后');
+  const homework = tree[0].groups.find((g) => g.name === '作业');
+  assert.equal(homework.files.length, 1, '作业组应有一份');
+  assert.equal(homework.files[0].path, '数电/作业/第01次作业_原题.pdf', '叶子要落在对应文件夹');
+  assert.equal(lib.materialKindLabel('homework'), '作业');
+  assert.equal(lib.materialKindLabel(''), '未标类型');
+});
+
+test('资料树记忆（W3b）：expand 缺省容错 / 坏值清洗，且返回前进后展开状态还在', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  lib.resetMaterialsUi();
+  lib.resetNavigation();
+  const expandJson = () => JSON.stringify(lib.readMaterialsUi().expand);
+  assert.equal(expandJson(), '{}', '缺省 expand 是空对象（缺省不破坏旧快照）');
+  lib.readMaterialsUi({ expand: { c_dg: ['作业', '教材'] } });
+  assert.equal(expandJson(), JSON.stringify({ c_dg: ['作业', '教材'] }));
+  lib.readMaterialsUi({ expand: { c_dg: ['作业', 5, null], bad: 'x' } });
+  assert.equal(expandJson(), JSON.stringify({ c_dg: ['作业'] }), '坏值要清洗掉');
+  lib.readMaterialsUi({ view: 'files', courseId: 'c_dg', openPath: '数电/作业/a.pdf', openPage: 2, expand: { c_dg: ['讲义'] } });
+  lib.navPush(lib.navSnapshot('materials'));
+  lib.readMaterialsUi({ expand: { c_dg: [] } });
+  lib.navPush(lib.navSnapshot('materials'));
+  lib.navBack();
+  assert.equal(expandJson(), JSON.stringify({ c_dg: ['讲义'] }), '返回后展开状态要复原');
+  assert.equal(lib.readMaterialsUi().openPath, '数电/作业/a.pdf');
+});
+
+test('阅读面合并 + 资料树 + 讲义版本收敛（W3/W6）：源码级钉住结构', () => {
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(source.includes('function MaterialReadingCard('), '要有公用阅读面正文卡 MaterialReadingCard');
+  assert.equal((source.match(/h\(MaterialReading,/g) || []).length, 1, 'MaterialReading 只应在一个地方渲染（公用卡里）');
+  assert.ok(!source.includes("detailCard = openPath === null ? null : h('div', { className: 'sa-card' }"), '资料页/知识点页不再各自写正文卡分支');
+  assert.ok(source.includes('function buildMaterialsTree('), '要有资料树派生函数');
+  assert.ok(source.includes("placeholder: '搜索文件名 / 科目'"), '资料页要有搜索框（只筛文件名+科目）');
+  assert.ok(source.includes('function materialMeta('), '悬停要出元信息（kind/页数/更新时间）');
+  assert.ok(source.includes('expand: cloneMaterialsExpand'), 'readMaterialsUi 要持久化 expand 字段');
+  assert.ok(source.includes('supersededBy'), 'W6 要按 supersededBy 区分当前/历史');
+  assert.ok(source.includes('历史 ${historyEntries.length} 版'), '要有「历史 N 版」折叠入口');
+  assert.ok(source.includes('${versionTag}'), '当前版按钮要带 version 标记');
+  assert.ok(source.includes('已被 v${style.supersededBy} 取代'), '历史按钮要标「已被 vX 取代」');
+});
+
+test('讲义版本收敛（W6）：已被取代的旧版不占主行，收进「历史 N 版」，当前版带 v 标记', () => {
+  const probe = statefulClient();
+  const lib = probe.half.DESCRIPTORS.internals;
+  const docs = { courses: { courses: [{ id: 'a', name: 'A' }] },
+    knowledgeNetwork: { nodes: [{ id: 'a1', name: 'P', courseId: 'a', chapter: '第1章 A', section: '1.1' }] },
+    knowledgeOutline: { courses: [{ courseId: 'a', chapters: [{ no: 1, title: 'A', sections: [{ no: '1.1', title: 'S', subs: [] }] }] }] },
+    knowledgeAnalysis: { courses: [{ courseId: 'a', lectures: [{ no: 1, title: 'A',
+      styles: [{ key: 'A', file: 'a/第01章-A-v2.md', version: 2 }, { key: 'C', file: 'a/第01章-C.md' }],
+      variants: [{ key: 'A', file: 'a/第01章-A-v1.md', version: 1, supersededBy: 2 }] }] }] } };
+  const text = (n) => (n.children || []).filter((x) => typeof x === 'string').join('');
+  const collect = (root, pred) => { const out = []; (function walk(x){ if(!x||typeof x!=='object') return; if(pred(x)) out.push(x); (x.children||[]).forEach(walk); })(root); return out; };
+  lib.resetKnowledgeUi();
+  lib.readKnowledgeUi({ treeCourseId: 'a', courseId: 'a' });
+  const render = () => { probe.begin(); return probe.flat(lib.knowledgeTab({ docs, initialView: 'tree' })); };
+  let f = render();
+  f.find((n) => n.type === 'button' && String(n.props?.title ?? '').includes('在右侧读')).props.onClick();
+  f = render();
+  const row = f.find((n) => String(n.props?.className ?? '').includes('sa-lecture-switch'));
+  assert.ok(row, '讲义卡要有版本切换行');
+  const mainTexts = collect(row, (n) => n.type === 'button' && !String(n.props?.className ?? '').includes('sa-lecture-history-toggle')).map(text);
+  assert.ok(mainTexts.includes('讲义 A · v2'), `当前版 A 要带 v2 标记：${mainTexts}`);
+  assert.ok(mainTexts.includes('讲义 C'), `当前版 C 应出现：${mainTexts}`);
+  assert.ok(!mainTexts.some((t) => t.includes('v1')), `已被取代的 A v1 不许出现在主行：${mainTexts}`);
+  const histToggle = collect(row, (n) => n.type === 'button' && String(n.props?.className ?? '').includes('sa-lecture-history-toggle'));
+  assert.equal(histToggle.length, 1, '要有「历史 1 版」折叠入口');
+  assert.ok(text(histToggle[0]).includes('历史 1 版'), `历史入口文案要报个数：${text(histToggle[0])}`);
+});
+
+// ── B1 批注渲染计划（2026-10-30）：纯函数，在「当前原文」上重定位，区分 found/fuzzy/lost ──
+test('批注渲染计划（B1）：同原文快路径 → 全 found，偏移不变', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.buildAnnotationRenderPlan, 'function', '要有批注渲染计划纯函数并导出给测试');
+  const text = '# 第1章\n\n数据结构是计算机存储、组织数据的方式。\n\n算法是对特定问题求解步骤的描述。\n';
+  const q1 = '数据结构是计算机存储、组织数据的方式。';
+  const q2 = '算法是对特定问题求解步骤的描述。';
+  const s1 = text.indexOf(q1);
+  const s2 = text.indexOf(q2);
+  const notes = [
+    { id: 'a1', type: 'note', content: 'x', anchor: { quote: q1, start: s1, end: s1 + q1.length, prefix: '', suffix: '' } },
+    { id: 'a2', type: 'highlight', content: 'y', anchor: { quote: q2, start: s2, end: s2 + q2.length, prefix: '', suffix: '' } },
+  ];
+  const plan = lib.buildAnnotationRenderPlan(notes, text);
+  assert.equal(plan.length, 2);
+  // 逐条比基本类型（client.js 在 vm 沙箱里加载，数组跨 realm，不能用 deepEqual 比整块）
+  assert.equal(plan[0].id, 'a1');
+  assert.equal(plan[0].state, 'found');
+  assert.equal(plan[0].start, s1);
+  assert.equal(plan[0].end, s1 + q1.length);
+  assert.equal(plan[1].id, 'a2');
+  assert.equal(plan[1].state, 'found');
+  assert.equal(plan[1].start, s2);
+  assert.equal(plan[1].end, s2 + q2.length);
+});
+
+test('批注渲染计划（B1）：原文改过 → 唯一命中刷新偏移 / 重复 → fuzzy / 删除 → lost', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const q = '算法是对特定问题求解步骤的描述。';
+  const orig = `# 第1章\n\n${q}\n`;
+  const oldStart = orig.indexOf(q);
+  // 前面插一段：偏移变了但 quote 唯一 → found，且刷新到新位置
+  const shifted = `# 第1章\n\n补充一段说明。\n\n${q}\n`;
+  const newStart = shifted.indexOf(q);
+  let plan = lib.buildAnnotationRenderPlan(
+    [{ id: 'a1', type: 'note', content: 'x', anchor: { quote: q, start: oldStart, end: oldStart + q.length, prefix: '', suffix: '' } }],
+    shifted,
+  );
+  assert.equal(plan[0].state, 'found');
+  assert.equal(plan[0].start, newStart, '唯一命中要刷新偏移到新位置');
+  // 同一句出现两处、prefix/suffix 都空 → fuzzy（取离旧 start 最近的一处）
+  const dup = `# 第1章\n\n${q}\n\n中间隔离一段。\n\n${q}\n`;
+  plan = lib.buildAnnotationRenderPlan(
+    [{ id: 'a2', type: 'highlight', content: 'y', anchor: { quote: q, start: 0, end: q.length, prefix: '', suffix: '' } }],
+    dup,
+  );
+  assert.equal(plan[0].state, 'fuzzy');
+  assert.ok(Number.isInteger(plan[0].start), 'fuzzy 也要给出候选位置');
+  // 整段被删 → lost（start/end 为 null，不瞎猜）
+  const removed = '# 第1章\n\n只剩别的段落了。\n';
+  plan = lib.buildAnnotationRenderPlan(
+    [{ id: 'a3', type: 'insert', content: 'z', anchor: { quote: q, start: oldStart, end: oldStart + q.length, prefix: '', suffix: '' } }],
+    removed,
+  );
+  assert.equal(plan[0].state, 'lost');
+  assert.equal(plan[0].start, null);
+  assert.equal(plan[0].end, null);
+});
+
+test('批注渲染计划（B1）：坏输入不抛错（null / 空数组 / 非对象 / 空 quote / 空原文）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(lib.buildAnnotationRenderPlan(null, 'abc').length, 0);
+  assert.equal(lib.buildAnnotationRenderPlan([null, 5], 'abc').length, 0);
+  const plan = lib.buildAnnotationRenderPlan([{ id: 'x', type: 'note', content: '', anchor: { quote: '', start: 0, end: 0 } }], 'abc');
+  assert.equal(plan[0].state, 'lost');
+  const plan2 = lib.buildAnnotationRenderPlan([{ id: 'y', type: 'note', content: '', anchor: { quote: 'a', start: 0, end: 1 } }], '');
+  assert.equal(plan2[0].state, 'lost');
+});
+
+// ── B1 批注读取（2026-10-30）：GET /annotations?file= 带缓存与失效 ──
+test('批注读取（B1）：按 file 拉取、命中缓存、失败不缓存、可失效', async () => {
+  const calls = [];
+  const fetchStub = async (url) => {
+    const u = new URL(String(url), 'http://127.0.0.1');
+    calls.push({ path: u.pathname, file: u.searchParams.get('file') });
+    if (u.searchParams.get('file') === 'bad.md') return { json: async () => null };
+    return { json: async () => ({ ok: true, key: 'annotations', count: 1, notes: [{ id: 'n1', type: 'note', content: 'c' }] }) };
+  };
+  const { half } = loadClient({ fetch: fetchStub });
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationsFor, 'function', '要能按 file 拉批注');
+  const first = await lib.annotationsFor('a/第01章.md');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/api/study-assistant/annotations', '要打到 GET /annotations');
+  assert.equal(calls[0].file, 'a/第01章.md', '要把 file 放进查询串');
+  assert.equal(first.ok, true);
+  assert.equal(first.notes.length, 1);
+  const second = await lib.annotationsFor('a/第01章.md');
+  assert.equal(calls.length, 1, '同一份资料第二次走缓存不再发请求');
+  assert.equal(second, first, '缓存返回同一对象');
+  await lib.annotationsFor('bad.md');
+  await lib.annotationsFor('bad.md');
+  assert.equal(calls.length, 3, '失败结果不缓存，允许重试');
+  lib.invalidateAnnotations('a/第01章.md');
+  await lib.annotationsFor('a/第01章.md');
+  assert.equal(calls.length, 4, '失效后要重新拉取');
+});
+
+// ── B1 批注渲染（2026-10-30）：高亮切段 / 待处理 / 覆盖层三入口 ──
+test('批注高亮切段（B1）：found/fuzzy 包 mark、lost 不画、待处理只列 fuzzy+lost', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationHighlightNodes, 'function');
+  assert.equal(typeof lib.annotationPendingList, 'function');
+  const text = 'ABCDEFGH';
+  const plan = [
+    { id: '1', type: 'note', content: 'x', state: 'found', start: 2, end: 4 },
+    { id: '2', type: 'highlight', content: 'y', state: 'fuzzy', start: 5, end: 7 },
+    { id: '3', type: 'note', content: 'z', state: 'lost', start: null, end: null },
+  ];
+  const nodes = lib.annotationHighlightNodes(text, plan);
+  const marks = nodes.filter((node) => node && node.type === 'mark');
+  assert.equal(marks.length, 2, 'found 与 fuzzy 各一个 mark，lost 不画');
+  assert.equal(marks[0].children.join(''), 'CD');
+  assert.equal(marks[1].children.join(''), 'FG');
+  assert.ok(String(marks[1].props.className).includes('sa-annotation-fuzzy'), 'fuzzy mark 要带待确认样式');
+  const pending = lib.annotationPendingList(plan);
+  assert.equal(pending.length, 2, '待处理只列 fuzzy + lost');
+  assert.equal(pending[0].id, '2');
+  assert.equal(pending[1].id, '3');
+});
+
+test('批注交互（F2）：正文拖选 → 右上角浮出气泡 → 失焦自动保存', async () => {
+  const mutateCalls = [];
+  const savedNotes = [];
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      const payload = JSON.parse(init.body);
+      mutateCalls.push(payload);
+      if (payload.action === 'create') {
+        const item = { ...payload.item, id: 'n-new', anchor: { ...payload.item } };
+        savedNotes.push(item);
+        return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: savedNotes.length, item }) };
+      }
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: savedNotes.length }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: savedNotes.length, notes: savedNotes }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  const text = '第一段：数据结构研究数据的组织方式。\n第二段：算法研究求解步骤。\n';
+  const quoted = '算法研究求解步骤。';
+  const start = text.indexOf(quoted);
+  probe.window.getSelection = () => ({
+    toString: () => quoted,
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: null,
+      startOffset: 0,
+      commonAncestorContainer: null,
+      getBoundingClientRect: () => ({ top: 200, left: 120, width: 90, height: 18, right: 210, bottom: 218 }),
+    }),
+  });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'a/第01章.md', text })); };
+  const withClass = (nodes, cls) => nodes.filter((n) => String(n.props?.className ?? '').includes(cls));
+  let f = render();
+  assert.equal(withClass(f, 'sa-annotation-bubble').length, 0, '没选区时不该有气泡');
+  const surface = f.find((n) => String(n.props?.className ?? '') === 'sa-reading');
+  assert.ok(surface && typeof surface.props.onMouseUp === 'function', '正文要挂 mouseup 监听（拖选完就弹）');
+  surface.props.onMouseUp();
+  f = render();
+  const menu = f.find((n) => String(n.props?.className ?? '').includes('sa-annotation-bubble'));
+  assert.ok(menu, '拖选后要浮出气泡');
+  assert.equal(menu.props['data-mode'], 'menu', '第一层是三个入口');
+  assert.ok(String(menu.props.style.top).endsWith('px') && String(menu.props.style.left).endsWith('px'), '位置要是算出来的 px');
+  const noteBtn = f.find((n) => n.props?.['data-type'] === 'note' && String(n.props?.className ?? '').includes('sa-annotation-bubble-entry'));
+  assert.ok(noteBtn, '气泡里要有「批注」');
+  noteBtn.props.onClick();
+  f = render();
+  const input = f.find((n) => n.props?.['data-role'] === 'annotation-draft');
+  assert.ok(input, '批注要有输入框');
+  input.props.onChange({ target: { value: '这里要背下来' } });
+  f = render();
+  f.find((n) => n.props?.['data-role'] === 'annotation-draft').props.onBlur();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const creates = mutateCalls.filter((call) => call.action === 'create');
+  assert.equal(creates.length, 1, '失焦即自动保存一条 create（不再有显式保存按钮）');
+  assert.equal(creates[0].doc, 'annotations');
+  assert.equal(creates[0].item.file, 'a/第01章.md');
+  assert.equal(creates[0].item.type, 'note');
+  assert.equal(creates[0].item.content, '这里要背下来');
+  assert.equal(creates[0].item.quote, quoted);
+  assert.equal(creates[0].item.start, start, 'create 要带原文里的精确偏移');
+  f = render();
+  assert.ok(f.some((n) => n.type === 'mark' && String(n.props?.className ?? '').includes('sa-annotation-mark')), '保存后正文里要有内联标记');
+  assert.ok(!f.some((n) => String(n.props?.className ?? '').includes('sa-annotation-save')), '保存按钮已去掉');
+});
+
+test('批注交互（F2）：点正文标记就地改 / 删，update 与 delete 都带 id', async () => {
+  const mutateCalls = [];
+  const text = '第一段：数据结构研究数据的组织方式。\n第二段：算法研究求解步骤。\n';
+  const quoted = '算法研究求解步骤。';
+  const start = text.indexOf(quoted);
+  const note = { id: 'n1', type: 'note', content: '原来的批注', anchor: { quote: quoted, start, end: start + quoted.length, prefix: '', suffix: '' } };
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1 }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 1, notes: [note] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  await lib.annotationsFor('b/第02章.md', { force: true }); // 预热缓存，组件初始就读到这条
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'b/第02章.md', text })); };
+  const markEvent = () => ({
+    currentTarget: { getBoundingClientRect: () => ({ top: 300, left: 100, width: 60, height: 16, right: 160, bottom: 316 }) },
+    stopPropagation: () => {},
+  });
+  let f = render();
+  const mark = f.find((n) => n.type === 'mark' && n.props?.['data-annotation-id'] === 'n1');
+  assert.ok(mark, '已有批注要在正文里画出标记');
+  assert.equal(mark.props['data-state'], 'found');
+  mark.props.onClick(markEvent());
+  f = render();
+  const view = f.find((n) => String(n.props?.className ?? '').includes('sa-annotation-bubble'));
+  assert.ok(view, '点标记要弹就地编辑气泡');
+  assert.equal(view.props['data-mode'], 'view');
+  assert.equal(view.props['data-annotation-id'], 'n1');
+  const input = f.find((n) => n.props?.['data-role'] === 'annotation-draft');
+  assert.equal(input.props.value, '原来的批注', '气泡里要带出原内容');
+  input.props.onChange({ target: { value: '改过的批注' } });
+  f = render();
+  f.find((n) => n.props?.['data-role'] === 'annotation-draft').props.onBlur();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const updates = mutateCalls.filter((call) => call.action === 'update');
+  assert.equal(updates.length, 1, '改完失焦要 update 一次');
+  assert.equal(updates[0].id, 'n1', 'update 必须带 id');
+  assert.deepEqual([...Object.keys(updates[0].item)], ['content'], '只改正文，不重算锚点');
+  assert.equal(updates[0].item.content, '改过的批注');
+  f = render();
+  f.find((n) => n.type === 'mark' && n.props?.['data-annotation-id'] === 'n1').props.onClick(markEvent());
+  f = render();
+  const delBtn = f.find((n) => n.props?.['data-action'] === 'delete');
+  assert.ok(delBtn, '就地编辑气泡里要有删除');
+  delBtn.props.onClick();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const deletes = mutateCalls.filter((call) => call.action === 'delete');
+  assert.equal(deletes.length, 1, '点删除要 delete 一次');
+  assert.equal(deletes[0].id, 'n1', 'delete 必须带 id');
+});
+
+test('批注交互（F2）：点开看一眼不改就失焦，不写盘', async () => {
+  const mutateCalls = [];
+  const text = '第一段：数据结构研究数据的组织方式。\n第二段：算法研究求解步骤。\n';
+  const quoted = '算法研究求解步骤。';
+  const start = text.indexOf(quoted);
+  const note = { id: 'n1', type: 'note', content: '原来的批注', anchor: { quote: quoted, start, end: start + quoted.length, prefix: '', suffix: '' } };
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1 }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 1, notes: [note] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  await lib.annotationsFor('b/第03章.md', { force: true });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'b/第03章.md', text })); };
+  let f = render();
+  f.find((n) => n.type === 'mark' && n.props?.['data-annotation-id'] === 'n1').props.onClick({
+    currentTarget: { getBoundingClientRect: () => ({ top: 300, left: 100, width: 60, height: 16, right: 160, bottom: 316 }) },
+    stopPropagation: () => {},
+  });
+  f = render();
+  f.find((n) => n.props?.['data-role'] === 'annotation-draft').props.onBlur();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  assert.equal(mutateCalls.length, 0, '没改内容就不该发 update（点开看一眼不算编辑）');
+  f = render();
+  assert.equal(f.some((n) => String(n.props?.className ?? '').includes('sa-annotation-bubble')), false, '气泡要收起');
+});
+
+test('批注交互（F2）：同句多命中按选区在渲染文本里的序号对齐', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.resolveAnnotationAnchor, 'function', '锚点解析要导出给测试');
+  const body = '甲：目标句。乙：目标句。丙。';
+  const quote = '目标句。';
+  const secondAt = body.indexOf(quote, body.indexOf(quote) + 1);
+  // 渲染文本里选中的是第二处 → 锚到原文第二处，且位置可信
+  const second = lib.resolveAnnotationAnchor({ body, renderedText: body, quote, renderedStart: secondAt });
+  assert.equal(second.state, 'found');
+  assert.equal(second.start, secondAt);
+  assert.equal(second.end, secondAt + quote.length);
+  assert.equal(second.prefix, body.slice(0, secondAt));
+  // 渲染文本里只有一处、原文有两处（例如插入段落抄了一遍）→ 降级待确认，但别锚错位置
+  const noisy = lib.resolveAnnotationAnchor({ body, renderedText: '甲：目标句。', quote, renderedStart: 0 });
+  assert.equal(noisy.state, 'fuzzy');
+  // 拿不到 DOM 偏移：取第一处并如实标待确认
+  const blind = lib.resolveAnnotationAnchor({ body, renderedText: body, quote, renderedStart: -1 });
+  assert.equal(blind.state, 'fuzzy');
+  assert.equal(blind.start, body.indexOf(quote));
+  // 原文里根本没有 → lost
+  const lost = lib.resolveAnnotationAnchor({ body, renderedText: body, quote: '没这句话', renderedStart: 0 });
+  assert.equal(lost.state, 'lost');
+  assert.equal(lost.start, null);
+  assert.equal(lib.resolveAnnotationAnchor({ body, renderedText: body, quote: '   ', renderedStart: 0 }), null, '空白选区不弹气泡');
+});
+
+test('批注交互（F2）：气泡定位贴选区右上角，上方放不下翻下方、右侧越界往左收', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.placeAnnotationBubble, 'function', '定位要拆成纯函数');
+  const viewport = { width: 800, height: 600 };
+  const size = { width: 200, height: 40 };
+  const above = lib.placeAnnotationBubble({ top: 100, left: 300, width: 80, height: 18, right: 380, bottom: 118 }, viewport, size);
+  assert.equal(above.placement, 'above');
+  assert.equal(above.top, 100 - 40 - 6, '默认贴在选区上方');
+  assert.equal(above.left, 380 - 200, '右边缘跟选区右边缘对齐');
+  const below = lib.placeAnnotationBubble({ top: 10, left: 300, width: 80, height: 18, right: 380, bottom: 28 }, viewport, size);
+  assert.equal(below.placement, 'below', '上方放不下要翻到下方');
+  assert.equal(below.top, 28 + 6);
+  const rightEdge = lib.placeAnnotationBubble({ top: 300, left: 700, width: 90, height: 18, right: 790, bottom: 318 }, viewport, size);
+  assert.ok(rightEdge.left + size.width <= viewport.width - 8, '不许越过视口右边');
+  const noRect = lib.placeAnnotationBubble(null, viewport, size);
+  assert.equal(noRect.top, 8, '拿不到选区矩形时贴顶部');
+  assert.equal(noRect.left, Math.round((viewport.width - size.width) / 2), '并且水平居中');
+  const tiny = lib.placeAnnotationBubble({ top: 5, left: 5, width: 10, height: 10, right: 15, bottom: 15 }, { width: 320, height: 200 }, { width: 300, height: 120 });
+  assert.ok(tiny.top >= 8 && tiny.left >= 8, '窄面板里也要留在视口内');
+});
+
+test('批注交互（F2）：正文内联标记按渲染偏移切段，插入段落单独成块', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationMarkedNodes, 'function', '切段要拆成纯函数');
+  const nodes = [{ type: 'p', props: { className: 'sa-p' }, children: ['ABCDEFG'] }];
+  const out = lib.annotationMarkedNodes(nodes, [{ id: 'm1', type: 'note', state: 'found', content: '看这里', start: 1, end: 3 }]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].children[0], 'A', '段首没被标记的部分原样留着');
+  const mark = out[0].children[1];
+  assert.equal(mark.type, 'mark');
+  assert.equal(mark.children.join(''), 'BC');
+  assert.equal(mark.props['data-annotation-id'], 'm1');
+  assert.equal(mark.props['data-state'], 'found');
+  assert.ok(String(mark.props.className).includes('sa-annotation-found'));
+  assert.equal(out[0].children[2], 'DEFG');
+  const inserted = lib.annotationMarkedNodes(nodes, [{ id: 'i1', type: 'insert', state: 'found', content: '我补一句', start: 4, end: 6 }]);
+  const block = inserted.find((n) => String(n.props?.className ?? '') === 'sa-annotation-insert');
+  assert.ok(block, 'insert 类型要在正文里长出一段');
+  assert.equal(block.children.join(''), '我补一句');
+  assert.equal(block.props['data-annotation-id'], 'i1');
+  assert.equal(inserted[0].children.join(''), 'ABCDEFG', 'insert 不改原文');
+  // 叠区只留前一段，避免嵌套 mark
+  const overlap = lib.annotationMarkedNodes(nodes, [
+    { id: 'a', type: 'note', state: 'found', content: 'a', start: 1, end: 4 },
+    { id: 'b', type: 'note', state: 'found', content: 'b', start: 2, end: 5 },
+  ]);
+  const marks = [];
+  const walk = (n) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === 'object') { if (n.type === 'mark') marks.push(n); (n.children || []).forEach(walk); } };
+  walk(overlap);
+  assert.equal(marks.length, 1, '重叠的标记只画前一段');
+});
+
+test('批注交互（F2）：选区快照拿不到 DOM 时不编造偏移', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationSelectionSnapshot, 'function');
+  assert.equal(lib.annotationSelectionSnapshot(null, '正文', '正文'), null, '没有窗口选区就没有快照');
+});
+
+
+test('批注覆盖层（B1）：定位不到的批注进待处理列表', async () => {
+  const stale = { id: 'gone', type: 'note', content: '失效的批注', anchor: { quote: '这段原文已经不存在了。', start: 0, end: 12, prefix: '', suffix: '' } };
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') return { json: async () => ({ ok: true, hash: 'h1', count: 1 }) };
+    return { json: async () => ({ ok: true, key: 'annotations', count: 1, notes: [stale] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  await lib.annotationsFor('b.md', { force: true }); // 预热缓存，让组件初始读到这条
+  probe.begin();
+  const f = probe.flat(lib.annotationLayer({ file: 'b.md', text: '完全不同的正文，没有那段话。' }));
+  const pending = f.find((n) => String(n.props?.className ?? '').includes('sa-annotation-pending'));
+  assert.ok(pending, '定位不到的批注要进待处理列表');
+  assert.equal(pending.props['data-count'], '1');
+  assert.ok(f.some((n) => n.props?.['data-state'] === 'lost'), '待处理项要标 lost');
+});
+
+test('批注覆盖层（B1）：样式齐备且颜色走主题令牌', () => {
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(source.includes('.sa-annotation-layer{'), '要有批注覆盖层容器样式');
+  assert.ok(source.includes('.sa-annotation-mark.is-highlight{'), 'highlight 要有高亮底纹');
+  assert.ok(source.includes('.sa-annotation-mark.sa-annotation-fuzzy{'), 'fuzzy 要有待确认样式');
+  assert.ok(source.includes('.sa-annotation-pending{'), '要有待处理列表样式');
+  assert.ok(source.includes('.sa-annotation-badge{'), '待处理项要有徽标');
+  const start = source.indexOf('.sa-annotation-layer{');
+  const end = source.indexOf('.sa-annotation-empty');
+  const block = source.slice(start, end);
+  assert.ok(block.includes('--dsw-alias'), '批注样式要用主题令牌');
+  assert.ok(!/#[0-9a-fA-F]{3,6}/.test(block), '批注样式不得写死颜色（应使用 --dsw-alias-* 令牌）');
+});
+
+test('批注交互（F2）：气泡/插入段落样式齐备、字号用 em 不写裸 px、颜色走令牌', () => {
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(source.includes('.sa-annotation-bubble{'), '浮动气泡要有样式');
+  assert.ok(/\.sa-annotation-bubble\{[^}]*position:fixed/.test(source), '气泡要脱离文档流（position:fixed）');
+  assert.ok(/\.sa-annotation-bubble\{[^}]*z-index/.test(source), '气泡要盖在正文上面');
+  assert.ok(/\.sa-annotation-bubble\{[^}]*width:min\(/.test(source), '气泡宽度要夹住，窄面板不许撑出横向滚动');
+  assert.ok(source.includes('.sa-annotation-bubble-input{'), '输入框要有样式');
+  assert.ok(source.includes('.sa-annotation-bubble-actions{'), '气泡按钮区要有样式');
+  assert.ok(source.includes('.sa-annotation-insert{'), '插入的段落块要有样式（跟原文分得开）');
+  assert.ok(source.includes('.sa-annotation-tools{'), '兜底工具条与列表要有一块容器（分隔线挪到这里）');
+  const from = source.indexOf('.sa-annotation-bubble{');
+  const to = source.indexOf('.sa-annotation-empty');
+  const block = source.slice(from, to);
+  assert.ok(block.includes('--dsw-alias'), '气泡样式要用主题令牌');
+  assert.ok(!/#[0-9a-fA-F]{3,6}/.test(block), '气泡样式不得写死颜色');
+  assert.ok(!/font-size:\s*\d+px/.test(block), '气泡字号不许写裸 px（正文跟着 --sa-read-scale 缩放，批注要一起变）');
 });

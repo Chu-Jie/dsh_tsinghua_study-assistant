@@ -38,7 +38,7 @@ window.__ModuleLoader__.load({
     const TEXT = {
       panel: '学习辅助',
       title: '大学生学习辅助系统',
-      tabs: { today: '今日', schedule: '课表', deadlines: 'DDL', grades: '成绩', materials: '资料', knowledge: '知识点', settings: '设置' },
+      tabs: { today: '今日', schedule: '课表', deadlines: 'DDL', grades: '成绩', materials: '资料', knowledge: '知识点', records: '记录', settings: '设置' },
       loading: '正在读取学习台数据…',
       error: '读取失败',
       retry: '重试',
@@ -123,6 +123,13 @@ window.__ModuleLoader__.load({
 
     function formatDay(date) {
       return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+    }
+
+    /** ISO 时间戳 → `YYYY-MM-DD HH:MM`（学习记录时间线用；解析不了就原样返回）。 */
+    function formatStamp(iso) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(iso ?? '').trim());
+      if (m === null) return String(iso ?? '');
+      return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
     }
 
     /**
@@ -728,10 +735,10 @@ window.__ModuleLoader__.load({
           'cross-site-rejected': '请求被拒绝：来源不可信。',
           'need-request-header': '请求被拒绝：缺少安全请求头。',
           // —— 会话自愈（续期 / 弹登录窗 / 关浏览器）专属 ——
-          'edge-not-found': '没找到 Edge：自动续期靠它完成。也可以手动重新复制一次 Cookie。',
-          'needs-manual-login': '学堂要求手动登录一次：点「打开登录窗口」登进去，勾上「信任浏览器」，之后就不用再管了。',
-          'sso-timeout': '登录页迟迟没回到网络学堂，稍后再试，或点「打开登录窗口」手动登一次。',
-          'browser-exited': '后台浏览器意外退出了，再点一次「立即续期」。',
+          'edge-not-found': '没找到 Edge：自动重连靠它完成。也可以手动重新复制一次 Cookie。',
+          'needs-manual-login': '这轮没自动接回来（可能要图形验证码）。点「一键重连」再试，还不行就点「打开登录窗口」手动登一次。',
+          'sso-timeout': '登录页迟迟没回到网络学堂，稍后再点「一键重连」，或点「打开登录窗口」手动登一次。',
+          'browser-exited': '后台浏览器意外退出了，再点一次「一键重连」。',
           'no-websocket': '当前运行环境没有 WebSocket，没法驱动后台浏览器。',
           'profile-unusable': '专用浏览器目录不可用（可能被别的 Edge 占着），关掉残留窗口后重试。',
           'cdp-timeout': '后台浏览器响应超时，稍后重试。',
@@ -895,6 +902,917 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 正文缓存（2026-10-29 晚，用户报障「点章/换讲义整块白闪一下，像整页刷新」）。
+     *
+     * 以前每次换正文都 `setDetail({status:'loading'})` → 正文组件整个卸载 → 「正在读取…」→
+     * 接口回来再重新挂载重排一遍 22KB 的讲义，于是肉眼看到「白一下」。
+     * 这里只缓存**成功**的取字结果（本地接口，体量小）：同一份资料来回点（讲义 A/B/C 互切、
+     * 章来回点、资料页翻回来）同步出内容，连加载帧都不会有；未命中才真的去取。
+     */
+    const MATERIAL_TEXT_CACHE = new Map();
+    const MATERIAL_CACHE_LIMIT = 12;
+    function materialCacheKey(materialPath, page) {
+      return `${String(materialPath ?? '')}::${Number.isInteger(page) && page > 0 ? page : ''}`;
+    }
+    function peekMaterialText(materialPath, page) {
+      return MATERIAL_TEXT_CACHE.get(materialCacheKey(materialPath, page));
+    }
+    async function materialTextCached(materialPath, page) {
+      const key = materialCacheKey(materialPath, page);
+      const hit = MATERIAL_TEXT_CACHE.get(key);
+      if (hit !== undefined) return hit;
+      const result = await materialText(materialPath, page);
+      if (result?.ok === true) {
+        MATERIAL_TEXT_CACHE.set(key, result);
+        if (MATERIAL_TEXT_CACHE.size > MATERIAL_CACHE_LIMIT) {
+          const oldest = MATERIAL_TEXT_CACHE.keys().next().value;
+          MATERIAL_TEXT_CACHE.delete(oldest);
+        }
+      }
+      return result;
+    }
+
+    /**
+     * 批注渲染计划（纯函数，2026-10-30 B1）。
+     *
+     * 输入「某文件的批注数组 + 当前完整原文」，输出每条批注该以什么状态显示、高亮到哪里。
+     * 读接口 `GET /annotations?file=` 只回落盘时的锚点（不重算），所以文件被重新生成后，
+     * 「还在不在原位 / 定位到哪 / 是否进待处理」必须由客户端自己判断——口径与后端
+     * `lib/annotation-anchor.js` 的 relocateAnchor 完全一致：
+     *   1. 快路径：`text.slice(start, start+quote.length) === quote` → found；
+     *   2. 全文检索 quote：唯一命中 → found（刷新偏移）；零命中 → lost（不删、不猜）；
+     *   3. 多处命中 → 用 prefix/suffix 消歧；消歧成功或仍多义，一律标 fuzzy（取离旧 start 最近）；
+     * 这样界面能稳定区分「精确命中 / 多义待确认 / 已失效」，lost 只进待处理列表、绝不自动套别处。
+     *
+     * @param {Array} notes 某文件的批注数组（每条形如 {id,type,content,anchor:{quote,start,end,prefix,suffix}}）
+     * @param {string} text 当前完整原文
+     * @returns {Array<{id,type,content,quote,state:'found'|'fuzzy'|'lost',start:number|null,end:number|null}>}
+     */
+    function buildAnnotationRenderPlan(notes, text) {
+      const source = typeof text === 'string' ? text : '';
+      const list = Array.isArray(notes) ? notes : [];
+      const plan = [];
+      for (const note of list) {
+        if (note === null || typeof note !== 'object') continue;
+        const anchor = note.anchor !== null && typeof note.anchor === 'object' ? note.anchor : {};
+        const quote = typeof anchor.quote === 'string' ? anchor.quote : '';
+        const oldStart = Number.isInteger(anchor.start) && anchor.start >= 0 ? anchor.start : 0;
+        const base = { id: note.id, type: note.type, content: note.content, quote };
+        if (quote === '' || source === '') {
+          plan.push({ ...base, state: 'lost', start: null, end: null });
+          continue;
+        }
+        // 1) 快路径：偏移可信、逐字相等
+        if (source.slice(oldStart, oldStart + quote.length) === quote) {
+          plan.push({ ...base, state: 'found', start: oldStart, end: oldStart + quote.length });
+          continue;
+        }
+        // 2) 全文检索 quote 的所有出现位置
+        const hits = [];
+        let from = 0;
+        while (from <= source.length) {
+          const at = source.indexOf(quote, from);
+          if (at === -1) break;
+          hits.push(at);
+          from = at + 1;
+        }
+        if (hits.length === 0) {
+          plan.push({ ...base, state: 'lost', start: null, end: null });
+          continue;
+        }
+        if (hits.length === 1) {
+          plan.push({ ...base, state: 'found', start: hits[0], end: hits[0] + quote.length });
+          continue;
+        }
+        // 3) prefix / suffix 消歧；消歧后仍是 fuzzy（与后端一致：命中的是「可能位置」，要人确认）
+        const prefix = typeof anchor.prefix === 'string' ? anchor.prefix : '';
+        const suffix = typeof anchor.suffix === 'string' ? anchor.suffix : '';
+        const scoreOf = (at) => {
+          let score = 0;
+          if (prefix !== '' && source.slice(Math.max(0, at - prefix.length), at) === prefix) score += 2;
+          if (suffix !== '' && source.slice(at + quote.length, at + quote.length + suffix.length) === suffix) score += 2;
+          return score;
+        };
+        const scored = hits.map((at) => ({ at, score: scoreOf(at) }));
+        const bestScore = Math.max(...scored.map((item) => item.score));
+        const top = scored.filter((item) => item.score === bestScore);
+        if (bestScore > 0 && top.length === 1) {
+          plan.push({ ...base, state: 'fuzzy', start: top[0].at, end: top[0].at + quote.length });
+          continue;
+        }
+        // 4) 仍多义：取离旧偏移最近的一处
+        const nearest = hits.reduce((a, b) => (Math.abs(a - oldStart) <= Math.abs(b - oldStart) ? a : b));
+        plan.push({ ...base, state: 'fuzzy', start: nearest, end: nearest + quote.length });
+      }
+      return plan;
+    }
+
+    /** 一段文本里 quote 的所有出现位置（纯函数，F2 同句多命中消歧用）。 */
+    function annotationQuoteHits(text, quote) {
+      const source = String(text ?? '');
+      const needle = String(quote ?? '');
+      const hits = [];
+      if (needle === '') return hits;
+      let from = 0;
+      while (from <= source.length) {
+        const at = source.indexOf(needle, from);
+        if (at === -1) break;
+        hits.push(at);
+        from = at + 1;
+      }
+      return hits;
+    }
+
+    /**
+     * 选区 → 批注锚点（2026-10-31 F2，纯函数）。
+     *
+     * 旧实现（B1）只认 `body.indexOf(quote)`：同一句话在正文里出现两次时永远锚在第一处，
+     * 用户在第 3 段加批注、标记却跑到第 1 段。F2 改成按「选区在渲染文本里的序号」对齐：
+     * 选区前面出现过几次这句话，就取原文里的第几处。两边出现次数一致 ⇒ found（位置可信）；
+     * 不一致（例如插入段落把同一句又抄了一遍）⇒ 降级 fuzzy，并退回按相对位置就近取。
+     *
+     * @param {object} input `{ body, renderedText, quote, renderedStart }`
+     *   body = 服务端原文；renderedText = 当前 DOM 里那份排版后的纯文本；
+     *   renderedStart = 选区起点在 renderedText 里的偏移（拿不到就传 -1）。
+     * @returns {null|{state:'found'|'fuzzy'|'lost', start:number|null, end:number|null, quote, prefix, suffix}}
+     */
+    function resolveAnnotationAnchor({ body, renderedText, quote, renderedStart } = {}) {
+      const source = String(body ?? '');
+      const rendered = String(renderedText ?? '');
+      const needle = String(quote ?? '');
+      if (needle.trim() === '') return null;
+      const decorate = (start, state) => ({
+        state,
+        start,
+        end: start + needle.length,
+        quote: needle,
+        prefix: source.slice(Math.max(0, start - 24), start),
+        suffix: source.slice(start + needle.length, start + needle.length + 24),
+      });
+      const hits = annotationQuoteHits(source, needle);
+      if (hits.length === 0) {
+        return { state: 'lost', start: null, end: null, quote: needle, prefix: '', suffix: '' };
+      }
+      if (hits.length === 1) return decorate(hits[0], 'found');
+      if (Number.isInteger(renderedStart) && renderedStart >= 0) {
+        const renderedHits = annotationQuoteHits(rendered, needle);
+        const ordinal = renderedHits.filter((at) => at < renderedStart).length;
+        if (ordinal < hits.length) {
+          // 序号对齐：两边出现次数一样多时最可信；渲染文本里句子多了（插入段落）就标待确认
+          return decorate(hits[ordinal], renderedHits.length === hits.length ? 'found' : 'fuzzy');
+        }
+        const ratio = rendered.length === 0 ? 0 : renderedStart / rendered.length;
+        const target = Math.round(ratio * source.length);
+        const nearest = hits.reduce((a, b) => (Math.abs(a - target) <= Math.abs(b - target) ? a : b));
+        return decorate(nearest, 'fuzzy');
+      }
+      // 拿不到 DOM 偏移（旧接口/纯函数直调）：只能取第一处，并如实标成待确认
+      return decorate(hits[0], 'fuzzy');
+    }
+
+    /**
+     * 浮动气泡定位（2026-10-31 F2，纯函数）。
+     *
+     * 默认贴在选区右上角；上方放不下就翻到选区下方，右侧越界就往左收，最后夹在视口内。
+     * 输入输出全是纯数字，DOM 只在调用方取 rect / 视口尺寸，方便直接单测。
+     *
+     * @param {{top?:number,left?:number,right?:number,bottom?:number,width?:number,height?:number}} rect 选区矩形
+     * @param {{width:number,height:number}} viewport 视口尺寸
+     * @param {{width:number,height:number}} size 气泡尺寸
+     * @returns {{top:number,left:number,placement:'above'|'below'}}
+     */
+    function placeAnnotationBubble(rect, viewport, size) {
+      const box = rect !== null && typeof rect === 'object' ? rect : {};
+      const view = viewport !== null && typeof viewport === 'object' ? viewport : {};
+      const own = size !== null && typeof size === 'object' ? size : {};
+      const margin = 8;
+      const gap = 6;
+      const num = (value, fallback = 0) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+      const width = Math.max(0, num(own.width));
+      const height = Math.max(0, num(own.height));
+      const vw = Math.max(0, num(view.width));
+      const vh = Math.max(0, num(view.height));
+      // 没有 rect（点已有标记、拿不到矩形）时贴着顶部居中，别弹到左上角去
+      if (!Number.isFinite(Number(box.top)) && !Number.isFinite(Number(box.left))) {
+        const centerLeft = vw > 0 ? Math.max(margin, Math.round((vw - width) / 2)) : margin;
+        return { top: margin, left: centerLeft, placement: 'below' };
+      }
+      const top = num(box.top);
+      const left = num(box.left);
+      const right = Number.isFinite(Number(box.right)) ? Number(box.right) : left + Math.max(0, num(box.width));
+      const bottom = Number.isFinite(Number(box.bottom)) ? Number(box.bottom) : top + Math.max(0, num(box.height));
+      let placement = 'above';
+      let y = top - height - gap;
+      if (y < margin) {
+        y = bottom + gap;
+        placement = 'below';
+      }
+      let x = right - width;
+      if (x + width > vw - margin) x = vw - margin - width;
+      if (x < margin) x = margin;
+      if (y + height > vh - margin) y = Math.max(margin, vh - margin - height);
+      if (y < margin) y = margin;
+      return { top: Math.round(y), left: Math.round(x), placement };
+    }
+
+    /** 渲染节点数组的纯文本（2026-10-31 F2，纯函数）：把 h(...) 树里的字符串按顺序接起来。 */
+    function annotationRenderedText(nodes) {
+      let out = '';
+      const walk = (node) => {
+        if (typeof node === 'string') { out += node; return; }
+        if (typeof node === 'number') { out += String(node); return; }
+        if (Array.isArray(node)) { node.forEach(walk); return; }
+        if (node === null || typeof node !== 'object') return;
+        // 2026-11-12：真 React 把 children 放在 `props.children` 上，旧替身挂在元素对象上 —— 两边都认
+        // （原先只认后者，导致真 React 下渲染文本恒为空、批注一条都画不出来）。
+        if (Array.isArray(node.children)) node.children.forEach(walk);
+        else if (node.props !== null && typeof node.props === 'object') walk(node.props.children);
+      };
+      walk(nodes);
+      return out;
+    }
+
+    /**
+     * 批注渲染计划（原文偏移）→ 渲染文本偏移（2026-10-31 F2，纯函数）。
+     *
+     * 排版器会改写文本（去掉 markdown 记号、拆公式），所以原文偏移不能直接拿来切渲染节点；
+     * 这里按 quote 在两边各自的出现序号把位置映射过去。lost 不进正文（只在待处理列表出现）。
+     */
+    function annotationMarkOffsets(body, renderedText, plan) {
+      const source = String(body ?? '');
+      const rendered = String(renderedText ?? '');
+      const out = [];
+      for (const item of (Array.isArray(plan) ? plan : [])) {
+        if (item === null || typeof item !== 'object') continue;
+        if (item.state !== 'found' && item.state !== 'fuzzy') continue;
+        if (!Number.isInteger(item.start) || !Number.isInteger(item.end)) continue;
+        const quote = String(item.quote ?? '');
+        if (quote === '') continue;
+        const renderedHits = annotationQuoteHits(rendered, quote);
+        if (renderedHits.length === 0) continue;
+        const ordinal = annotationQuoteHits(source, quote).filter((at) => at < item.start).length;
+        const at = ordinal < renderedHits.length ? renderedHits[ordinal] : renderedHits[renderedHits.length - 1];
+        out.push({ id: item.id, type: item.type, content: item.content, state: item.state, start: at, end: at + quote.length });
+      }
+      return out;
+    }
+
+    /**
+     * 把渲染节点按 mark 切段包 `<mark>`（2026-10-31 F2，纯函数）。
+     *
+     * 只切字符串叶子，元素结构原样保留（所以段落、公式块、列表都不会被拆坏）；
+     * 一句话跨段落时，每段各自包一层同 id 的 mark。叠区只留前一段，避免嵌套 mark。
+     * `insert` 类型不写进正文：在锚点所在的那个顶层节点后面插一段 `.sa-annotation-insert`。
+     */
+    function annotationMarkedNodes(nodes, marks, options = {}) {
+      const list = Array.isArray(nodes) ? nodes : [];
+      const kept = [];
+      const sorted = (Array.isArray(marks) ? marks : [])
+        .filter((mark) => mark !== null && typeof mark === 'object')
+        .filter((mark) => Number.isInteger(mark.start) && Number.isInteger(mark.end) && mark.end > mark.start)
+        .sort((a, b) => a.start - b.start);
+      for (const mark of sorted) {
+        if (kept.length > 0 && mark.start < kept[kept.length - 1].end) continue;
+        kept.push(mark);
+      }
+      // `found` 但映射不到的批注也要留在正文里（只是不包 mark），否则「已写盘却看不见」。
+      if (kept.length === 0) return list.slice();
+      const onMarkClick = typeof options.onMarkClick === 'function' ? options.onMarkClick : null;
+      const markNode = (mark, text) => h('mark', {
+        key: `sa-ann-${String(mark.id ?? '')}-${mark.start}`,
+        className: `sa-annotation-mark sa-annotation-${mark.state}${mark.type === 'highlight' ? ' is-highlight' : ''}`,
+        'data-annotation-id': String(mark.id ?? ''),
+        'data-state': mark.state,
+        'data-type': String(mark.type ?? ''),
+        title: mark.content ? `批注：${mark.content}` : (mark.state === 'fuzzy' ? '批注（位置可能已变，待确认）' : '批注'),
+        onClick: onMarkClick === null ? undefined : (event) => onMarkClick(mark, event),
+      }, text);
+      // insert 类型不改原文（只在自己那段位置后面长出一块），所以不参与正文切段
+      const textMarks = kept.filter((mark) => mark.type !== 'insert');
+      const splitText = (text, from) => {
+        const pieces = [];
+        let at = 0;
+        const sortedMarks = textMarks.slice().sort((a, b) => a.start - b.start);
+        const starts = sortedMarks.map((mark) => mark.start);
+        while (at < text.length) {
+          const abs = from + at;
+          const cover = sortedMarks.find((mark) => mark.start <= abs && mark.end > abs);
+          if (cover === undefined) {
+            const nextIndex = starts.findIndex((value) => value > abs);
+            const nextStart = nextIndex < 0 ? undefined : starts[nextIndex];
+            const stop = nextStart === undefined ? text.length : Math.min(nextStart - from, text.length);
+            pieces.push(text.slice(at, Math.max(at + 1, stop)));
+            at = Math.max(at + 1, stop);
+            continue;
+          }
+          const stop = Math.min(cover.end - from, text.length);
+          pieces.push(markNode(cover, text.slice(at, Math.max(at + 1, stop))));
+          at = Math.max(at + 1, stop);
+        }
+        return pieces;
+      };
+      const out = [];
+      const inserts = [];
+      let cursor = 0;
+      const walk = (node) => {
+        if (typeof node === 'string') { const from = cursor; cursor += node.length; return splitText(node, from); }
+        if (typeof node === 'number') { cursor += String(node).length; return [node]; }
+        if (Array.isArray(node)) return node.map(walk).flat(Infinity);
+        if (node !== null && typeof node === 'object') {
+          // 2026-11-12：真 React 的 children 在 `props.children` 上；旧替身挂在元素对象上。
+          // 两边都认，否则真 React 下一个 `<mark>` 都包不出来（单测绿、界面空）。
+          if (Array.isArray(node.children)) return [{ ...node, children: node.children.map(walk).flat(Infinity) }];
+          if (node.props !== null && typeof node.props === 'object') {
+            return [{ ...node, props: { ...node.props, children: walk(node.props.children) } }];
+          }
+        }
+        return [node];
+      };
+      for (const node of list) {
+        const before = cursor;
+        out.push(...walk(node));
+        const afterIndex = out.length - 1;
+        for (const mark of kept) {
+          if (mark.type !== 'insert') continue;
+          if (mark.start < before || mark.start >= cursor) continue;
+          if (inserts.some((item) => item.id === mark.id)) continue;
+          inserts.push({ afterIndex, id: mark.id, content: mark.content });
+        }
+      }
+      inserts.sort((a, b) => b.afterIndex - a.afterIndex);
+      for (const insert of inserts) {
+        out.splice(insert.afterIndex + 1, 0, h('div', {
+          className: 'sa-annotation-insert',
+          key: `sa-ins-${String(insert.id ?? '')}`,
+          'data-annotation-id': String(insert.id ?? ''),
+        }, String(insert.content ?? '')));
+      }
+      return out;
+    }
+
+    /** create 的提交参数（2026-10-31 F2，纯函数）：一条批注落盘时到底发什么，测试直接断言它。 */
+    function annotationCreateItem({ file = '', type = 'note', content = '', anchor = {} } = {}) {
+      const source = anchor !== null && typeof anchor === 'object' ? anchor : {};
+      const quote = String(source.quote ?? '');
+      const start = Number.isInteger(source.start) ? source.start : -1;
+      const end = Number.isInteger(source.end) ? source.end : (start >= 0 ? start + quote.length : -1);
+      return {
+        file: String(file ?? ''),
+        type,
+        content: String(content ?? ''),
+        quote,
+        start,
+        end,
+        prefix: String(source.prefix ?? ''),
+        suffix: String(source.suffix ?? ''),
+      };
+    }
+
+    /** 选区起点在渲染文本里的偏移（2026-10-31 F2）：按文本节点累计长度，拿不到返回 -1。 */
+    function annotationRenderedOffsetOfRange(root, range) {
+      try {
+        if (root === null || root === undefined || range === null || range === undefined) return -1;
+        const startNode = range.startContainer;
+        if (startNode === null || startNode === undefined) return -1;
+        let offset = 0;
+        let found = false;
+        const walk = (node) => {
+          if (node === startNode) { found = true; return true; }
+          if (node !== null && typeof node === 'object' && node.nodeType === 3) {
+            offset += String(node.nodeValue ?? '').length;
+            return false;
+          }
+          const children = node !== null && typeof node === 'object' ? node.childNodes : null;
+          if (children !== null && children !== undefined && typeof children.length === 'number') {
+            for (let index = 0; index < children.length; index += 1) {
+              if (walk(children[index])) return true;
+            }
+          }
+          return false;
+        };
+        if (!walk(root)) return -1;
+        const startOffset = Number.isInteger(range.startOffset) ? range.startOffset : 0;
+        return found ? offset + startOffset : -1;
+      } catch (error) {
+        return -1;
+      }
+    }
+
+    /**
+     * 当前选区快照（2026-10-31 F2）：quote + 选区矩形 + 渲染偏移，一次取齐。
+     * 选区不在阅读面里、或选中的字在原文里找不到（例如选了插入段落）→ 返回 null，不弹气泡。
+     */
+    function annotationSelectionSnapshot(rootEl, body, renderedText) {
+      try {
+        const sel = typeof window !== 'undefined' && typeof window.getSelection === 'function' ? window.getSelection() : null;
+        if (sel === null || sel === undefined) return null;
+        const quote = String(sel.toString() || '');
+        if (quote.trim() === '') return null;
+        let rect = null;
+        let renderedStart = -1;
+        if (typeof sel.getRangeAt === 'function' && Number(sel.rangeCount) > 0) {
+          const range = sel.getRangeAt(0);
+          if (range !== null && range !== undefined && typeof range.getBoundingClientRect === 'function') {
+            const box = range.getBoundingClientRect();
+            if (box !== null && box !== undefined && Number.isFinite(Number(box.top))) {
+              const left = Number(box.left) || 0;
+              const top = Number(box.top) || 0;
+              const width = Number(box.width) || 0;
+              const height = Number(box.height) || 0;
+              rect = {
+                top,
+                left,
+                width,
+                height,
+                right: Number.isFinite(Number(box.right)) ? Number(box.right) : left + width,
+                bottom: Number.isFinite(Number(box.bottom)) ? Number(box.bottom) : top + height,
+              };
+            }
+          }
+          const inside = rootEl !== null && rootEl !== undefined && range !== null && range !== undefined
+            && typeof rootEl.contains === 'function' && range.commonAncestorContainer !== null
+            && range.commonAncestorContainer !== undefined && rootEl.contains(range.commonAncestorContainer);
+          if (inside) renderedStart = annotationRenderedOffsetOfRange(rootEl, range);
+        }
+        const anchor = resolveAnnotationAnchor({ body, renderedText, quote, renderedStart });
+        if (anchor === null || anchor.state === 'lost') return null;
+        return { quote, anchor, rect };
+      } catch (error) {
+        return null;
+      }
+    }
+
+    /**
+     * 批注读取（只读，点开某份资料/知识点时调）。
+     *
+     * `GET /annotations?file=<path>` → `{ ok, key:'annotations', count, notes }`。
+     * `file` 用 `资料索引.json` 里那条记录的原样 path（服务端负责白名单与 text 材料过滤）。
+     * notes 只回落盘时的锚点，三态由 `buildAnnotationRenderPlan` 在本地按当前原文判断。
+     * 结果按 file 缓存：同一份资料来回点不重复发请求；写盘成功后用 invalidateAnnotations 失效。
+     */
+    const ANNOTATIONS_CACHE = new Map();
+    function peekAnnotations(file) {
+      return ANNOTATIONS_CACHE.get(String(file ?? ''));
+    }
+    function invalidateAnnotations(file) {
+      if (file === undefined) ANNOTATIONS_CACHE.clear();
+      else ANNOTATIONS_CACHE.delete(String(file ?? ''));
+    }
+    async function annotationsFor(file, options = {}) {
+      const key = String(file ?? '');
+      if (options.force !== true && ANNOTATIONS_CACHE.has(key)) return ANNOTATIONS_CACHE.get(key);
+      const query = new URLSearchParams({ file: key });
+      const response = await fetch(`${API}/annotations?${query.toString()}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: 'bad-response', notes: [] };
+      const normalized = Array.isArray(result.notes) ? result : { ...result, notes: [] };
+      if (normalized.ok === true) ANNOTATIONS_CACHE.set(key, normalized);
+      return normalized;
+    }
+
+    /**
+     * 把原文按「位置已确定」的批注切段，命中段包一层 <mark>（2026-10-30 B1 渲染层，纯函数）。
+     * 只画 found / fuzzy（fuzzy 标成待确认色）；lost 定位不到，不进正文，只在待处理列表出现。
+     */
+    function annotationHighlightNodes(text, plan) {
+      const source = String(text ?? '');
+      const marks = (Array.isArray(plan) ? plan : [])
+        .filter((p) => (p.state === 'found' || p.state === 'fuzzy')
+          && Number.isInteger(p.start) && Number.isInteger(p.end)
+          && p.end > p.start && p.start >= 0 && p.end <= source.length)
+        .sort((a, b) => a.start - b.start);
+      const kept = [];
+      for (const mark of marks) {
+        if (kept.length > 0 && mark.start < kept[kept.length - 1].end) continue; // 叠区只留前一段
+        kept.push(mark);
+      }
+      const out = [];
+      let cursor = 0;
+      kept.forEach((mark, index) => {
+        if (mark.start > cursor) out.push(source.slice(cursor, mark.start));
+        out.push(h('mark', {
+          key: `sa-ann-${index}`,
+          className: `sa-annotation-mark sa-annotation-${mark.state}${mark.type === 'highlight' ? ' is-highlight' : ''}`,
+          'data-annotation-id': String(mark.id ?? ''),
+          'data-state': mark.state,
+          title: mark.content ? `批注：${mark.content}` : (mark.state === 'fuzzy' ? '批注（位置可能已变，待确认）' : '批注'),
+        }, source.slice(mark.start, mark.end)));
+        cursor = mark.end;
+      });
+      if (cursor < source.length) out.push(source.slice(cursor));
+      return out.length > 0 ? out : [source];
+    }
+
+    /** 待处理批注（B1）：fuzzy + lost，界面单独列出（纯函数）。 */
+    function annotationPendingList(plan, marks) {
+      // 2026-11-12：传了 marks 时，`found` 却没落进正文的批注也要列出来（之前会静默消失）。
+      const placed = new Set((Array.isArray(marks) ? marks : []).map((mark) => String(mark?.id ?? '')));
+      return (Array.isArray(plan) ? plan : []).filter((p) => p.state === 'fuzzy' || p.state === 'lost' || (Array.isArray(marks) && p.state === 'found' && !placed.has(String(p.id ?? ''))));
+    }
+
+    /**
+     * 批注交互层（2026-10-31 F2 改版）：Word 式浮动气泡。
+     *
+     * 用户定的三条口径（2026-10-31 拍板）：
+     *   1) 标记落在**正文里**（内联 `<mark>`），下方列表保留，点标记就地改；
+     *   2) 同一句话出现多处时按「选区在渲染文本里的序号」对齐（`resolveAnnotationAnchor`）；
+     *   3) 保存只留**自动保存**：气泡失焦 / 点完成就提交，不再有显式「保存」按钮。
+     *
+     * 主路径：正文里拖选 → 选区右上角浮出气泡（批注 / 高亮 / 插入段落）→ 点一个 →
+     * 小 popover 里写（插入段落是多行 textarea）→ 失焦即写盘。失败时草稿留在气泡里，
+     * 状态栏提示「保存失败：…」，不会把用户写的东西弄丢。
+     * 兜底路径：下方工具条那三颗按钮（气泡没弹出来、或者用键盘选字时用）。
+     *
+     * 正文仍然只读：批注内容只进 `学习台/批注.json`，不改原文一个字。
+     */
+    function AnnotationLayer({ file = '', text = '', mode = 'preview', nodes = null } = {}) {
+      const body = String(text ?? '');
+      const fileKey = String(file ?? '');
+      const [notes, setNotes] = useState(() => peekAnnotations(fileKey)?.notes ?? []);
+      const [bubble, setBubble] = useState(null);
+      const [status, setStatus] = useState('');
+      const [saving, setSaving] = useState(false);
+      const [history, setHistory] = useState([]);
+      const rootRef = useRef(null);
+      // 同一个气泡「失焦 + 点完成」会连着提交两次；用 ref 记住上一次提交过的气泡，别重复写盘
+      const submittedRef = useRef('');
+      useEffect(() => {
+        if (fileKey === '') return undefined;
+        let alive = true;
+        annotationsFor(fileKey).then((result) => {
+          if (alive && result && result.ok === true) setNotes(result.notes);
+        });
+        return () => { alive = false; };
+      }, [fileKey]);
+      // 选区被取消（点空白处、按 Esc）→ 气泡跟着收起；没这一步气泡会一直挂在屏上
+      useEffect(() => {
+        try {
+          if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined;
+          const onChange = () => {
+            try {
+              const sel = typeof window !== 'undefined' && typeof window.getSelection === 'function' ? window.getSelection() : null;
+              if (sel === null || String(sel.toString() || '').trim() === '') setBubble(null);
+            } catch (error) { /* 选区拿不到就当没变化 */ }
+          };
+          document.addEventListener('selectionchange', onChange);
+          return () => { if (typeof document.removeEventListener === 'function') document.removeEventListener('selectionchange', onChange); };
+        } catch (error) {
+          return undefined;
+        }
+      }, []);
+
+      const plan = buildAnnotationRenderPlan(notes, body);
+      const previewNodes = Array.isArray(nodes) && nodes.length > 0 ? nodes : materialPreviewNodes(body, 'mat-ann');
+      const renderedText = annotationRenderedText(previewNodes);
+      const marks = annotationMarkOffsets(body, renderedText, plan);
+      // 2026-11-12：把 marks 传进去 —— `found` 但正文里没落成 `<mark>` 的批注不能静默消失。
+      const pending = annotationPendingList(plan, marks);
+      const placedIds = new Set(marks.map((item) => String(item.id ?? '')));
+
+      async function refreshNotes() {
+        invalidateAnnotations(fileKey);
+        const refreshed = await annotationsFor(fileKey, { force: true });
+        if (refreshed && refreshed.ok === true) setNotes(refreshed.notes);
+      }
+      function pushHistory(action) {
+        setHistory((prev) => prev.concat([action]).slice(-20));
+      }
+      function rememberBubbleKey(next) {
+        submittedRef.current = '';
+        setBubble(next);
+      }
+
+      /** 正文里拖选 → 弹出「批注 / 高亮 / 插入段落」气泡。 */
+      function openSelectionBubble() {
+        const snapshot = annotationSelectionSnapshot(rootRef.current, body, renderedText);
+        if (snapshot === null) return;
+        rememberBubbleKey({ mode: 'menu', anchor: snapshot.anchor, rect: snapshot.rect });
+      }
+      function surfaceKeyUp(event) {
+        const key = event !== null && event !== undefined ? String(event.key ?? '') : '';
+        if (key === 'Escape') { setBubble(null); setStatus(''); return; }
+        if (key === 'Shift' || key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') openSelectionBubble();
+      }
+      function startCompose(type) {
+        const current = bubble;
+        if (current === null || current === undefined || current.anchor === undefined) {
+          setStatus('先在正文里选中一段文字');
+          return;
+        }
+        rememberBubbleKey({ mode: 'compose', anchor: current.anchor, rect: current.rect, type, draft: '' });
+      }
+      /** 点已有标记 → 就地查看/编辑/删除。 */
+      function openNoteBubble(mark, event) {
+        const id = String(mark !== null && mark !== undefined ? mark.id ?? '' : '');
+        if (id === '') return;
+        if (event !== null && event !== undefined && typeof event.stopPropagation === 'function') event.stopPropagation();
+        let rect = null;
+        try {
+          const target = event !== null && event !== undefined ? event.currentTarget : null;
+          if (target !== null && target !== undefined && typeof target.getBoundingClientRect === 'function') {
+            const box = target.getBoundingClientRect();
+            if (box !== null && box !== undefined) {
+              const left = Number(box.left) || 0;
+              const top = Number(box.top) || 0;
+              const width = Number(box.width) || 0;
+              const height = Number(box.height) || 0;
+              rect = {
+                top,
+                left,
+                width,
+                height,
+                right: Number.isFinite(Number(box.right)) ? Number(box.right) : left + width,
+                bottom: Number.isFinite(Number(box.bottom)) ? Number(box.bottom) : top + height,
+              };
+            }
+          }
+        } catch (error) {
+          rect = null;
+        }
+        const note = notes.find((item) => item !== null && typeof item === 'object' && String(item.id) === id) ?? null;
+        const content = note === null ? String(mark.content ?? '') : String(note.content ?? '');
+        rememberBubbleKey({
+          mode: 'view',
+          id,
+          type: note === null ? mark.type : note.type,
+          content,
+          draft: content,
+          state: String(mark.state ?? 'found'),
+          rect,
+        });
+      }
+      function fallbackEntry(type) {
+        const snapshot = annotationSelectionSnapshot(rootRef.current, body, renderedText);
+        if (snapshot === null) { setStatus('先在正文里选中一段文字，再点这里'); return; }
+        rememberBubbleKey({ mode: 'compose', anchor: snapshot.anchor, rect: snapshot.rect, type, draft: '' });
+      }
+      function closeBubble() {
+        submittedRef.current = '';
+        setBubble(null);
+        setStatus('');
+      }
+
+      async function submitCreate(current) {
+        const anchor = current.anchor ?? {};
+        const type = current.type ?? 'note';
+        const raw = String(current.draft ?? '');
+        const content = type === 'highlight' && raw.trim() === '' ? String(anchor.quote ?? '') : raw.trim();
+        if (content === '') { setStatus('批注内容不能为空'); return; }
+        const item = annotationCreateItem({ file: fileKey, type, content, anchor });
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          const result = await mutate('annotations', 'create', { item });
+          const createdId = result !== null && result !== undefined && result.item !== null && result.item !== undefined
+            ? String(result.item.id ?? '')
+            : '';
+          pushHistory({ kind: 'create', id: createdId });
+          setBubble(null);
+          setStatus(type === 'insert' ? '已插入一段（已保存）' : (type === 'highlight' ? '已加高亮（已保存）' : '已加批注（已保存）'));
+          await refreshNotes();
+        } catch (error) {
+          // 失败不丢草稿：气泡留着、内容还在，用户改完可以直接再失焦一次
+          setStatus(`保存失败：${error.message ?? error}`);
+          setBubble(current);
+        } finally {
+          setSaving(false);
+        }
+      }
+      async function submitUpdate(current) {
+        const content = String(current.draft ?? '').trim();
+        if (content === '') { setStatus('批注内容不能为空'); return; }
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          await mutate('annotations', 'update', { id: current.id, item: { content } });
+          pushHistory({ kind: 'update', id: current.id, before: String(current.content ?? '') });
+          setBubble(null);
+          setStatus('已保存');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+          setBubble(current);
+        } finally {
+          setSaving(false);
+        }
+      }
+      async function removeNote(id) {
+        const key = String(id ?? '');
+        if (key === '') return;
+        const target = notes.find((item) => item !== null && typeof item === 'object' && String(item.id) === key) ?? null;
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          await mutate('annotations', 'delete', { id: key });
+          pushHistory({
+            kind: 'delete',
+            id: key,
+            type: target === null ? 'note' : target.type,
+            content: target === null ? '' : String(target.content ?? ''),
+            anchor: target === null ? {} : { ...(target.anchor ?? {}) },
+          });
+          setBubble(null);
+          setStatus('已删除');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
+      }
+      async function undo() {
+        if (history.length === 0) { setStatus('没有可撤销的操作'); return; }
+        const action = history[history.length - 1];
+        setHistory((prev) => prev.slice(0, -1));
+        try {
+          if (action.kind === 'create') {
+            if (action.id !== '') await mutate('annotations', 'delete', { id: action.id });
+          } else if (action.kind === 'update') {
+            await mutate('annotations', 'update', { id: action.id, item: { content: String(action.before ?? '') } });
+          } else if (action.kind === 'delete') {
+            const item = annotationCreateItem({ file: fileKey, type: action.type, content: action.content, anchor: action.anchor });
+            await mutate('annotations', 'create', { item });
+          }
+          setStatus('已撤销一步');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`撤销失败：${error.message ?? error}`);
+        }
+      }
+      function submitBubble(current) {
+        if (current === null || current === undefined) return;
+        if (current.mode !== 'compose' && current.mode !== 'view') return;
+        const key = `${current.mode}|${String(current.id ?? '')}|${String(current.type ?? '')}|${String(current.draft ?? '').length}`;
+        if (submittedRef.current === key) return;
+        submittedRef.current = key;
+        if (current.mode === 'compose') { submitCreate(current); return; }
+        // 只是点开看一眼、没动内容 → 不写盘（否则每次点标记都会多一条 update）
+        if (String(current.draft ?? '').trim() === String(current.content ?? '').trim()) { closeBubble(); return; }
+        submitUpdate(current);
+      }
+      function stopBubbleMouseDown(event) {
+        try {
+          const tag = event !== null && event !== undefined && event.target !== null && event.target !== undefined
+            ? String(event.target.tagName ?? '').toUpperCase()
+            : '';
+          // 输入框自己要能获得焦点，不能拦 mousedown；其余按钮拦一下，免得点一下选区就没了
+          if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+          if (event !== null && event !== undefined && typeof event.preventDefault === 'function') event.preventDefault();
+        } catch (error) { /* 拦不住也不影响功能 */ }
+      }
+
+      const surface = mode === 'raw'
+        ? h('pre', {
+          className: 'sa-reading-pre',
+          style: MATERIAL_PRE_STYLE,
+          ref: rootRef,
+          onMouseUp: openSelectionBubble,
+          onKeyUp: surfaceKeyUp,
+        }, ...annotationHighlightNodes(body, plan))
+        : h('div', {
+          className: 'sa-reading',
+          style: MATERIAL_READING_STYLE,
+          ref: rootRef,
+          onMouseUp: openSelectionBubble,
+          onKeyUp: surfaceKeyUp,
+        }, ...annotationMarkedNodes(previewNodes, marks, { onMarkClick: openNoteBubble }));
+
+      function renderBubble() {
+        if (bubble === null || bubble === undefined) return null;
+        const viewport = typeof window !== 'undefined' && Number(window.innerWidth) > 0
+          ? { width: Number(window.innerWidth), height: Number(window.innerHeight) || 0 }
+          : { width: 0, height: 0 };
+        const size = bubble.mode === 'menu'
+          ? { width: 250, height: 38 }
+          : (bubble.type === 'insert' ? { width: 330, height: 150 } : { width: 330, height: 108 });
+        const placed = placeAnnotationBubble(bubble.rect, viewport, size);
+        const style = viewport.width > 0 ? { top: `${placed.top}px`, left: `${placed.left}px` } : { top: '12px', left: '12px' };
+        const head = (label) => h('span', { className: 'sa-annotation-bubble-title' }, label);
+        const input = (placeholder) => h('textarea', {
+          className: 'sa-annotation-bubble-input',
+          'data-role': 'annotation-draft',
+          placeholder,
+          rows: bubble.type === 'insert' ? 4 : 2,
+          value: String(bubble.draft ?? ''),
+          onChange: (event) => {
+            const value = event !== null && event !== undefined && event.target !== null && event.target !== undefined
+              ? String(event.target.value ?? '')
+              : '';
+            submittedRef.current = '';
+            setBubble({ ...bubble, draft: value });
+          },
+          onBlur: () => submitBubble(bubble),
+        });
+        if (bubble.mode === 'menu') {
+          const button = (type, label, title) => h('button', {
+            className: 'sa-btn sa-annotation-bubble-entry',
+            key: `bb-${type}`,
+            'data-type': type,
+            title,
+            onClick: () => startCompose(type),
+          }, label);
+          return h('div', {
+            className: 'sa-annotation-bubble',
+            'data-mode': 'menu',
+            style,
+            onMouseDown: stopBubbleMouseDown,
+          },
+          button('note', '批注', '给选中的这段文字加一条批注'),
+          button('highlight', '高亮', '把选中的这段文字标成高亮'),
+          button('insert', '插入段落', '在这段文字后面插一段自己的话'),
+          h('button', { className: 'sa-btn sa-annotation-bubble-close', title: '关掉气泡（Esc）', onClick: closeBubble }, '×'));
+        }
+        if (bubble.mode === 'compose') {
+          const type = bubble.type ?? 'note';
+          const label = type === 'insert'
+            ? '插入的段落（失焦即保存）'
+            : (type === 'highlight' ? '高亮备注（留空＝用选中原文）' : '批注（失焦即保存）');
+          return h('div', {
+            className: 'sa-annotation-bubble',
+            'data-mode': 'compose',
+            'data-type': type,
+            style,
+            onMouseDown: stopBubbleMouseDown,
+          },
+          head(label),
+          input(type === 'insert' ? '写一段要插在这段文字后面的内容…' : '写点自己的话…'),
+          h('div', { className: 'sa-annotation-bubble-actions' },
+            h('button', { className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => submitBubble(bubble) }, saving ? '保存中…' : '完成'),
+            h('button', { className: 'sa-btn', 'data-action': 'cancel', onClick: closeBubble }, '取消')));
+        }
+        return h('div', {
+          className: 'sa-annotation-bubble',
+          'data-mode': 'view',
+          'data-annotation-id': String(bubble.id ?? ''),
+          style,
+          onMouseDown: stopBubbleMouseDown,
+        },
+        head(bubble.state === 'fuzzy' ? '批注（位置待确认）' : '批注'),
+        input('批注内容（失焦即保存）'),
+        h('div', { className: 'sa-annotation-bubble-actions' },
+          h('button', { className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => submitBubble(bubble) }, saving ? '保存中…' : '完成'),
+          h('button', { className: 'sa-btn', 'data-action': 'delete', onClick: () => removeNote(bubble.id) }, '删除'),
+          h('button', { className: 'sa-btn', 'data-action': 'cancel', onClick: closeBubble }, '取消')));
+      }
+
+      const entryButton = (type, label, title) => h('button', {
+        className: 'sa-btn sa-annotation-entry',
+        'data-type': type,
+        title,
+        onClick: () => fallbackEntry(type),
+      }, label);
+      const typeLabel = (type) => (type === 'highlight' ? '高亮' : (type === 'insert' ? '插入' : '注释'));
+
+      return h('div', { className: 'sa-annotation-layer', 'data-file': fileKey },
+        surface,
+        renderBubble(),
+        h('div', { className: 'sa-annotation-tools' },
+          h('div', { className: 'sa-annotation-toolbar' },
+            entryButton('note', '＋注释', '兜底入口：选中文字后点这里加批注（浮动气泡没弹出来时用）'),
+            entryButton('highlight', '高亮', '兜底入口：把选中的文字标成高亮'),
+            entryButton('insert', '插入段落', '兜底入口：在选中的文字处插入一段'),
+            h('button', {
+              className: 'sa-btn sa-annotation-undo',
+              disabled: history.length === 0,
+              title: '撤销最近一步（会话内最多 20 步，不建版本库）',
+              onClick: undo,
+            }, `撤销 (${history.length})`)),
+          status === '' ? null : h('div', { className: 'sa-annotation-status' }, status)),
+        pending.length === 0 ? null : h('div', { className: 'sa-annotation-pending', 'data-count': String(pending.length) },
+          h('div', { className: 'sa-annotation-pending-title' }, `待处理批注 (${pending.length})`),
+          ...pending.map((item, index) => h('div', {
+            className: `sa-annotation-pending-item is-${item.state}${item.state === 'found' ? ' is-unplaced' : ''}`,
+            key: `pd-${index}`,
+            'data-state': item.state,
+          },
+          h('span', { className: 'sa-annotation-badge' }, item.state === 'lost' ? '已失效' : (item.state === 'found' ? '未落到正文' : '待确认')),
+          h('span', { className: 'sa-annotation-content' }, item.content ?? '')))),
+        notes.length === 0
+          ? h('div', { className: 'sa-annotation-empty' }, '还没有批注。在正文里选中一段文字，右上角会浮出「批注 / 高亮 / 插入段落」。')
+          : h('div', { className: 'sa-annotation-list' },
+            ...notes.map((note, index) => {
+              const stateOf = (plan.find((item) => item.id === note.id) ?? {}).state ?? 'found';
+              const unplaced = stateOf === 'found' && !placedIds.has(String(note.id ?? ''));
+              return h('div', {
+                className: `sa-annotation-item is-${stateOf}${unplaced ? ' is-unplaced' : ''}`,
+                key: `an-${index}`,
+                'data-annotation-id': String(note.id ?? ''),
+                'data-state': stateOf,
+                'data-type': note.type,
+              },
+              h('span', { className: 'sa-annotation-type' }, typeLabel(note.type)),
+              h('span', {
+                className: 'sa-annotation-content',
+                title: '点这里就地改这条批注',
+                onClick: (event) => openNoteBubble({ id: note.id, type: note.type, content: note.content, state: stateOf }, event),
+              }, note.content ?? ''),
+              h('button', { className: 'sa-btn sa-annotation-del', onClick: () => removeNote(note.id) }, '删除'));
+            })));
+    }
+
+    /**
      * 讲解：让宿主用「这一个知识点」的资料现场生成一档讲解，结果落盘缓存。
      *
      * 后端先看缓存：已有就直接回 `cached: true`（面板连点两下不会重复烧 token），
@@ -955,6 +1873,90 @@ window.__ModuleLoader__.load({
       const result = await response.json().catch(() => null);
       if (result === null) return { ok: false, error: `http-${response.status}` };
       return result;
+    }
+
+    /**
+     * 学习记录（P3）：时间线 + 阅读位置 + 对话索引一次性取齐（只读）。
+     *
+     * 这些数据全部旁挂在 `学习台/学习记录/`，不进 /state、不进备份包，
+     * 也不作为任何模型调用的证据（批注/对话不回流，决策 E2）。
+     */
+    async function fetchStudyLog(courseId) {
+      const query = new URLSearchParams();
+      if (typeof courseId === 'string' && courseId !== '') query.set('courseId', courseId);
+      const suffix = query.toString();
+      const response = await fetch(`${API}/study-log${suffix === '' ? '' : `?${suffix}`}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: `http-${response.status}` };
+      return result;
+    }
+
+    /** 读单条对话全文（续聊 / 回看用）。 */
+    async function fetchChatSession(courseId, chatId) {
+      const query = new URLSearchParams({ chat: String(chatId ?? '') });
+      if (typeof courseId === 'string' && courseId !== '') query.set('courseId', courseId);
+      const response = await fetch(`${API}/study-log?${query.toString()}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: `http-${response.status}` };
+      return result;
+    }
+
+    /**
+     * 交互助手对话（P3）：多轮、归档到 学习记录/对话/。
+     * context 只有用户显式点「让助手读当前阅读段落」时才带；服务端会重读磁盘、按 6000 字截断。
+     */
+    async function assistantChat(payload) {
+      const response = await fetch(`${API}/assistant/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: `http-${response.status}` };
+      return result;
+    }
+
+    /** 删单条对话（必须 confirm:true，面板上用 window.confirm 二次确认）。 */
+    async function deleteChatSession(courseId, chatId) {
+      const response = await fetch(`${API}/study-log/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+        body: JSON.stringify({ courseId, id: chatId, confirm: true }),
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: `http-${response.status}` };
+      return result;
+    }
+
+    /** 记阅读位置（节流 + 原子写；失败不打断阅读，静默忽略）。 */
+    async function saveReadingPosition(position) {
+      try {
+        await fetch(`${API}/reading-position`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify(position),
+        });
+      } catch {
+        /* 阅读位置只是锦上添花，写不进不影响看正文 */
+      }
+    }
+
+    /** 对话接口的错误说法：复用聊天那套人话，补几条落盘/上下文专有的。 */
+    function assistantChatErrorMessage(result) {
+      const error = String(result?.error ?? 'unknown');
+      const extra = {
+        'missing-course': '这条对话没绑定课程，刷新面板重开一次',
+        'bad-context': '当前阅读段落读不了（可能没登记、页号越界或太长），关掉注入再试',
+        'chat-write-failed': '对话生成好了，但记录写不进磁盘',
+        'chat-missing': '这条对话已经不在了，可能被删了',
+        'confirm-required': '删除需要确认',
+      };
+      if (extra[error] !== undefined) return extra[error];
+      return chatErrorMessage(result);
     }
 
     /** 聊天出错的说法：复用讲解那套人话，再补几条聊天专有的。 */
@@ -1178,21 +2180,82 @@ window.__ModuleLoader__.load({
 .sa-textarea{width:100%;box-sizing:border-box;resize:vertical;line-height:1.6;font-family:inherit;white-space:pre-wrap}
 
 /* 阅读与层级升级：保留背景，用文字层级与细线组织内容。 */
-.sa-section-title{font-size:18px;font-weight:700;line-height:1.5;color:var(--dsw-alias-label-primary);margin:20px 0 10px;display:block}
+.sa-section-title{font-size:1.125em;font-weight:700;line-height:1.5;color:var(--dsw-alias-label-primary);margin:20px 0 10px;display:block}
 .sa-dock>.sa-section-title{margin:0 12px 0 0}
 .sa-node-detail>.sa-dock:first-child{padding-bottom:14px;border-bottom:1px solid var(--dsw-alias-border-l1);margin-bottom:14px}
-.sa-card.sa-node-detail>.sa-dock:first-child>h3.sa-detail-title{font-size:22px;font-weight:700;line-height:1.45;color:var(--dsw-alias-label-primary);white-space:normal;overflow-wrap:anywhere}
-.sa-reading{max-width:80ch;font-size:16px;line-height:1.85;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
-.sa-reading p{margin:12px 0 0!important;font-size:16px!important;line-height:1.85!important}
+/* 详情卡标题（2026-10-30）：原来写死 22px，专注阅读里调 A+/A− 时正文变了、标题不动，
+   看着像没生效。这里不敢用 em：父级 .sa-dock 是 14px，em 会按 14 算，所以直接 calc 乘 22/16=1.375。 */
+.sa-card.sa-node-detail>.sa-dock:first-child>h3.sa-detail-title{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1) * 1.375);font-weight:700;line-height:1.45;color:var(--dsw-alias-label-primary);white-space:normal;overflow-wrap:anywhere}
+/* 正文字号（2026-10-29）：基准听 DSH 设置里的「内容字号」（宿主把它发布成 body 上的
+   --dsh-content-font-size），再乘 --sa-read-scale（专注阅读里的 A−/A+）。子规则改用 em，
+   才能跟着一起缩放——原来全是写死的 16px !important，调字号完全没反应。 */
+.sa-reading{max-width:80ch;font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1));line-height:1.85;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
+.sa-reading p{margin:12px 0 0!important;font-size:1em!important;line-height:1.85!important}
 .sa-reading .sa-section-title{padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sa-reading .sa-dock:first-child>.sa-section-title{border:0;padding-top:0}
 .sa-reading .sa-example{padding:16px!important;margin-top:12px!important;border-radius:max(var(--dsw-radius-md,8px),10px)!important}
-.sa-example-step{font-size:16px!important;line-height:1.85;color:var(--dsw-alias-label-primary);margin-top:8px!important}
-.sa-example-answer{font-size:17px!important;font-weight:700;line-height:1.7;margin-top:12px!important;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
+.sa-example-step{font-size:1em!important;line-height:1.85;color:var(--dsw-alias-label-primary);margin-top:8px!important}
+.sa-example-answer{font-size:1.0625em!important;font-weight:700;line-height:1.7;margin-top:12px!important;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sa-reading .sa-grow{white-space:normal;overflow:visible;overflow-wrap:anywhere}
-.sa-reading .sa-formula{font-size:16px!important;line-height:1.8;padding:12px 14px!important;overflow:auto}
-.sa-reading-pre{font-size:16px!important;line-height:1.85!important;font-family:inherit!important;padding:16px!important;max-width:80ch;box-sizing:border-box;overflow-wrap:anywhere}
-.sa-chat-message{font-size:16px!important;line-height:1.8!important;padding:12px 16px!important;border-radius:max(var(--dsw-radius-md,8px),10px)!important;overflow-wrap:anywhere}
+.sa-reading .sa-formula{font-size:1em!important;line-height:1.8;padding:12px 14px!important;overflow:auto}
+.sa-reading-pre{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1))!important;line-height:1.85!important;font-family:inherit!important;padding:16px!important;max-width:80ch;box-sizing:border-box;overflow-wrap:anywhere}
+/* 批注覆盖层（B1 2026-10-30 / F2 2026-10-31）：标记叠在正文字面上，不改原文。全部走主题令牌。
+   F2 起正文本身就由批注层渲染（内联 <mark> 要画在正文里），所以这一层不再自带分隔线，
+   分隔线挪到下方「兜底工具条 + 列表」那一块（.sa-annotation-tools）。
+   字号一律用 em 相对正文，不写裸 px——正文跟着 --sa-read-scale 缩放时批注也要跟着变。 */
+.sa-annotation-layer{font-size:.875em;line-height:1.6;min-width:0}
+/* 浮动气泡（F2）：position:fixed 贴在选区右上角，位置由 placeAnnotationBubble 算好写进 style。
+   宽度用 min() 夹住，320px 窄面板里也不会把页面撑出横向滚动。 */
+.sa-annotation-bubble{position:fixed;z-index:60;display:flex;flex-direction:column;gap:.4em;box-sizing:border-box;width:min(20em, calc(100vw - 2em));padding:.6em .7em;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:.875em;line-height:1.5;box-shadow:0 8px 24px color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
+.sa-annotation-bubble-title{font-weight:650;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.sa-annotation-bubble-menu{display:flex;gap:.4em;flex-wrap:wrap}
+.sa-annotation-bubble-input{width:100%;box-sizing:border-box;min-height:4.5em;max-height:12em;resize:vertical;padding:.4em .55em;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit}
+.sa-annotation-bubble-input:focus{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.sa-annotation-bubble-actions{display:flex;gap:.4em;flex-wrap:wrap;justify-content:flex-end}
+.sa-annotation-bubble-close{flex:none}
+.sa-annotation-tools{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}
+.sa-annotation-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.sa-annotation-entry{min-height:2.2em;padding:.25em .7em}
+.sa-annotation-status{color:var(--dsw-alias-label-secondary);margin:.25em 0}
+.sa-annotation-mark{border-radius:var(--dsw-radius-sm);padding:0 1px;cursor:pointer;background:transparent;color:inherit}
+.sa-annotation-mark.sa-annotation-found{box-shadow:inset 0 -2px var(--dsw-alias-brand-primary)}
+.sa-annotation-mark.is-highlight{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent);box-shadow:none}
+.sa-annotation-mark.sa-annotation-fuzzy{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,var(--dsw-alias-brand-primary)) 20%,transparent);box-shadow:none;text-decoration:underline dotted}
+.sa-annotation-mark:hover{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.sa-annotation-insert{display:block;border-left:3px solid var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent);border-radius:var(--dsw-radius-sm);padding:.4em .7em;margin:.5em 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);cursor:pointer}
+.sa-annotation-highlight{border:1px dashed var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);padding:8px 10px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
+.sa-annotation-foot{display:flex;gap:8px;justify-content:flex-end;margin:8px 0}
+.sa-annotation-pending{border:1px solid var(--dsw-alias-state-warn-primary,var(--dsw-alias-border-l1));border-radius:max(var(--dsw-radius-md,8px),10px);padding:8px 10px;margin:8px 0;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,var(--dsw-alias-brand-primary)) 8%,transparent)}
+.sa-annotation-pending-title{font-weight:650;margin-bottom:6px;color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}
+.sa-annotation-pending-item{display:flex;gap:8px;align-items:baseline;padding:3px 0;overflow-wrap:anywhere}
+.sa-annotation-badge{font-size:.86em;padding:1px 7px;border-radius:999px;border:1px solid currentColor;flex:none;color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-secondary))}
+.sa-annotation-pending-item.is-lost .sa-annotation-badge{color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-secondary))}
+/* 2026-11-12：found 但正文里没落成 mark（渲染文本对不上）—— 别静默藏起来 */
+.sa-annotation-pending-item.is-unplaced .sa-annotation-badge{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-secondary))}
+.sa-annotation-item.is-unplaced{border-style:dashed}
+.sa-annotation-list{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.sa-annotation-item{display:flex;gap:8px;align-items:baseline;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2)}
+.sa-annotation-item.is-fuzzy{border-color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-border-l1))}
+.sa-annotation-item.is-lost{opacity:.72;border-style:dashed}
+.sa-annotation-type{font-weight:600;flex:none;color:var(--dsw-alias-label-secondary)}
+.sa-annotation-content{flex:1;min-width:0;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
+.sa-annotation-del{flex:none}
+.sa-annotation-empty{color:var(--dsw-alias-label-secondary);padding:6px 0}
+/* 聊天气泡（2026-10-30）：原来 16px!important 不跟倍率。它不在 .sa-reading 里（父级字号不定），
+   所以不能写 1em，得自己算一遍基准 × 倍率；--sa-read-scale 从阅读区继承，取不到就是 1 = 16px。 */
+.sa-chat-message{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1))!important;line-height:1.8!important;padding:12px 16px!important;border-radius:max(var(--dsw-radius-md,8px),10px)!important;overflow-wrap:anywhere}
+/* 学习记录（P3，2026-10-30）：时间线行 + 多轮对话气泡 */
+.sa-log-row{align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sa-log-row:last-child{border-bottom:0}
+.sa-log-icon{flex:none;width:1.6em;text-align:center;font-size:16px;line-height:1.6}
+.sa-log-title{font-weight:600;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.sa-chat-log{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto;padding:6px 2px;margin:4px 0}
+.sa-chat-msg{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:max(var(--dsw-radius-md,8px),10px);max-width:92%;overflow-wrap:anywhere}
+.sa-chat-msg.user{align-self:flex-end;background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent)}
+.sa-chat-msg.assistant{align-self:flex-start;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1)}
+.sa-chat-role{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+.sa-chat-text{white-space:pre-wrap;line-height:1.7;color:var(--dsw-alias-label-primary)}
+.sa-btn.disabled{opacity:.55;pointer-events:none}
 .sa-textarea{font-size:16px;padding:10px 12px;border-radius:max(var(--dsw-radius-md,8px),10px);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1)}
 .sa-card>.sa-dock:first-child>.sa-grow:first-child{font-size:18px;font-weight:700;line-height:1.5;color:var(--dsw-alias-label-primary);white-space:normal}
 .sa-tree-canvas{padding:16px;min-width:0;box-sizing:border-box}
@@ -1216,7 +2279,7 @@ window.__ModuleLoader__.load({
  .sa-kp-children{margin-left:10px;padding-left:14px}
  .sa-kp-children>.sa-kp-branch::before,.sa-kp-children>.sa-kp-leaf::before{left:-14px;width:12px}
  .sa-reading{max-width:100%}
- .sa-card.sa-node-detail>.sa-dock:first-child>h3.sa-detail-title{font-size:20px}
+ .sa-card.sa-node-detail>.sa-dock:first-child>h3.sa-detail-title{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1) * 1.25)}
 }
 
 
@@ -1240,13 +2303,28 @@ window.__ModuleLoader__.load({
 .sa-compact-branch[data-kind="chapter"]>.sa-compact-toggle{font-size:16px;font-weight:650}
 .sa-compact-branch[data-kind="section"]>.sa-compact-toggle{font-weight:600}
 .sa-compact-point[aria-current="true"]{box-shadow:inset 3px 0 var(--dsw-alias-brand-primary);font-weight:650;padding-left:8px}
+/* 章行拆成「箭头按钮 + 名称按钮」（2026-10-29 用户定）：左边管展开，右边点一下在阅读区打开该章讲义，两件事互不干扰 */
+.sa-compact-row{display:flex;align-items:flex-start;gap:2px}
+.sa-compact-arrow-btn{flex:none;appearance:none;border:0;background:transparent;color:inherit;font:inherit;width:22px;min-height:32px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:var(--dsw-radius-sm)}
+.sa-compact-arrow-btn:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
+.sa-compact-row>.sa-compact-point{flex:1;min-width:0}
+/* 树视图的章行：点名称读讲义，箭头单独负责展开；打开着的章用左侧竖条标出来 */
+.sa-tree-row[data-active="true"]{box-shadow:inset 3px 0 var(--dsw-alias-brand-primary)}
+.sa-tree-row[data-active="true"]>.sa-grow{font-weight:650}
+.sa-tree-row[data-chapter="true"]>.sa-kp-caret{cursor:pointer;border-radius:var(--dsw-radius-sm);padding:0 2px}
+.sa-tree-row[data-chapter="true"]>.sa-kp-caret:hover{background:var(--dsw-alias-interactive-bg-hover,var(--dsw-alias-bg-layer-2))}
 .sa-reader-pane{overflow:auto;min-width:0;min-height:0;scrollbar-gutter:stable;overscroll-behavior:auto;border-radius:max(var(--dsw-radius-lg,12px),14px)}
 .sa-reader-pane>.sa-node-detail{margin-bottom:0;min-height:100%;box-sizing:border-box}
+/* 讲义正文挪到详情卡上面后（2026-10-29），详情卡不再独占整栏高度，否则要滚过一整屏空白才看到它 */
+.sa-reader-pane>.sa-card+.sa-node-detail{min-height:0}
 .sa-reader-pane .sa-reading{max-width:100%}
 .sa-reader-pane .sa-reading-pre{max-height:none!important;overflow:visible!important;max-width:100%}
 .sa-reader-pane .sa-reading img{max-width:100%;height:auto}
 .sa-reader-empty{min-height:100%;box-sizing:border-box;margin-bottom:0;padding:28px}
 .sa-reader-empty p{line-height:1.8;max-width:45ch}
+.sa-lecture-links{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin:5px 0 6px}
+.sa-lecture-links.compact{margin:3px 0 4px;padding-left:24px}
+.sa-lecture-links .sa-btn{min-height:26px;padding:2px 7px;font-size:12px}
 .sa-browser-toggle{display:none}
 .sa-learning-layout[data-full-browser="true"]{grid-template-columns:minmax(0,1fr)}
 .sa-learning-layout[data-full-browser="true"]>.sa-reader-pane{display:none}
@@ -1279,22 +2357,42 @@ window.__ModuleLoader__.load({
 .sa-reader-pane .sa-reader-empty{min-height:320px}
 .sa-learning-layout[data-full-browser="true"]{height:clamp(420px,72vh,860px)}
 .sa-learning-layout[data-full-browser="true"]>.sa-browser-pane{position:static;height:100%}
-.sa-reader-pane[data-focus-reader="true"]{position:absolute;inset:0;z-index:8;display:block;height:100%;overflow:auto;overscroll-behavior:contain;background:var(--dsw-alias-bg-layer-1);padding:18px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+/* 专注阅读的底必须是**不透明纸面**（2026-10-29 用户反馈「背景透明，无法阅读」）：
+   壁纸插件（dsh-plugin-wallpaper-engine）启用时恒挂 body[data-we-glass-page]，把
+   --dsw-alias-bg-layer-1/2/3 改写成半透明玻璃配方（可读性地板浅 45% / 深 59%）——
+   平时看不出来，可专注面是直接盖在目录/正文上的，那 41~55% 的透明就把下面的字透了上来。
+   所以这里在玻璃色下面垫一层宿主静态调色板的实色（浅 neutral-bluish-00 / 深 -875，
+   字面量兜底）：普通主题下两层同色，观感不变；玻璃主题下玻璃色叠在白/深底上，不透但仍有釉光。 */
+.sa-reader-pane[data-focus-reader="true"]{position:absolute;inset:0;z-index:8;display:block;height:100%;overflow:auto;overscroll-behavior:contain;--sa-focus-paper:var(--dsw-static-neutral-bluish-00, #fff);--sa-focus-paper-base:#fff;background-color:var(--sa-focus-paper);background-image:linear-gradient(var(--dsw-alias-bg-layer-1),var(--dsw-alias-bg-layer-1));padding:0 18px 18px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-paper:var(--dsw-static-neutral-bluish-875, #232324);--sa-focus-paper-base:#232324}
 .sa-root:has(.sa-reader-pane[data-focus-reader="true"])>.sa-body{overflow:hidden}
 .sa-knowledge-page:has([data-focus-reader="true"]){animation:none!important;transform:none!important}
 .sa-reader-pane[data-focus-reader="true"]>.sa-node-detail,.sa-reader-pane[data-focus-reader="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
-.sa-focus-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;margin-bottom:16px;background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1)}
+/* 专注阅读标题条（2026-10-31 F1：修「正文从标题条上方/两侧透出来」）。两个成因，都实测过：
+   ① sticky 只会贴到滚动容器**内容盒**的上边缘（Chrome 实测：容器 padding-top 12/18px 时，
+      条子 sticky 后 top 仍是 12，正文从那一条带子里滚上来；负 margin-top 也压不上去，
+      因为 sticky 元素不许越过父级内容盒）。所以**去掉专注面的上内边距**（改成 0 18px 18px），
+      让条子自己用 padding 撑出呼吸感；左右仍用负 margin 外扩到内边距边缘，盖满整条。
+   ② 原来用 background-image 铺 --dsw-alias-bg-layer-1，玻璃主题（壁纸插件）下这个层叠色
+      带透明度（实测 alpha 0.45），等于把条子本身做成半透明 —— 改成「实色底 + 纸面色」两层：
+      实色底（--sa-focus-paper-base，浅 #fff / 深 #232324）保证任何主题下都不透字，
+      纸面色（--sa-focus-paper）保留釉光，且不再引用 alias 层叠色。 */
+.sa-focus-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 18px;margin:0 -18px 16px;background-color:var(--sa-focus-paper-base, #fff);background-image:linear-gradient(var(--sa-focus-paper, #fff),var(--sa-focus-paper, #fff));border-bottom:1px solid var(--dsw-alias-border-l1)}
 .sa-focus-header>strong{flex:1;min-width:140px;font-size:18px}
 .sa-focus-header .sa-muted{font-size:14px}
 .sa-zoom-controls{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sa-read-size{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sa-read-size .sa-btn{min-height:26px;padding:2px 8px;font-size:13px}
 .sa-zoom-value{min-width:50px;text-align:center;font-size:14px;font-variant-numeric:tabular-nums}
 @container (max-width:860px){
  .sa-browser-pane{position:static;height:auto}
  .sa-learning-layout[data-full-browser="true"]{height:auto}
- .sa-reader-pane[data-focus-reader="true"]{padding:12px}
+ .sa-reader-pane[data-focus-reader="true"]{padding:0 12px 12px}
+ /* 窄屏专注面左右内边距缩到 12px，标题条的负 margin 与内 padding 要同步缩，否则又留出 6px 透字带 */
+ .sa-focus-header{padding:12px;margin:0 -12px 16px}
 }
 @media print{
- .sa-browser-pane,.sa-focus-header,.sa-zoom-controls{display:none!important}
+ .sa-browser-pane,.sa-focus-header,.sa-zoom-controls,.sa-read-size{display:none!important}
  .sa-reader-pane[data-focus-reader="true"]{position:static;height:auto;overflow:visible;padding:0}
 }
 
@@ -1754,6 +2852,8 @@ window.__ModuleLoader__.load({
       const [preview, setPreview] = useState(null);   // 预览结果
       const [updates, setUpdates] = useState(null);   // 「检查更新」的结果（null = 还没查过）
       const [notice, setNotice] = useState(null);
+      const [credUser, setCredUser] = useState('');   // 统一身份认证账号（一键重连接口）
+      const [credPass, setCredPass] = useState('');   // 统一身份认证密码（只活在本组件内存里，存完即清）
 
       const reloadStatus = useCallback(async () => {
         const next = await learnStatus();
@@ -1932,12 +3032,12 @@ window.__ModuleLoader__.load({
       };
 
       /**
-       * 会话自愈：立刻续期 / 弹一个可见的登录窗口 / 关掉后台浏览器。
+       * 会话自愈：一键重连 / 打开登录窗口（应急手动）/ 关掉后台浏览器。
        *
-       * 续期是让「专用 Edge」自己再走一遍统一身份认证换张新 Cookie。第一次（以及
-       * 学堂那边的信任过期）时，登录页要图形验证码，这个必须人来 —— 所以留一个
-       * 「打开登录窗口」的按钮兜底；登过一次并勾了「信任浏览器」之后，就能长时间
-       * 静默续期了。
+       * 「一键重连」是让「专用 Edge」自己再走一遍统一身份认证换张新 Cookie。
+       * 2026-11-12 起它**静默**工作：信任浏览器的票过期时，插件会在后台（headless）
+       * 打开 SSO、模拟点击登录（账号密码若存了就直接填），全程不弹窗 —— 除非风控
+       * 弹了图形验证码，那种程序过不去，才需要「打开登录窗口」人工兜底。
        */
       const renewSession = async () => {
         setBusy(true);
@@ -1950,11 +3050,34 @@ window.__ModuleLoader__.load({
             kind: 'ok',
             text: result.source === 'existing'
               ? '当前会话还有效，验证时间已刷新（不用再粘 Cookie）。'
-              : '已经换到新的会话了，之后照常同步即可。',
+              : result.source === 'silent-relogin'
+                ? '已在后台模拟点击登录、换到了新会话，之后照常同步即可。'
+                : '已经换到新的会话了，之后照常同步即可。',
           });
         } catch (error) {
           setNotice({ kind: 'error', text: String(error?.message ?? error) });
           await reloadSession();
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      /** 存/清统一身份认证账号密码（供一键重连静默填表）。两个都空 = 撤销存储。 */
+      const saveCredential = async () => {
+        setBusy(true);
+        setNotice(null);
+        try {
+          const result = await run(() => learnPost('credential', { user: credUser.trim(), pass: credPass }));
+          setCredPass(''); // 存完就把明文密码从界面状态里清掉，别让它一直挂在内存里
+          await reloadSession();
+          setNotice({
+            kind: 'ok',
+            text: result.present === true
+              ? '已保存账号密码：以后「一键重连」能在后台自动填表，全程不弹窗。'
+              : '已清除保存的账号密码：「一键重连」将退回「只点登录按钮」或需要你手动登一次。',
+          });
+        } catch (error) {
+          setNotice({ kind: 'error', text: String(error?.message ?? error) });
         } finally {
           setBusy(false);
         }
@@ -1991,8 +3114,9 @@ window.__ModuleLoader__.load({
       /**
        * 会话那行字：有效 / 失效 / 未知三态 + 后台浏览器在不在跑。
        *
-       * 「失效」不是要用户做什么 —— 心跳会自己续期；只有学堂要验证码的那种失效才
-       * 需要人点一下「打开登录窗口」，所以那句话要指向按钮，而不是「请重新复制 Cookie」。
+       * 「失效」不是要用户做什么 —— 心跳会自己静默重连；只有风控弹图形验证码那种
+       * 极端情况才需要人点一下「打开登录窗口」，所以那句话指向按钮，而不是「请重新
+       * 复制 Cookie」。2026-11-12 起一律**不红不弹**，失效也只温和地标一句。
        */
       const sessionLine = () => {
         if (session === null) return null;
@@ -2008,17 +3132,18 @@ window.__ModuleLoader__.load({
           // `cookie-only` = 票是好的，只是后台浏览器那条喂不动 SSO 了（SSO 掉得快、
           // 票的寿命长得多）。这时候照实说「能用」—— 判红是 2026-10-12 修掉的误报
           if (session.reason === 'cookie-only') {
-            return { kind: 'muted', text: `会话有效${when === '' ? '' : `（${when} 验过）`}：学堂那边照样能同步（走直连）。后台浏览器那条要你哪天顺手点一次「打开登录窗口」登一遍，不登也不影响用。` };
+            return { kind: 'muted', text: `会话有效${when === '' ? '' : `（${when} 验过）`}：学堂那边照样能同步（走直连）。后台那条哪天不顺了，点一下「一键重连」就能修复，不点也不影响用。` };
           }
           return { kind: 'muted', text: `会话有效${when === '' ? '' : `（${when} 验过）`}；${browser}。` };
         }
         if (session.alive === false) {
-          const why = session.reason === undefined || session.reason === 'ok' ? '' : `（${session.reason}）`;
-          // 学堂那边也要人工：这时「立即续期」白试，得让人去登录窗口
+          // 一律不红（用户 2026-11-12 明确要彻底静默，不突然弹窗也不嚣张报红）。
+          // 失效信息温和标一句，并指出「一键重连」；只有真需要人登（风控验证码）时
+          // 才提示「打开登录窗口」。
           if (session.reason === 'needs-manual-login') {
-            return { kind: 'error', text: '会话已失效，而且学堂要求人工登录一次：点「打开登录窗口」登一次并勾「信任浏览器」，登完这边会自动接上。' };
+            return { kind: 'muted', text: '这轮没自动接回来（可能要图形验证码）。点「一键重连」再试一次；还不行就点「打开登录窗口」手动登一次。' };
           }
-          return { kind: 'error', text: `会话已失效${why}：点「立即续期」让专用浏览器自己换一张新的。` };
+          return { kind: 'muted', text: `会话这会儿没接上：点「一键重连」让后台静默换一张新的，多半就回来了（不弹窗）。` };
         }
         return { kind: 'muted', text: `会话状态未知（这会儿连不上学堂？），下一次心跳会再试；${browser}。` };
       };
@@ -2057,17 +3182,17 @@ window.__ModuleLoader__.load({
                 className: 'sa-btn primary',
                 disabled: busy || session?.edgeAvailable !== true,
                 title: session?.edgeAvailable === true
-                  ? '让专用浏览器自己去换一张新票（SSO 还认这台机器时不用你输密码）'
-                  : '没找到 Edge，自动续期用不了；只能手动粘贴一次 Cookie',
+                  ? '后台静默重连：打开登录页，能自动填就填、能点就点（不弹窗）'
+                  : '没找到 Edge，自动重连用不了；只能手动粘贴一次 Cookie',
                 onClick: renewSession,
-              }, '立即续期'),
+              }, busy ? '重连中…' : '一键重连'),
               h('button', {
                 className: 'sa-btn',
                 disabled: busy || session?.edgeAvailable !== true,
-                title: '学堂要图形验证码时，在这里手动登录一次并勾「信任浏览器」',
+                title: '风控弹了图形验证码、程序过不去时，在这里手动登录一次并勾「信任浏览器」',
                 onClick: openLoginWindow,
               }, '打开登录窗口'),
-              h('span', { className: 'sa-muted' }, '票失效先点「立即续期」，多半能自己接回来'),
+              h('span', { className: 'sa-muted' }, '会话断了先点「一键重连」，多半在后台就自己接回来了'),
             ),
 
         connected
@@ -2097,19 +3222,19 @@ window.__ModuleLoader__.load({
                 onClick: checkUpdates,
               }, busy ? '检查中…' : '检查更新'),
               h('span', { className: 'sa-spacer' }),
-              // 会话自愈：平时不用管（心跳自己续），失效时这两个按钮就是出路
+              // 会话自愈：平时不用管（心跳自己静默重连），失效时这几个按钮就是出路
               h('button', {
                 className: 'sa-btn',
                 disabled: busy || session?.edgeAvailable !== true,
                 title: session?.edgeAvailable === true
-                  ? '用专用 Edge 立刻换一张新会话（不用手动复制 Cookie）'
-                  : '没找到 Edge，自动续期用不了；可以手动重新复制一次 Cookie',
+                  ? '后台静默重连：打开登录页，能自动填就填、能点就点（不弹窗）'
+                  : '没找到 Edge，自动重连用不了；可以手动重新复制一次 Cookie',
                 onClick: renewSession,
-              }, '立即续期'),
+              }, busy ? '重连中…' : '一键重连'),
               h('button', {
                 className: 'sa-btn',
                 disabled: busy || session?.edgeAvailable !== true,
-                title: '学堂要图形验证码时，在这里手动登录一次并勾「信任浏览器」',
+                title: '风控弹了图形验证码、程序过不去时，在这里手动登录一次并勾「信任浏览器」',
                 onClick: openLoginWindow,
               }, '打开登录窗口'),
               h('button', {
@@ -2122,13 +3247,58 @@ window.__ModuleLoader__.load({
             )
           : null,
 
-        // 会话那行字放在按钮下面：失效时它会指向「立即续期」，就近更好点
+        // 会话那行字放在按钮下面：失效时它会指向「一键重连」，就近更好点
         sessionInfo === null
           ? null
           : h('div', {
               className: sessionInfo.kind === 'error' ? 'sa-error' : 'sa-muted',
               style: { marginTop: 6 },
             }, sessionInfo.text),
+
+        // 统一身份认证账号密码（给「一键重连」静默填表用）。
+        // 只在连着学堂时展示；存了会显示「已保存」，密码框永远不回显。
+        connected
+          ? h('details', { style: { marginTop: 8 } },
+              h('summary', { className: 'sa-muted', style: { cursor: 'pointer' } },
+                session?.credentialPresent === true
+                  ? '账号密码：已保存（一键重连可全自动填表）'
+                  : '账号密码：未保存（一键重连只能「点登录按钮」，风控时可手填）'),
+              h('div', { className: 'sa-muted', style: { margin: '6px 0' } },
+                '存一份统一身份认证的账号密码，掉登录时「一键重连」就能在后台自动填表、点登录，全程不弹窗。只存在本机（0600 独立文件），不进仓库、不进备份、不外传。'),
+              h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+                h('input', {
+                  className: 'sa-input',
+                  style: { flex: '1 1 160px', minWidth: 140 },
+                  placeholder: '学号 / 账号',
+                  value: credUser,
+                  disabled: busy,
+                  autoComplete: 'username',
+                  onChange: (e) => { setCredUser(e.target.value); setNotice(null); },
+                }),
+                h('input', {
+                  className: 'sa-input',
+                  style: { flex: '1 1 160px', minWidth: 140 },
+                  type: 'password',
+                  placeholder: '密码',
+                  value: credPass,
+                  disabled: busy,
+                  autoComplete: 'current-password',
+                  onChange: (e) => { setCredPass(e.target.value); setNotice(null); },
+                }),
+                h('button', {
+                  className: 'sa-btn primary',
+                  disabled: busy || credUser.trim() === '' || credPass === '',
+                  onClick: saveCredential,
+                }, '保存'),
+                h('button', {
+                  className: 'sa-btn',
+                  disabled: busy || session?.credentialPresent !== true,
+                  title: '清除已保存的账号密码（一键重连将退回只点登录按钮）',
+                  onClick: async () => { setCredUser(''); setCredPass(''); await saveCredential(); },
+                }, '清除'),
+              ),
+            )
+          : null,
 
         notice === null ? null : h('div', {
           className: notice.kind === 'error' ? 'sa-error' : 'sa-muted',
@@ -2205,7 +3375,10 @@ window.__ModuleLoader__.load({
       'not-connected': '还没连接网络学堂：先在上面「网络学堂」卡片里连一次。',
       'cookie-invalid': '网络学堂的 Cookie 已失效：重新登录后复制新 Cookie，再连一次。',
       'no-learn-mark': '这条是手工加的任务，网络学堂里没有对应记录。',
-      'course-unmapped': '这门课还没和网络学堂对上号，先跑一次「同步」。',
+      // 老文案是「先跑一次同步」—— 2026-11-04 的故障证明那条建议无效：同步当时
+      // 根本不写课程映射，用户照做之后还是这条错误。现在详情自己会补一次映射，
+      // 能走到这里说明真补不上（课程名对不上），下一步应当是去核对课程名/加别名。
+      'course-unmapped': '这门课还没和网络学堂对上号：去「网络学堂」里核对课程名，或换一次学期重新匹配。',
       'needs-sync': '这条任务缺网络学堂的作业编号，先跑一次「同步」。',
       'no-task': '任务已经不在数据里了，刷新一下页面。',
       'bad-response': '宿主没有按预期返回数据，稍后重试。',
@@ -3722,6 +4895,74 @@ window.__ModuleLoader__.load({
       return {width:offsets[offsets.length-1]+columnWidths[columnWidths.length-1]+24,height:height+48,nodes:result,links,points,collapsed};
     }
 
+    // ── 资料树（2026-10-30 W3b）──────────────────────────────────────
+    // 资料页从平铺长列表升级成「学科 → 路径文件夹 → 文件」可折叠树。
+    // 分组只从 item.path 的目录段派生（决策 D-W3-2 / D2：不改 资料索引.json schema），
+    // kind 只作类型标签辅助；未知路径统一进「其他」，不丢文件。
+    const MATERIAL_KIND_LABELS = Object.freeze({ homework: '作业', textbook: '教材', material: '资料', lecture: '讲义' });
+    function materialKindLabel(kind) {
+      const key = String(kind ?? '').trim();
+      return MATERIAL_KIND_LABELS[key] ?? (key === '' ? '未标类型' : key);
+    }
+    function materialBaseName(p) {
+      const norm = String(p ?? '').replace(/\\/gu, '/');
+      const parts = norm.split('/').filter((s) => s !== '');
+      return parts.length > 0 ? parts[parts.length - 1] : norm;
+    }
+    // 路径的目录段（去掉文件名，再去掉第一段「<学科>」目录）→ 分组键；没有目录段的落到「其他」
+    function materialFolderKey(p) {
+      const norm = String(p ?? '').replace(/\\/gu, '/').replace(/^\.\/+/u, '');
+      const parts = norm.split('/').filter((s) => s !== '');
+      const dirs = parts.slice(0, -1).slice(1); // 最后一段是文件名，第一段是学科目录
+      return dirs.length === 0 ? '其他' : dirs.join('/');
+    }
+    // 悬停元信息（决策 D-W3-1：只显示类型 / 页数 / 更新时间；摘要暂无字段，不编造、不阻塞渲染）
+    function materialMeta(item) {
+      const donePages = Array.isArray(item?.ocr?.donePages) ? item.ocr.donePages.length : 0;
+      const pages = Number(item?.ocr?.pages) || donePages;
+      const updated = String(item?.ocr?.updatedAt ?? item?.updatedAt ?? '').trim();
+      return [materialKindLabel(item?.kind), pages > 0 ? `${pages} 页` : '页数未知', updated === '' ? '' : `更新 ${updated}`]
+        .filter((part) => part !== '').join(' · ');
+    }
+    /**
+     * 把扁平 files 派生成「学科 → 路径文件夹 → 文件」。纯函数，测试直接验分组与「其他」兜底。
+     * 返回 [{ id, name, count, groups: [{ id, name, count, files: [...] }] }]。
+     */
+    function buildMaterialsTree(files, courses) {
+      const courseName = (id) => objectList(courses).find((c) => String(c?.id) === String(id))?.name ?? (id || '未匹配课程');
+      const rankOrder = { '作业': 0, '教材': 1, '课件': 2, '课件PPT': 2, '讲义': 3, '其他': 99 };
+      const courseMap = new Map();
+      for (const item of objectList(files)) {
+        if (!item || typeof item.path !== 'string' || item.path === '') continue;
+        const cid = String(item.courseId ?? '');
+        if (!courseMap.has(cid)) courseMap.set(cid, { id: cid, name: courseName(item.courseId), groups: new Map() });
+        const entry = courseMap.get(cid);
+        const folder = materialFolderKey(item.path);
+        if (!entry.groups.has(folder)) entry.groups.set(folder, []);
+        entry.groups.get(folder).push(item);
+      }
+      const rank = (name) => (Object.prototype.hasOwnProperty.call(rankOrder, name) ? rankOrder[name] : 50);
+      return [...courseMap.values()].map((entry) => {
+        const groups = [...entry.groups.entries()].map(([name, items]) => ({
+          id: name,
+          name,
+          count: items.length,
+          files: items.slice().sort((a, b) => materialBaseName(a.path).localeCompare(materialBaseName(b.path), 'zh')),
+        })).sort((a, b) => (rank(a.name) - rank(b.name)) || a.name.localeCompare(b.name, 'zh'));
+        return { id: entry.id, name: entry.name, groups, count: groups.reduce((n, g) => n + g.count, 0) };
+      });
+    }
+    // expand 记忆的规范化：只保留 { 课程id: [分组键...] }；坏值一律丢掉（缺省不破坏旧快照）
+    function cloneMaterialsExpand(value) {
+      const out = {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+      for (const [cid, list] of Object.entries(value)) {
+        if (typeof cid !== 'string' || !Array.isArray(list)) continue;
+        out[cid] = list.filter((x) => typeof x === 'string' && x !== '');
+      }
+      return out;
+    }
+
     function MaterialsTab({ docs = {}, view: initialView = 'files', refresh, onOpenKnowledge, focus = null, onFocusConsumed }) {
       const files = objectList(docs.materials?.files);
       const questions = objectList(docs.questions?.questions);
@@ -3737,18 +4978,48 @@ window.__ModuleLoader__.load({
       const [courseId, setCourseId] = useState(restoredMat.courseId);
       const [openPath, setOpenPath] = useState(restoredMat.openPath);
       const [detail, setDetail] = useState(null); // { status, data }
+      // 资料树：搜索词（只筛文件名 + 科目，纯前端，决策 F2）与展开状态（按学科记，复用 readMaterialsUi）
+      const [query, setQuery] = useState('');
+      const [expand, setExpand] = useState(() => cloneMaterialsExpand(restoredMat.expand));
 
       const courseName = (id) => courses.find((item) => item.id === id)?.name ?? (id || '未匹配课程');
       const keep = (item) => courseId === '' || item?.courseId === courseId;
 
+      // 换正文不卸旧内容（2026-10-29 晚，用户报障「点章/换讲义整块白闪，像换了一页」）：
+      // detail 里留着上一份正文，新正文到之前只在标题栏挂一个「读取中…」；命中正文缓存就同步替换，
+      // 一帧空窗都没有。后点的赢：慢响应回来时如果用户已经换了别的，就丢掉（seq 比大小）。
+      const materialSeqRef = useRef(0);
       const showMaterial = async (materialPath, page) => {
+        const seq = (materialSeqRef.current += 1);
         setOpenPath(materialPath);
-        setDetail({ status: 'loading', data: null });
-        const result = await materialText(materialPath, page).catch(() => ({ ok: false, error: 'network' }));
-        setDetail({ status: result.ok ? 'ready' : 'error', data: result });
+        const cached = peekMaterialText(materialPath, page);
+        if (cached !== undefined) {
+          setDetail({ status: 'ready', data: cached, pending: false });
+          return;
+        }
+        setDetail((current) => (current?.data === null || current?.data === undefined
+          ? { status: 'loading', data: null, pending: false }
+          : { ...current, pending: true }));
+        const result = await materialTextCached(materialPath, page).catch(() => ({ ok: false, error: 'network' }));
+        if (seq !== materialSeqRef.current) return;
+        setDetail({ status: result.ok ? 'ready' : 'error', data: result, pending: false });
       };
 
       const pill = (text, level) => h('span', { className: `sa-pill ${level}` }, text);
+
+      // 资料树文件夹展开/收起：某学科没有记录 = 默认全展开（老快照没有 expand 也照常显示全部文件）
+      const isGroupOpen = (cid, gid) => {
+        const stored = expand[cid];
+        if (!Array.isArray(stored)) return true;
+        return stored.includes(gid);
+      };
+      const toggleGroup = (cid, gid, allGids) => {
+        const base = Array.isArray(expand[cid]) ? expand[cid].slice() : allGids.slice();
+        const nextList = base.includes(gid) ? base.filter((x) => x !== gid) : base.concat(gid);
+        const merged = { ...expand, [cid]: nextList };
+        setExpand(merged);
+        readMaterialsUi({ expand: merged });
+      };
 
       // 跨页签联动（2026-10-21 夜批3）：知识点页点「去资料页看」时带着 path/page 过来，
       // 这里直接打开那份资料的正文——不然用户得自己去长列表里翻同一份文件。
@@ -3765,6 +5036,23 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         readMaterialsUi({ view, courseId, openPath, openPage: detail?.data?.page ?? null });
       }, [view, courseId, openPath, detail]);
+
+      // 记阅读位置（P3，决策 F2）：读到哪一份、哪一页 → POST /reading-position，
+      // 落到 `学习台/学习记录/阅读位置.json`（节流 + 原子写，不进 /state、不进备份）。
+      // 只记「真正渲染出来的页」，pending/loading 阶段不写；写失败静默，不打扰阅读。
+      useEffect(() => {
+        if (typeof openPath !== 'string' || openPath === '') return;
+        if (detail?.status !== 'ready') return;
+        const page = detail?.data?.page;
+        if (!Number.isInteger(page) || page < 1) return;
+        const owner = files.find((item) => item.path === openPath);
+        saveReadingPosition({
+          courseId: String(owner?.courseId ?? courseId ?? ''),
+          path: openPath,
+          page,
+          scopeType: 'material',
+        });
+      }, [openPath, detail]);
 
       // 恢复上次打开的文件（返回/切页签回来时用）。有 focus 时以 focus 为准，别互相打架。
       useEffect(() => {
@@ -3806,75 +5094,93 @@ window.__ModuleLoader__.load({
         ),
       );
 
+      // ── 资料树（W3b）：学科 → 路径文件夹 → 文件，可折叠；叶子点击 = 打开正文（再点收起）──
+      const leafRow = (item) => {
+        const donePages = Array.isArray(item?.ocr?.donePages) ? item.ocr.donePages.length : 0;
+        const totalPages = Number(item?.ocr?.pages) || 0;
+        const isText = typeof item?.text?.outFile === 'string' && item.text.outFile !== '';
+        const state = isText
+          ? pill('文字层', 'soon')
+          : item?.ocr?.done === true
+            ? pill(`${donePages}/${totalPages || donePages} 页`, 'later')
+            : pill('未取字', 'today');
+        const isOpen = openPath === item.path;
+        return h('div', {
+          key: item.path,
+          className: 'sa-row sa-mat-leaf',
+          // 悬停只给元信息（kind · 页数 · 更新时间），摘要暂无字段，不编造（决策 D-W3-1）
+          title: materialMeta(item),
+          style: { cursor: 'pointer', alignItems: 'flex-start', paddingLeft: 24 },
+          onClick: () => (isOpen ? (setOpenPath(null), setDetail(null)) : showMaterial(item.path)),
+        },
+        h('span', { className: 'sa-grow', title: item.path },
+          materialBaseName(item.path),
+          h('div', { className: 'sa-muted', style: { fontSize: 13 } }, item.path)),
+        h('span', { className: 'sa-pill soon' }, materialKindLabel(item.kind)),
+        state,
+        h('span', { className: 'sa-muted', style: { fontSize: 14 } }, isOpen ? '收起' : '看内容'));
+      };
+      // 搜索框只筛文件名 + 科目（决策 D-W3-3 / F2：不做路径关键字、不做全文检索）
+      const q = query.trim().toLowerCase();
+      const queryMatch = (item) => {
+        if (q === '') return true;
+        return materialBaseName(item.path).toLowerCase().includes(q)
+          || courseName(item.courseId).toLowerCase().includes(q);
+      };
+      const treeSource = q === '' ? materialRows : materialRows.filter(queryMatch);
+      const materialsTree = buildMaterialsTree(treeSource, courses);
+
       const materialList = materialRows.length === 0
         ? h('div', { className: 'sa-card sa-muted' }, emptyText.files)
-        : h('div', { className: 'sa-card' }, materialRows.map((item) => {
-          const donePages = Array.isArray(item?.ocr?.donePages) ? item.ocr.donePages.length : 0;
-          const totalPages = Number(item?.ocr?.pages) || 0;
-          const isText = typeof item?.text?.outFile === 'string' && item.text.outFile !== '';
-          const state = isText
-            ? pill('文字层', 'soon')
-            : item?.ocr?.done === true
-              ? pill(`${donePages}/${totalPages || donePages} 页`, 'later')
-              : pill('未取字', 'today');
-          const isOpen = openPath === item.path;
-          return h('div', {
-            key: item.path,
-            className: 'sa-row',
-            style: { cursor: 'pointer', alignItems: 'flex-start' },
-            onClick: () => (isOpen ? (setOpenPath(null), setDetail(null)) : showMaterial(item.path)),
-          },
-          h('span', { className: 'sa-grow', title: item.path },
-            item.path,
-            h('div', { className: 'sa-muted', style: { fontSize: 14 } },
-              `${courseName(item.courseId)} · ${item.kind ?? '未标类型'}`)),
-          state,
-          h('span', { className: 'sa-muted', style: { fontSize: 14 } }, isOpen ? '收起' : '看内容'));
-        }));
+        : h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-dock', style: { marginBottom: 8 } },
+            h('input', {
+              className: 'sa-input',
+              type: 'search',
+              value: query,
+              placeholder: '搜索文件名 / 科目',
+              'aria-label': '搜索资料文件名或科目',
+              onChange: (event) => setQuery(event.target.value),
+            }),
+            q === '' ? null : h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `命中 ${treeSource.length} 份`)),
+          materialsTree.length === 0
+            ? h('div', { className: 'sa-muted', style: { marginTop: 8 } }, '没有匹配的资料，换个关键词试试。')
+            : materialsTree.map((course) => h('div', { key: `course:${course.id}`, className: 'sa-mat-tree' },
+              h('div', {
+                className: 'sa-row sa-mat-course-row',
+                style: { fontWeight: 650, borderBottom: '1px solid var(--dsw-alias-border-l1)' },
+              },
+              h('span', { className: 'sa-grow' }, course.name),
+              h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${course.count} 份`)),
+              course.groups.map((group) => {
+                const open = q !== '' || isGroupOpen(course.id, group.id);
+                const allGids = course.groups.map((g) => g.id);
+                return h('div', { key: `group:${course.id}::${group.id}` },
+                  h('div', {
+                    className: 'sa-row sa-mat-folder-row',
+                    style: { cursor: 'pointer', paddingLeft: 12 },
+                    title: `${group.name}（${group.count} 份）`,
+                    onClick: () => toggleGroup(course.id, group.id, allGids),
+                  },
+                  h('span', { className: 'sa-grow' },
+                    `${open ? '▾' : '▸'} ${group.name}`,
+                    h('span', { className: 'sa-muted', style: { fontSize: 13, marginLeft: 6 } }, `${group.count} 份`))),
+                  open ? group.files.map(leafRow) : null);
+              }))));
 
 
-      const detailCard = openPath === null ? null : h('div', { className: 'sa-card' },
-        h('div', { className: 'sa-dock' },
-          h('span', { className: 'sa-grow', title: openPath }, detail?.data?.file ?? openPath),
-          detail?.data?.truncated === true ? pill('已截断', 'today') : null,
-          h('button', {
-            className: 'sa-btn',
-            title: '关上这份正文（也可以按左上角「返回」回到上一个位置）',
-            onClick: () => {
-              setOpenPath(null);
-              setDetail(null);
-              readMaterialsUi({ openPath: null, openPage: null });
-            },
-          }, '关闭')),
-        detail?.status === 'loading' ? h('div', { className: 'sa-muted' }, '正在读取…') : null,
-        detail?.status === 'error'
-          ? h('div', null,
-            h('div', { className: 'sa-error' },
-              detail.data?.error === 'no-text'
-                ? '这份资料还没有取字产物（扫描件要先跑取字）。'
-                : detail.data?.error === 'page-missing'
-                  ? `第 ${detail.data?.page} 页还没有取字产物。`
-                  : detail.data?.error === 'not-indexed'
-                    ? '这份资料不在索引里，可能索引刚被改过，刷新试试。'
-                    : `读取失败：${detail.data?.error ?? '未知原因'}`),
-            Array.isArray(detail.data?.pages) && detail.data.pages.length > 0
-              ? h('div', { className: 'sa-dock', style: { marginTop: 6 } },
-                h('span', { className: 'sa-muted' }, `已有的页：${detail.data.pages.join('、')}`))
-              : null)
-          : null,
-        detail?.status === 'ready'
-          ? h('div', null,
-            Array.isArray(detail.data.pages) && detail.data.pages.length > 0
-              ? h('div', { className: 'sa-dock', style: { flexWrap: 'wrap', marginBottom: 6 } },
-                h('span', { className: 'sa-muted' }, '页'),
-                ...detail.data.pages.map((no) => h('button', {
-                  key: no,
-                  className: `sa-btn${no === detail.data.page ? ' primary' : ''}`,
-                  onClick: () => showMaterial(openPath, no),
-                }, String(no))))
-              : null,
-            h(MaterialReading, { text: detail.data.text, page: detail.data.page }))
-          : null);
+      // 正文卡改用共用的阅读面（W3a）：视图与知识点页同一套，状态仍留在本页签。
+      const detailCard = MaterialReadingCard({
+        detail,
+        openPath,
+        onPage: (no) => showMaterial(openPath, no),
+        onClose: () => {
+          setOpenPath(null);
+          setDetail(null);
+          readMaterialsUi({ openPath: null, openPage: null });
+        },
+        closeTitle: '关上这份正文（也可以按左上角「返回」回到上一个位置）',
+      });
 
 
       const questionList = questionRows.length === 0
@@ -3946,7 +5252,79 @@ window.__ModuleLoader__.load({
         scroll: { ...previous.scroll, ...(patch.scroll || {}) } } }, courseId) };
     }
 
-    const KP_UI_DEFAULTS = Object.freeze({ courseId: '', query: '', filter: 'all', view: 'mind', selected: null, openTree: [], mindOpen: null, masteryLevels: [], detailPath: null, treeCourseId: '', subjectTrees: {} });
+    // 正文字号倍率（2026-10-29）：专注阅读里 A−/A+ 调的是这个倍率，1 = 完全跟随 DSH 设置里的
+    // 「内容字号」。步长 1/16 在 16px 基准下正好 1px 一格，界面显示的是「基准 × 倍率」的整数 px。
+    const READ_SCALE_STEP = 0.0625;
+    const READ_SCALE_MIN = 0.75;
+    const READ_SCALE_MAX = 1.75;
+    /** 夹到合法区间并对齐步长（坏值一律回 1）。 */
+    function clampReadScale(value) {
+      const size = Number(value);
+      if (!Number.isFinite(size)) return 1;
+      const clamped = Math.min(READ_SCALE_MAX, Math.max(READ_SCALE_MIN, size));
+      return Math.round(clamped / READ_SCALE_STEP) * READ_SCALE_STEP;
+    }
+    /** DSH 把设置里的「内容字号」发布在 body 的 --dsh-content-font-size 上（theme-presenter），取不到按 16px。 */
+    function dshContentFontSize() {
+      try {
+        if (typeof document === 'undefined' || !document.body || typeof getComputedStyle !== 'function') return 16;
+        const size = Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dsh-content-font-size'));
+        return Number.isFinite(size) && size >= 8 && size <= 48 ? size : 16;
+      } catch (error) {
+        return 16;
+      }
+    }
+    /**
+     * 「适应窗口」（2026-10-30）：把正文栏拉回设计行宽 80ch —— 窄面板缩小、宽面板放大，
+     * 让一行还是 80 个字符上下，而不是跟着窗口一起变得又宽又挤。
+     * 上下限沿用 A+/A− 那对常量：否则「适应窗口」能到的倍率 A+ 到不了，用户接着按 A+ 会莫名其妙跳一下。
+     * 宽度量不到就返回 1（＝什么都不做），绝不把正文搞成 0 号字。
+     */
+    function fitReadScale(availableWidth, columnWidth) {
+      const available = Number(availableWidth);
+      const column = Number(columnWidth);
+      if (!Number.isFinite(available) || !Number.isFinite(column) || available <= 0 || column <= 0) return 1;
+      return clampReadScale(available / column);
+    }
+    /** 80ch 在当前基准字号下折成多少像素：让浏览器自己量（ch 随字体变），量不到按 1ch≈0.5em 估。 */
+    function measureReadColumnWidth(basePx) {
+      const fallback = basePx * 40;
+      try {
+        if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') return fallback;
+        const probe = document.createElement('span');
+        if (!probe || !probe.style) return fallback;
+        probe.style.cssText = `position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;width:80ch;font-size:${basePx}px`;
+        probe.textContent = '0';
+        document.body.appendChild(probe);
+        const width = Number(probe.getBoundingClientRect?.().width);
+        document.body.removeChild(probe);
+        return Number.isFinite(width) && width > 0 ? width : fallback;
+      } catch (error) {
+        return fallback;
+      }
+    }
+    /** 阅读区可用宽度（要减掉左右 padding，专注模式左右各 18px）；量不到就退回「等于栏宽」＝比例 1。 */
+    function measureReadAvailableWidth(pane, columnWidth) {
+      try {
+        const width = Number(pane?.clientWidth);
+        if (!Number.isFinite(width) || width <= 0) return columnWidth;
+        let padding = 0;
+        try {
+          if (typeof getComputedStyle === 'function') {
+            const style = getComputedStyle(pane);
+            const left = Number.parseFloat(style?.paddingLeft);
+            const right = Number.parseFloat(style?.paddingRight);
+            if (Number.isFinite(left)) padding += left;
+            if (Number.isFinite(right)) padding += right;
+          }
+        } catch (error) { /* 拿不到 padding 就按 0 算，宁可差几像素也不要抛错 */ }
+        return Math.max(1, width - padding);
+      } catch (error) {
+        return columnWidth;
+      }
+    }
+
+    const KP_UI_DEFAULTS = Object.freeze({ courseId: '', query: '', filter: 'all', view: 'mind', selected: null, openTree: [], mindOpen: null, masteryLevels: [], detailPath: null, treeCourseId: '', subjectTrees: {}, readScale: 1 });
     const KP_UI_FILTERS = ['all', 'unlearned', 'marked', 'due', 'unmounted', 'issues', 'noanalysis'];
     const KP_UI_VIEWS = ['tree', 'mind', 'graph', 'list', 'explain'];
     let kpUiMemory = { ...KP_UI_DEFAULTS, openTree: [], mindOpen: null };
@@ -3982,6 +5360,8 @@ window.__ModuleLoader__.load({
             : [],
           // 正文卡打开的文件（2026-10-24 傍晚）：返回时要能复原「看原页」，所以一起记
           detailPath: typeof next.detailPath === 'string' && next.detailPath !== '' ? next.detailPath : null,
+          // 正文字号倍率（2026-10-29）：只记在内存里（刷新页面回默认），和上面这些界面状态同口径
+          readScale: clampReadScale(next.readScale),
         };
       }
       return kpUiMemory;
@@ -3996,8 +5376,10 @@ window.__ModuleLoader__.load({
     // ── 资料页界面记忆（2026-10-24 傍晚）──────────────────────────────
     // 以前资料页切走再回来会重置（看的是资料还是题目、筛了哪门课、「看内容」打开哪份文件全丢）。
     // 加了「返回上一页」以后这些必须记住、也必须能被写回去，所以一并搬进模块内存。
-    const MATERIALS_UI_DEFAULTS = Object.freeze({ view: 'files', courseId: '', openPath: null, openPage: null });
-    let materialsUiMemory = { ...MATERIALS_UI_DEFAULTS };
+    // 2026-10-30 W3b：新增 expand 字段（{ [courseId]: string[] } 已展开分组键）。
+    // 缺省 {} = 全部展开；坏值 / 旧快照没有该字段时按 {} 处理，不破坏 navSame 等值判断。
+    const MATERIALS_UI_DEFAULTS = Object.freeze({ view: 'files', courseId: '', openPath: null, openPage: null, expand: {} });
+    let materialsUiMemory = { ...MATERIALS_UI_DEFAULTS, expand: {} };
 
     function readMaterialsUi(patch = null) {
       if (patch && typeof patch === 'object') {
@@ -4008,6 +5390,7 @@ window.__ModuleLoader__.load({
           courseId: typeof next.courseId === 'string' ? next.courseId : '',
           openPath: typeof next.openPath === 'string' && next.openPath !== '' ? next.openPath : null,
           openPage: Number.isFinite(page) && page > 0 ? Math.floor(page) : null,
+          expand: cloneMaterialsExpand(next.expand),
         };
       }
       return materialsUiMemory;
@@ -4015,7 +5398,7 @@ window.__ModuleLoader__.load({
 
     /** 清空资料页记忆（测试用）。 */
     function resetMaterialsUi() {
-      materialsUiMemory = { ...MATERIALS_UI_DEFAULTS };
+      materialsUiMemory = { ...MATERIALS_UI_DEFAULTS, expand: {} };
       return materialsUiMemory;
     }
 
@@ -4117,10 +5500,19 @@ window.__ModuleLoader__.load({
         if (part.length > 4 && part.startsWith('**') && part.endsWith('**')) return h('strong', { key }, ...analysisInline(part.slice(2, -2), `${key}-b`));
         if (part.length > 2 && part.startsWith('*') && part.endsWith('*')) return h('em', { key }, ...analysisInline(part.slice(1, -1), `${key}-i`));
         if (part.length > 2 && part.startsWith('`') && part.endsWith('`')) {
-          return h('code', { key, style: { fontFamily: 'Consolas, monospace', fontSize: '0.95em', padding: '0 2px' } }, part.slice(1, -1));
+          return backtickNodes(part.slice(1, -1), key);
+        }
+        // 2026-10-31（修「$$…$$ 漏一个 $」）：INLINE_MARK_PATTERN 会把 `$$…$$` 整体匹配成一个
+        // part，但以前这里只 slice(1,-1) 剥掉一层 `$`，剩下的 `$…$` 首尾还各留一个字面 `$`；
+        // 而 latexRender 的 LATEX_SYMBOL 把字面 `$` 原样输出，屏幕上就变成 `$Y = A ⊕ …$`——
+        // 数电第02章讲义那句「代码原文」正是它（行内 `$…$` 正常，只有 `$$…$$` 中招）。
+        // `$$…$$` 必须先于单个 `$` 判断，且剥两层（slice(2,-2)）。
+        if (part.length > 4 && part.startsWith('$$') && part.endsWith('$$')) {
+          return h('span', { key, style: MATH_INLINE_STYLE },
+            ...latexNodes(part.slice(2, -2), `${key}-math`));
         }
         if (part.length > 2 && part.startsWith('$') && part.endsWith('$')) {
-          return h('span', { key, style: { fontFamily: 'Georgia, "Times New Roman", serif', fontSize: '1.04em' } },
+          return h('span', { key, style: MATH_INLINE_STYLE },
             ...latexNodes(part.slice(1, -1), `${key}-math`));
         }
         return part;
@@ -4159,16 +5551,34 @@ window.__ModuleLoader__.load({
       in: '∈', notin: '∉', ni: '∋', subset: '⊂', subseteq: '⊆', subsetneq: '⊊', supset: '⊃', supseteq: '⊇',
       setminus: '∖', cup: '∪', cap: '∩', bigcup: '⋃', bigcap: '⋂', varnothing: '∅', emptyset: '∅',
       land: '∧', wedge: '∧', lor: '∨', vee: '∨', neg: '¬', lnot: '¬', oplus: '⊕', otimes: '⊗',
-      times: '×', cdot: '·', cdots: '⋯', ldots: '…', dots: '…', div: '÷', pm: '±', mp: '∓', circ: '∘',
+      times: '×', cdot: '·', cdots: '⋯', ldots: '…', dots: '…', vdots: '⋮', ddots: '⋱', dotsb: '…', div: '÷', pm: '±', mp: '∓', circ: '∘',
       infty: '∞', partial: '∂', nabla: '∇', forall: '∀', exists: '∃', therefore: '∴', because: '∵',
       angle: '∠', perp: '⊥', parallel: '∥', mid: '|', nmid: '∤', langle: '⟨', rangle: '⟩',
       lfloor: '⌊', rfloor: '⌋', lceil: '⌈', rceil: '⌉', sum: 'Σ', prod: 'Π', int: '∫', oint: '∮',
       prime: '′', colon: '：', backslash: '＼', rhd: '⊳', models: '⊨', preccurlyeq: '≼', star: '⋆',
+      // 2026-10-29：箭头系与零散符号以前会落到「认不出的命令只留名字」把名字印出来
+      longrightarrow: '⟶', longleftarrow: '⟵', longleftrightarrow: '⟷', Longleftarrow: '⟸', Leftarrow: '⇐',
+      uparrow: '↑', downarrow: '↓', updownarrow: '↕', nearrow: '↗', searrow: '↘', swarrow: '↙', nwarrow: '↖',
+      longmapsto: '⟼', leadsto: '⇝', hookrightarrow: '↪', rightleftharpoons: '⇌', leftrightharpoons: '⇋',
+      odot: '⊙', ominus: '⊖', oslash: '⊘', bigoplus: '⨁', bigotimes: '⨂', bigodot: '⨀',
+      lvert: '|', rvert: '|', vert: '|', Vert: '‖', lVert: '‖', rVert: '‖',
+      checkmark: '✓', blacksquare: '∎', square: '□', triangle: '△', bigtriangleup: '△',
+      gtrsim: '≳', lessapprox: '⪅', gtrapprox: '⪆', prec: '≺', succ: '≻', precsim: '≾', succsim: '≿',
+      sqcup: '⊔', sqcap: '⊓', uplus: '⊎', supsetneq: '⊋', varpi: 'ϖ', wp: '℘', ell: 'ℓ', hbar: 'ℏ',
       '\\': ' ', '|': '‖', '%': '%', '&': '&', '{': '{', '}': '}', '$': '$', '#': '#', '_': '_',
     };
     const LATEX_SPACING = { quad: ' ', qquad: '  ', ',': ' ', ';': ' ', ':': ' ', '!': '', ' ': ' ' };
+    /** 2026-10-29：带注解的箭头（`A \xrightarrow{\text{舍去进位}} B`），注解排在箭头上方。 */
+    const XARROW_SYMBOL = {
+      xrightarrow: '→', xleftarrow: '←', xleftrightarrow: '↔', xRightarrow: '⇒', xLeftarrow: '⇐',
+      xLeftrightarrow: '⇔', xlongequal: '=', xlongrightarrow: '⟶', xlongleftarrow: '⟵',
+    };
     const LATEX_IGNORED = new Set(['left', 'right', 'bigl', 'bigr', 'big', 'Big', 'Bigg', 'biggl', 'biggr',
-      'displaystyle', 'textstyle', 'limits', 'nolimits', 'mathstrut', 'begin', 'end', 'nonumber', 'notag']);
+      'Bigl', 'Bigr', 'Biggl', 'Biggr', 'bigm', 'Bigm',
+      'displaystyle', 'textstyle', 'limits', 'nolimits', 'mathstrut', 'begin', 'end', 'nonumber', 'notag',
+      // 2026-10-29：环境的横线/表尾命令，以前会落到「认不出的命令只留名字」把 hline 印出来
+      'hline', 'cline', 'toprule', 'midrule', 'bottomrule', 'endhead', 'endfirsthead', 'endfoot',
+      'tabularnewline', 'arraybackslash', 'centering', 'raggedright']);
     const LATEX_UPRIGHT = new Set(['sin', 'cos', 'tan', 'cot', 'sec', 'csc', 'log', 'ln', 'lg', 'exp',
       'min', 'max', 'gcd', 'deg', 'arg', 'sup', 'inf', 'lim', 'det', 'dim', 'sgn', 'arcsin', 'arctan']);
     const LATEX_FONT_TEXT = new Set(['text', 'mathrm', 'textrm', 'textnormal', 'operatorname', 'mathsf', 'mathtt', 'mbox']);
@@ -4179,7 +5589,20 @@ window.__ModuleLoader__.load({
     /**
      * 把一段 LaTeX 排成节点数组。返回值里**不会出现反斜杠**（认不出的命令只留名字）。
      */
-    const latexRender = (tex, keyPrefix = 'm') => {
+    /**
+     * 正体（非斜体）的**公式外壳**：∫、Σ、∏、√ 这类符号要直立，不能跟着变量斜。
+     * 2026-11-12：行内公式改成「衬线斜体」之后，这些符号得反着标回去。
+     */
+    const MATH_UPRIGHT_STYLE = { fontStyle: 'normal', fontFamily: 'Georgia, "Times New Roman", serif' };
+    const mathUpright = (text) => h('span', { style: MATH_UPRIGHT_STYLE }, text);
+    /** `∫`、`∮` 这类积分符号再大一号、不跟着变量斜。 */
+    const mathBigOp = (text) => h('span', { style: { ...MATH_UPRIGHT_STYLE, fontSize: '1.18em', lineHeight: '1' } }, text);
+    /** 叠在积分号右边上下角的限（`∫_{-π/2}^{π/2}`）：小一号、正体、不斜。 */
+    const mathLimit = (body) => h('span', { style: { ...MATH_UPRIGHT_STYLE, fontSize: '0.72em', lineHeight: '1' } }, ...body);
+    /** 2026-11-12：大算子分两档——`\sum` 一类限写在正上下，`\int` 一类限落在右边上下角。 */
+    const LATEX_BIGOP_STACK = new Set(['sum', 'prod', 'coprod', 'bigcup', 'bigcap', 'bigoplus', 'bigotimes', 'bigodot', 'bigvee', 'bigwedge']);
+    const LATEX_BIGOP_SIDE = new Set(['int', 'iint', 'iiint', 'oint']);
+    const latexRender = (tex, keyPrefix = 'm', options = {}) => {
       const source = String(tex ?? '').replace(/\r/gu, ' ');
       let cursor = 0;
       let serial = 0;
@@ -4189,7 +5612,8 @@ window.__ModuleLoader__.load({
       };
       const fractionNode = (numerator, denominator) => h('span', {
         key: nextKey(),
-        style: { display: 'inline-flex', flexDirection: 'column', verticalAlign: 'middle', textAlign: 'center', margin: '0 3px', lineHeight: 1.25 },
+        // `whiteSpace: 'nowrap'`：分式的分子/分母内部一律不折行（否则窄栏里分子会掉到横线下面）。
+        style: { display: 'inline-flex', flexDirection: 'column', verticalAlign: 'middle', textAlign: 'center', margin: '0 3px', lineHeight: 1.25, whiteSpace: 'nowrap' },
       },
       h('span', { style: { borderBottom: '1px solid currentColor', padding: '0 3px' } }, ...numerator),
       h('span', { style: { padding: '0 3px' } }, ...denominator));
@@ -4208,6 +5632,384 @@ window.__ModuleLoader__.load({
         cursor += 1;
         return [ch];
       };
+      // ── 环境排版（2026-10-29）───────────────────────────────────────────────────────
+      // 以前 `\begin`/`\end` 只吃掉环境名、内容平铺，于是数电讲义第01章第 105/144 行被印成
+      // `[N]原 = N & (0 ≤ N < 2ⁿ⁻¹) …`、`r@ l & 10101011 (-85) + … hline 1 & 01111001`。
+      // 这里按 LaTeX 语义真排版：`\\` 断行、`&` 分列、`\hline` 画横线、列格式串决定对齐与竖线，
+      // `cases` 加可伸缩大括号，`pmatrix` 系加可伸缩括号，`aligned` 按 `&` 右侧对齐。
+      /** 读一个 `{…}` 组并**原样**返回（环境名、列格式串这类不该当正文排的东西）。 */
+      const readRawGroup = () => {
+        skipSpace();
+        if (cursor >= source.length || source[cursor] !== '{') return '';
+        const start = cursor + 1;
+        let depth = 1;
+        let index = start;
+        while (index < source.length) {
+          const ch = source[index];
+          if (ch === '\\') { index += 2; continue; }
+          if (ch === '{') depth += 1;
+          else if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) { cursor = index + 1; return source.slice(start, index); }
+          }
+          index += 1;
+        }
+        cursor = source.length;
+        return source.slice(start);
+      };
+      /** `\left` 的落点：按 `\left`/`\right` 配对计数，返回配对 `\right` 的下标（不配对给 -1）。 */
+      const findMatchingRight = (from) => {
+        const pattern = /\\(left|right)(?![A-Za-z])/gu;
+        pattern.lastIndex = from;
+        let depth = 1;
+        let match;
+        while ((match = pattern.exec(source)) !== null) {
+          if (match[1] === 'left') depth += 1;
+          else { depth -= 1; if (depth === 0) return match.index; }
+        }
+        return -1;
+      };
+      /** `\left` / `\right` / `\middle` 后面那**一个**定界符，原样返回（`\{` `(` `|` `\|` `.` …）。 */
+      const readDelimiter = () => {
+        skipSpace();
+        if (cursor >= source.length) return '';
+        if (source[cursor] !== '\\') { cursor += 1; return source[cursor - 1]; }
+        const word = /^\\([A-Za-z]+)/u.exec(source.slice(cursor));
+        if (word !== null) { cursor += 1 + word[1].length; return `\\${word[1]}`; }
+        cursor += 2;
+        return source.slice(cursor - 2, cursor);
+      };
+      /** 可伸缩定界符的路径（viewBox 固定 10×100，靠 preserveAspectRatio 拉高）。 */
+      const DELIMITER_PATHS = {
+        // 2026-11-12：`paren` 一族以前漏了（只有字符兜底），`\left( … \right)` 整对括号消失。
+        paren: ['M8.6,2 C2.6,18 2.6,82 8.6,98', 'M1.4,2 C7.4,18 7.4,82 1.4,98'],
+        bracket: ['M8.4,2 L3.4,2 L3.4,98 L8.4,98', 'M1.6,2 L6.6,2 L6.6,98 L1.6,98'],
+        lbrace: ['M8.6,2 C4.2,2 4.8,5 4.8,11 L4.8,40 C4.8,47 3.6,50 1.6,50 C3.6,50 4.8,53 4.8,60 L4.8,89 C4.8,95 4.2,98 8.6,98',
+          'M1.4,2 C5.8,2 5.2,5 5.2,11 L5.2,40 C5.2,47 6.4,50 8.4,50 C6.4,50 5.2,53 5.2,60 L5.2,89 C5.2,95 5.8,98 1.4,98'],
+        vert: ['M5,0 L5,100', 'M5,0 L5,100'],
+        doublevert: ['M3.4,0 L3.4,100', 'M6.6,0 L6.6,100'],
+        angle: ['M8.4,2 L2.6,50 L8.4,98', 'M1.6,2 L7.4,50 L1.6,98'],
+        floor: ['M8.4,2 L3.4,2 L3.4,98', 'M1.6,2 L6.6,2 L6.6,98'],
+        ceil: ['M8.4,98 L3.4,98 L3.4,2', 'M1.6,98 L6.6,98 L6.6,2'],
+      };
+      /** 没有 SVG 路径时的**字符兜底**（括号这种一字宽的没必要画矢量）。 */
+      const DELIMITER_TEXT = {
+        paren: ['(', ')'], bracket: ['[', ']'], lbrace: ['{', '}'], vert: ['|', '|'],
+        doublevert: ['‖', '‖'], angle: ['⟨', '⟩'], floor: ['⌊', '⌋'], ceil: ['⌈', '⌉'],
+      };
+      const DELIMITER_KINDS = {
+        '(': 'paren', ')': 'paren', '[': 'bracket', ']': 'bracket', '|': 'vert',
+        '\\|': 'doublevert', '\\{': 'lbrace', '\\}': 'lbrace',
+        '\\langle': 'angle', '\\rangle': 'angle',
+        '\\lfloor': 'floor', '\\rfloor': 'floor', '\\lceil': 'ceil', '\\rceil': 'ceil',
+        '\\lvert': 'vert', '\\rvert': 'vert', '\\lVert': 'doublevert', '\\rVert': 'doublevert',
+      };
+      /** 画一个可伸缩定界符；`side` 决定左右（同一族的两条路径是镜像）。 */
+      const delimiterNode = (kind, side) => {
+        const paths = DELIMITER_PATHS[kind];
+        const plain = DELIMITER_TEXT[kind];
+        // 2026-11-12 修：`\left( … \right)` 以前没有 `paren` 一族的路径 → `delimiterNode` 返回 null，
+        // 整对括号在屏幕上凭空消失（`(4π ε₀ r²)` 印成 `4π ε₀ r²`）。
+        // 现在：**小写括号类**（`(` `[` `|` `{`）直接用字符（随字号缩放，最稳）；
+        // **大括号/bmatrix 那种要包多行的高定界符**才画 SVG（字符拉伸后下缘会掉到基线以下）。
+        const smallKind = kind === 'paren' || kind === 'bracket' || kind === 'vert' || kind === 'lbrace' || kind === 'floor' || kind === 'ceil';
+        if (smallKind || paths === undefined) {
+          if (plain === undefined) return null;
+          if (plain[0] === plain[1]) return plain[side === 'left' ? 0 : 1];
+          return h('span', {
+            key: nextKey(),
+            style: { display: 'inline-block', transform: 'scaleY(1.15)', transformOrigin: 'center', lineHeight: 1 },
+          }, plain[side === 'left' ? 0 : 1]);
+        }
+        return h('svg', {
+          key: nextKey(),
+          viewBox: '0 0 10 100',
+          preserveAspectRatio: 'none',
+          // 2026-11-12：`width: 9` 少了单位 → 被当成非法值忽略，SVG 退化成 300×150 的默认尺寸，
+          // 分式右半截被撑出屏幕。改成 `9px`；`alignSelf: center` + `height: 1em` 不让它撑高父容器。
+          style: { width: '9px', height: '1em', alignSelf: 'center', flex: '0 0 auto', overflow: 'visible', color: 'currentColor' },
+        }, h('path', {
+          key: nextKey(),
+          d: side === 'left' ? paths[0] : paths[1],
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.25,
+          strokeLinecap: 'round',
+          vectorEffect: 'non-scaling-stroke',
+        }));
+      };
+      /** 「定界符 + 内容 + 定界符」；两边都没有就只返回内容本身。 */
+      const wrapDelimiters = (openKind, closeKind, content) => {
+        const open = openKind === null ? null : delimiterNode(openKind, 'left');
+        const close = closeKind === null ? null : delimiterNode(closeKind, 'right');
+        // 2026-11-12 修：`\left(` 的 kind 是 `(`；除号是 `/`。以前 `content` 与 `open`/`close` 之外
+        // 还有一段「把内容再拼一次」的旧分支，导致 `(4π ε₀ r²` 后面多出一个 `)`（屏幕上就是
+        // 「(4π ε₀ r²)  )」）。这里只渲 open + content + close 各一次，直接返回。
+        if (open === null && close === null) return content;
+        // 定界符只拉伸到内容高度（`alignItems: center` + `nowrap`）。**不要**在这里用
+        // `inline-block` 包内容：那会让 `(4π ε₀ r²)` 变成一个整体不可断行的块，
+        // 行内公式一长就把整行撑成两行（用户截图里 `E =` 孤零零一行、分式掉到下一行）。
+        return h('span', {
+          key: nextKey(),
+          style: { display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', gap: '1px', whiteSpace: 'nowrap' },
+        }, open, content, close);
+      };
+      /**
+       * 按 `\\`（mode='row'）或 `&`（mode='cell'）切分，**只在顶层**切：
+       * 花括号里、嵌套环境里（`cases` 里套 `matrix`）的一律不动。
+       */
+      const scanTopLevel = (text, mode) => {
+        const parts = [];
+        let current = '';
+        let braces = 0;
+        let envs = 0;
+        for (let index = 0; index < text.length; index += 1) {
+          const ch = text[index];
+          if (ch === '\\') {
+            const nest = /^\\(begin|end)\s*\{([^{}]*)\}/u.exec(text.slice(index, index + 48));
+            if (nest !== null) {
+              envs += nest[1] === 'begin' ? 1 : -1;
+              current += nest[0];
+              index += nest[0].length - 1;
+              continue;
+            }
+            if (mode === 'row' && text[index + 1] === '\\' && braces === 0 && envs === 0) {
+              parts.push(current);
+              current = '';
+              index += 1;
+              const gap = /^\s*\[[^\]\n]*\]/u.exec(text.slice(index + 1));
+              if (gap !== null) index += gap[0].length;
+              continue;
+            }
+            current += ch;
+            continue;
+          }
+          if (ch === '{') braces += 1;
+          else if (ch === '}') braces = Math.max(0, braces - 1);
+          if (mode === 'cell' && ch === '&' && braces === 0 && envs === 0) {
+            parts.push(current);
+            current = '';
+            continue;
+          }
+          current += ch;
+        }
+        parts.push(current);
+        return parts;
+      };
+      /** 环境体 → 行（每行带「上边有没有横线」的标记），`\hline` 单独成行也算。 */
+      const collectEnvRows = (body) => {
+        const rows = [];
+        let pendingTop = false;
+        for (const raw of scanTopLevel(body, 'row')) {
+          let text = raw;
+          let matchedTop = false;
+          let rule;
+          while ((rule = /^\s*(?:\\hline\b|\\toprule\b|\\midrule\b|\\bottomrule\b|\\cline\s*\{[^{}]*\})/u.exec(text)) !== null) {
+            matchedTop = true;
+            text = text.slice(rule[0].length);
+          }
+          const tail = /\s*(?:\\hline\b|\\toprule\b|\\midrule\b|\\bottomrule\b)+$/u.exec(text);
+          let tailRule = false;
+          if (tail !== null) { tailRule = true; text = text.slice(0, tail.index); }
+          const top = pendingTop || matchedTop;
+          pendingTop = tailRule;
+          if (text.trim() === '') {
+            if (top) pendingTop = true;
+            continue;
+          }
+          rows.push({ cells: scanTopLevel(text, 'cell').map((cell) => cell.trim()), top });
+        }
+        return { rows, bottomRule: pendingTop };
+      };
+      /** `array` 的列格式串：`l/c/r` 对齐、`|` 竖线、`p{…}` 按左对齐、`@{}` 只吃掉不留痕。 */
+      const parseColumnSpec = (spec) => {
+        const cols = [];
+        let pendingRule = false;
+        let index = 0;
+        const skipGroup = () => {
+          let depth = 0;
+          while (index < spec.length) {
+            const ch = spec[index];
+            if (ch === '{') depth += 1;
+            else if (ch === '}') {
+              depth -= 1;
+              index += 1;
+              if (depth === 0) return;
+              continue;
+            }
+            index += 1;
+          }
+        };
+        while (index < spec.length) {
+          const ch = spec[index];
+          if (ch === '|') { pendingRule = true; index += 1; continue; }
+          if (ch === '{' || ch === '}') { index += 1; continue; }
+          if (ch === '@' || ch === '!' || ch === '>' || ch === '<' || ch === '*') {
+            index += 1;
+            while (index < spec.length && /\s/u.test(spec[index])) index += 1;
+            if (spec[index] === '{') skipGroup();
+            continue;
+          }
+          if (ch === 'p' || ch === 'm' || ch === 'b' || ch === 'X' || ch === 'S') {
+            index += 1;
+            while (index < spec.length && /\s/u.test(spec[index])) index += 1;
+            if (spec[index] === '{') skipGroup();
+            cols.push({ align: 'left', rule: pendingRule });
+            pendingRule = false;
+            continue;
+          }
+          if (ch === 'l' || ch === 'c' || ch === 'r') {
+            cols.push({ align: ch === 'r' ? 'right' : ch === 'c' ? 'center' : 'left', rule: pendingRule });
+            pendingRule = false;
+            index += 1;
+            continue;
+          }
+          index += 1;
+        }
+        return { cols, endRule: pendingRule };
+      };
+      /** 二维格子（`cases` / `aligned` / `matrix` 都用它）：真对齐，不是空格凑。 */
+      const gridNode = (cellRows, options) => {
+        const colCount = Math.max(1, ...cellRows.map((row) => row.length));
+        const columns = Array.from({ length: colCount }, (unused, index) => (options.track === undefined ? 'auto' : options.track(index))).join(' ');
+        const children = [];
+        cellRows.forEach((cells) => {
+          for (let column = 0; column < colCount; column += 1) {
+            const align = options.align === undefined ? 'center' : options.align(column);
+            children.push(h('span', {
+              key: nextKey(),
+              style: {
+                justifySelf: align === 'right' ? 'end' : align === 'left' ? 'start' : 'center',
+                textAlign: align,
+                whiteSpace: 'nowrap',
+                lineHeight: 1.65,
+              },
+            }, ...latexRender(cells[column] ?? '', nextKey())));
+          }
+        });
+        return h('span', {
+          key: nextKey(),
+          style: {
+            display: 'inline-grid',
+            gridTemplateColumns: columns,
+            columnGap: options.columnGap ?? '1.2em',
+            rowGap: options.rowGap ?? '2px',
+            alignItems: 'baseline',
+            justifyItems: 'start',
+            verticalAlign: 'middle',
+            textAlign: 'left',
+          },
+        }, ...children);
+      };
+      /** `array` / `tabular`：按列格式串排成真表格（竖式加法、真值表都靠它）。 */
+      const tableNode = (body, spec) => {
+        const { cols, endRule } = parseColumnSpec(spec);
+        const { rows, bottomRule } = collectEnvRows(body);
+        if (rows.length === 0) return null;
+        const colCount = Math.max(1, cols.length, ...rows.map((row) => row.cells.length));
+        const cellStyle = (column, row) => {
+          const style = {
+            textAlign: cols[column]?.align ?? 'left',
+            padding: '1px 7px',
+            lineHeight: 1.6,
+            whiteSpace: 'nowrap',
+            verticalAlign: 'middle',
+          };
+          if (cols[column]?.rule === true) style.borderLeft = '1px solid currentColor';
+          if (column === colCount - 1 && endRule) style.borderRight = '1px solid currentColor';
+          if (row.top) style.borderTop = '1px solid currentColor';
+          if (row === rows[rows.length - 1] && bottomRule) style.borderBottom = '1px solid currentColor';
+          return style;
+        };
+        const bodyRows = rows.map((row) => h('tr', { key: nextKey() },
+          ...Array.from({ length: colCount }, (unused, column) => h('td', { key: nextKey(), style: cellStyle(column, row) },
+            ...latexRender(row.cells[column] ?? '', nextKey())))));
+        return h('table', {
+          key: nextKey(),
+          // tabular-nums：竖式加法靠等宽数字才对得上进位，衬线字体的数字默认不等宽
+          style: { borderCollapse: 'collapse', margin: '6px auto', lineHeight: 1.6, fontVariantNumeric: 'tabular-nums' },
+        }, h('tbody', { key: nextKey() }, ...bodyRows));
+      };
+      /** 从 cursor 扫到配对的 `\end{env}`，返回环境体原文（不吃外层）；不配对就吃到末尾。 */
+      const readEnvBody = (envName) => {
+        const start = cursor;
+        let depth = 1;
+        let index = cursor;
+        while (index < source.length) {
+          const at = source.indexOf('\\', index);
+          if (at < 0) break;
+          const nest = /^\\(begin|end)\s*\{([^{}]*)\}/u.exec(source.slice(at, at + 48));
+          if (nest !== null && nest[2].trim() === envName) {
+            if (nest[1] === 'begin') depth += 1;
+            else {
+              depth -= 1;
+              if (depth === 0) { cursor = at + nest[0].length; return source.slice(start, at); }
+            }
+            index = at + nest[0].length;
+            continue;
+          }
+          index = at + 1;
+        }
+        cursor = source.length;
+        return source.slice(start);
+      };
+      const MATRIX_ENV_DELIMITERS = {
+        matrix: null, smallmatrix: null, pmatrix: ['(', ')'], bmatrix: ['[', ']'],
+        Bmatrix: ['{', '}'], vmatrix: ['|', '|'], Vmatrix: ['‖', '‖'],
+      };
+      const ENV_ALIGNED = new Set(['aligned', 'align', 'alignat', 'alignedat', 'gather', 'gathered',
+        'split', 'eqnarray', 'flalign', 'multline']);
+      const ENV_TABLE = new Set(['array', 'tabular', 'tabularx', 'longtable']);
+      const charDelimiterKind = (ch) => ({ '(': 'paren', ')': 'paren', '[': 'bracket', ']': 'bracket',
+        '{': 'lbrace', '}': 'lbrace', '|': 'vert', '‖': 'doublevert' })[ch] ?? null;
+      /**
+       * `\begin{env}` 的排版入口。认得的四种：
+       * `cases` 系（左侧大括号 + 两列）、`array`/`tabular`（列格式串）、`matrix` 系（括号网格）、
+       * `aligned` 系（按 `&` 右/左交替对齐）；其余环境内容照排、环境名一律不印。
+       */
+      const renderEnvironment = (envName) => {
+        const bare = envName.replace(/\*$/u, '');
+        let columnSpec = '';
+        if (ENV_TABLE.has(bare)) {
+          skipSpace();
+          if (source[cursor] === '[') {
+            const close = source.indexOf(']', cursor);
+            if (close >= 0) cursor = close + 1;
+          }
+          columnSpec = readRawGroup();
+        }
+        const body = readEnvBody(envName);
+        if (bare === 'cases' || bare === 'dcases' || bare === 'rcases') {
+          const cellRows = collectEnvRows(body).rows.map((row) => row.cells);
+          if (cellRows.length === 0) return [];
+          const grid = gridNode(cellRows, { columnGap: '1.6em', rowGap: '4px', align: () => 'left' });
+          if (bare === 'rcases') return [wrapDelimiters(null, 'lbrace', grid)];
+          return [wrapDelimiters('lbrace', null, grid)];
+        }
+        if (Object.prototype.hasOwnProperty.call(MATRIX_ENV_DELIMITERS, bare) === true) {
+          const cellRows = collectEnvRows(body).rows.map((row) => row.cells);
+          if (cellRows.length === 0) return [];
+          const grid = gridNode(cellRows, { columnGap: '0.9em', rowGap: '3px', align: () => 'center' });
+          const pair = MATRIX_ENV_DELIMITERS[bare];
+          if (pair === null) return [grid];
+          return [wrapDelimiters(charDelimiterKind(pair[0]), charDelimiterKind(pair[1]), grid)];
+        }
+        if (ENV_ALIGNED.has(bare) === true) {
+          const cellRows = collectEnvRows(body).rows.map((row) => row.cells);
+          if (cellRows.length === 0) return [];
+          return [gridNode(cellRows, {
+            columnGap: '0.6em',
+            rowGap: '3px',
+            align: (column) => (column % 2 === 0 ? 'right' : 'left'),
+          })];
+        }
+        if (ENV_TABLE.has(bare) === true) {
+          const node = tableNode(body, columnSpec);
+          return node === null ? [] : [node];
+        }
+        // 其余环境（equation / figure / 未知）：内容照排，环境名不印出来
+        return latexRender(body, nextKey());
+      };
       const readCommand = () => {
         const letters = /^[A-Za-z]+/u.exec(source.slice(cursor));
         let name;
@@ -4218,11 +6020,42 @@ window.__ModuleLoader__.load({
           name = source[cursor] ?? '';
           cursor += 1;
         }
-        if (name === 'begin' || name === 'end') {
-          // 环境名（`{cases}` / `{array}`）要吃掉，否则会把「cases」当正文印出来；
-          // 环境本身不排版，内容继续平铺（行分隔的 `\\` 由 LATEX_SYMBOL 转成空格）
-          readArgument();
+        if (name === 'begin') {
+          // 环境名（`{cases}` / `{array}`）先吃掉，交给 renderEnvironment 真排版
+          return renderEnvironment(readRawGroup().trim());
+        }
+        if (name === 'end') {
+          // 落单的 `\end`（正常不会走到，配对的已在 renderEnvironment 里消费干净）
+          readRawGroup();
           return [];
+        }
+        if (name === 'left') {
+          const openRaw = readDelimiter();
+          const rightAt = findMatchingRight(cursor);
+          if (rightAt < 0) {
+            const kind = DELIMITER_KINDS[openRaw];
+            return kind === undefined ? [] : [delimiterNode(kind, 'left')];
+          }
+          const innerTex = source.slice(cursor, rightAt);
+          cursor = rightAt + '\\right'.length;
+          const closeRaw = readDelimiter();
+          const openKind = DELIMITER_KINDS[openRaw] ?? null;
+          const closeKind = DELIMITER_KINDS[closeRaw] ?? null;
+          const inner = latexRender(innerTex, nextKey());
+          if (openKind === null && closeKind === null) return inner;
+          return [wrapDelimiters(openKind, closeKind,
+            h('span', { key: nextKey(), style: { display: 'inline-block' } }, ...inner))];
+        }
+        if (name === 'right') {
+          // 没配对的 `\right`：吃掉定界符就行，别把「right」印出来
+          readDelimiter();
+          return [];
+        }
+        if (name === 'middle') {
+          const raw = readDelimiter();
+          const kind = DELIMITER_KINDS[raw];
+          const node = kind === undefined ? '|' : delimiterNode(kind, 'mid');
+          return [h('span', { key: nextKey(), style: { display: 'inline-flex', alignItems: 'center', margin: '0 8px' } }, node)];
         }
         if (name === 'tag' || name === 'label') {
           // 2026-10-27 晚：教材 OCR 的整段公式常带 `\tag{12.11}`（编号）。以前会把
@@ -4232,22 +6065,150 @@ window.__ModuleLoader__.load({
           if (tagText === '') return [];
           return [h('span', { key: nextKey(), style: { marginLeft: 8, fontSize: 12, opacity: 0.75 } }, `(${tagText})`)];
         }
+        if (name === 'boxed' || name === 'fbox') {
+          // 2026-10-29：`\boxed{…}` 以前印成「boxed…」（讲义里 184 处），现在画个框
+          const body = readArgument();
+          return [h('span', {
+            key: nextKey(),
+            style: {
+              display: 'inline-flex', alignItems: 'center', border: '1.2px solid currentColor',
+              borderRadius: 3, padding: '1px 7px', margin: '0 2px',
+            },
+          }, ...body)];
+        }
+        if (XARROW_SYMBOL[name] !== undefined) {
+          // 2026-10-29：`A \xrightarrow[下注]{上注} B` —— 注解排在箭头上方，可选的下注排在下方
+          skipSpace();
+          let below = null;
+          if (source[cursor] === '[') {
+            const close = source.indexOf(']', cursor);
+            if (close >= 0) { below = source.slice(cursor + 1, close); cursor = close + 1; }
+          }
+          const above = readArgument();
+          const annotation = (nodes) => h('span', {
+            key: nextKey(),
+            style: { fontSize: 11, lineHeight: 1.2, whiteSpace: 'nowrap', opacity: 0.9 },
+          }, ...nodes);
+          const stack = [annotation(above), h('span', { key: nextKey(), style: { lineHeight: 1.1 } }, XARROW_SYMBOL[name])];
+          if (below !== null && below.trim() !== '') stack.push(annotation(latexRender(below, nextKey())));
+          return [h('span', {
+            key: nextKey(),
+            style: {
+              display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
+              verticalAlign: 'middle', margin: '0 3px',
+            },
+          }, ...stack)];
+        }
+        if (name === 'underbrace' || name === 'overbrace') {
+          // 2026-10-29：`\underbrace{X}_{说明}` —— 内容 + 花括号 + 小字说明竖排（以前印出「underbrace」）
+          const body = readArgument();
+          skipSpace();
+          let label = null;
+          if (source[cursor] === '_' || source[cursor] === '^') {
+            cursor += 1;
+            skipSpace();
+            label = readArgument();
+          }
+          const brace = h('span', {
+            key: nextKey(),
+            style: { fontSize: '1.1em', lineHeight: 1 },
+          }, name === 'underbrace' ? '⏟' : '⏞');
+          const labelNode = label === null ? null : h('span', {
+            key: nextKey(),
+            style: { fontSize: 11, lineHeight: 1.2, whiteSpace: 'nowrap', opacity: 0.9 },
+          }, ...label);
+          const content = h('span', { key: nextKey() }, ...body);
+          const stack = name === 'underbrace' ? [content, brace] : [brace, content];
+          if (labelNode !== null) {
+            if (name === 'underbrace') stack.push(labelNode);
+            else stack.unshift(labelNode);
+          }
+          return [h('span', {
+            key: nextKey(),
+            style: {
+              display: 'inline-flex', flexDirection: 'column', alignItems: 'center',
+              justifyContent: 'center', verticalAlign: 'middle', margin: '0 2px',
+            },
+          }, ...stack)];
+        }
         if (LATEX_IGNORED.has(name)) return [];
         if (LATEX_SPACING[name] !== undefined) return [LATEX_SPACING[name]];
         if (LATEX_GREEK[name] !== undefined) return [LATEX_GREEK[name]];
         if (LATEX_SYMBOL[name] !== undefined) return [LATEX_SYMBOL[name]];
-        if (LATEX_UPRIGHT.has(name)) return [name];
+        // 2026-11-12：`\sum_{i=1}^{n}` 的上下限以前被吃掉（只印一个 Σ）。带上下限时上下叠，不带时单字。
+        if (LATEX_UPRIGHT.has(name)) {
+          skipSpace();
+          let uprightUpper = null;
+          let uprightLower = null;
+          let guard = 0;
+          while (guard < 2 && (source[cursor] === '_' || source[cursor] === '^')) {
+            const isUpper = source[cursor] === '^';
+            cursor += 1;
+            if (isUpper) uprightUpper = readArgument();
+            else uprightLower = readArgument();
+            skipSpace();
+            guard += 1;
+          }
+          const uprightBody = mathUpright(name);
+          if (uprightUpper === null && uprightLower === null) return [uprightBody];
+          return [h('span', { key: nextKey(), style: { display: 'inline-flex', flexDirection: 'column', alignItems: 'center', verticalAlign: 'middle', margin: '0 2px', lineHeight: 1.15 } },
+            uprightUpper === null ? null : h('span', { key: nextKey(), style: mathLimit }, ...uprightUpper),
+            uprightBody,
+            uprightLower === null ? null : h('span', { key: nextKey(), style: mathLimit }, ...uprightLower))];
+        }
         if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
           const numerator = readArgument();
           const denominator = readArgument();
           return [fractionNode(numerator, denominator)];
         }
+        // 2026-11-12：`\sqrt[n]{x}` 的方根指数以前被当正文吃掉（`\sqrt[3]{x}` 印成 `√[3]x`）
         if (name === 'sqrt') {
+          skipSpace();
+          let rootIndex = null;
+          if (source[cursor] === '[') {
+            const closeBracket = source.indexOf(']', cursor + 1);
+            if (closeBracket > 0) {
+              rootIndex = latexRender(source.slice(cursor + 1, closeBracket), nextKey());
+              cursor = closeBracket + 1;
+            }
+          }
           const body = readArgument();
-          return [h('span', { key: nextKey(), style: { whiteSpace: 'nowrap' } }, '√',
+          return [h('span', { key: nextKey(), style: { whiteSpace: 'nowrap' } },
+            mathUpright('√'),
+            rootIndex === null ? null : h('sup', { style: { ...MATH_UPRIGHT_STYLE, fontSize: '0.66em', lineHeight: '1' } }, ...rootIndex),
             h('span', { style: { borderTop: '1px solid currentColor', padding: '0 2px' } }, ...body))];
         }
-        if (name === 'binom') {
+        // 2026-11-12：求和/求积/积分的上下限按 LaTeX 语义排（`\sum_{i=1}^{n}` 上下叠，`\int_a^b` 限在右下右上）
+        if (LATEX_BIGOP_SIDE.has(name) || LATEX_BIGOP_STACK.has(name)) {
+          const operator = mathBigOp(LATEX_SYMBOL[name] ?? name);
+          const stacked = LATEX_BIGOP_STACK.has(name);
+          let lower = null;
+          let upper = null;
+          for (let picked = 0; picked < 2; picked += 1) {
+            skipSpace();
+            const mark = source[cursor];
+            if (mark !== '_' && mark !== '^') break;
+            cursor += 1;
+            const body = readArgument();
+            if (mark === '_') lower = body;
+            else upper = body;
+          }
+          if (lower === null && upper === null) return [operator];
+          if (stacked && lower !== null) {
+            return [h('span', {
+              key: nextKey(),
+              style: { display: 'inline-flex', flexDirection: 'column', alignItems: 'center', verticalAlign: 'middle', margin: '0 3px', lineHeight: '1.05' },
+            },
+            mathLimit(upper === null ? [] : upper),
+            operator,
+            mathLimit(lower))];
+          }
+          return [h('span', { key: nextKey(), style: { whiteSpace: 'nowrap' } },
+            operator,
+            upper === null ? null : h('sup', { style: { ...MATH_UPRIGHT_STYLE, fontSize: '0.7em', lineHeight: '1' } }, ...upper),
+            lower === null ? null : h('sub', { style: { ...MATH_UPRIGHT_STYLE, fontSize: '0.7em', lineHeight: '1', marginLeft: upper === null ? 0 : '-0.34em' } }, ...lower))];
+        }
+        if (name === 'binom' || name === 'dbinom' || name === 'tbinom') {
           const top = readArgument();
           const bottom = readArgument();
           return [h('span', { key: nextKey(), style: { whiteSpace: 'nowrap' } }, '('), fractionNode(top, bottom), h('span', null, ')')];
@@ -4287,18 +6248,33 @@ window.__ModuleLoader__.load({
           const ch = source[cursor];
           if (stopAtBrace && ch === '}') {
             cursor += 1;
+            if (options.textOnly === true) {
+              // 纯文本模式：`x_1` 里的 `_` 就是字面字符，不排上下标（`\text{}` 里的内容也走这里）
+              out.push(ch);
+              continue;
+            }
             return out;
           }
           if (ch === '}') {
+            // 纯文本模式（`\text{…}` 里的中文）必须**原样保留花括号**：
+            // 以前这里无条件吞掉 `}`，`\text{库仑定律写作 F}` 会把收尾的 `}` 也吃掉，
+            // 结果整句中文被吞进公式、外面只剩一个孤零零的 `，用矢量…`。
             cursor += 1;
+            if (options.textOnly === true) { out.push(ch); continue; }
             continue;
           }
           if (ch === '{') {
+            if (options.textOnly === true) { cursor += 1; out.push(ch); continue; }
             cursor += 1;
             out.push(...parse(true));
             continue;
           }
           if (ch === '_' || ch === '^') {
+            if (options.textOnly === true) {
+              cursor += 1;
+              out.push(ch);
+              continue;
+            }
             cursor += 1;
             const body = readArgument();
             out.push(h(ch === '_' ? 'sub' : 'sup', { key: nextKey(), style: { fontSize: '0.72em', lineHeight: '1' } }, ...body));
@@ -4322,7 +6298,396 @@ window.__ModuleLoader__.load({
       return parse(false);
     };
     /** 对外只暴露「排好版的节点」，测试直接调它。 */
-    const latexNodes = (tex, keyPrefix = 'm') => latexRender(tex, keyPrefix);
+    /** 对外只暴露「排好版的节点」，测试直接调它。 */
+    const latexNodes = (tex, keyPrefix = 'm', options = {}) => latexRender(tex, keyPrefix, options);
+    // ── 纯文本公式规范化（2026-11-12）───────────────────────────────────────────
+    // 起因：用户报「`E = Q / (4π ε₀ r²)`、`A_12` 这样的符号很难看」。四门课讲义里公式的写法
+    // 实际有三种：① 真 LaTeX（`$…$`，数电 777 处）；② 反引号里包的纯文本（物理 5818 处）；
+    // ③ 正文里裸着写的纯文本（`F_x`、`∫_{-π/2}^{π/2}`、`ε₀`）。②③ 里带 `_` `^` 的那一档以前
+    // 要么把下划线和尖号原样露出、要么当代码排成等宽字 —— 这里统一转成 LaTeX 再交给
+    // latexRender：下标真的变小下降、`/` 分式真的上下叠、∫ Σ 带上限、变量用衬线斜体。
+    // 保守口径：**只在「整行有公式特征」或「反引号里」触发**，中文段落中间的单个字母不动；
+    // 换不动的字符原样留在公式外面（→「一个字都不吞」）。
+    /** 有这几个符号之一才值得怀疑是公式（`r = 5.3 m` 这种纯等号不算）。 */
+    const PLAIN_MATH_MARK_PATTERN = /[_^∫∮∑∏√]|[\u0370-\u03ff]/u;
+    /**
+     * 上一行漏掉的一类：**只用 Unicode 上下标字形写的公式**（`Q₁ Q₂ / r²`、`10⁻¹⁹ C`）。
+     * 这类写法在物理讲义里极常见，光看 `_ ^ ∫ ∑` 认不出来，得连上下标字形一起认。
+     */
+    const MATH_SCRIPTOID_PATTERN = /[\u00b2\u00b3\u00b9\u2070-\u2079\u207b\u2080-\u2089\u2090-\u209c]/u;
+    /** 公式里允许出现的 ASCII 外壳字（能拼成一段 `{…}` 的只有这些；中文原样留在公式外面）。 */
+    const MATH_BARE_CHUNK = /^[0-9A-Za-z.,;:!?+\-*/=<>()[\]{}|#%&~\u00d7\u00f7\u00b1\u2208\u2209\u2282\u2286\u2283\u2287\u2192\u2190\u2194\u21d2\u21d4\u2264\u2265\u2260\u2248\u2261\u221d\u2202\u2207\u221e\u2032\u00b7\u3001]+$/u;
+    /** 公式里允许出现的单字符（其余一律留在公式外面，保证「一个字都不吞」）。 */
+    const MATH_BARE_CHAR = /[0-9A-Za-z.\u0370-\u03ff\u00c0-\u024f\u2070-\u209c\u00b2\u00b3\u00b9\u00b0\u221a\u2211\u220f\u222b\u222e]/u;
+    /** Unicode 上下标字形 → 普通字符（物理讲义全是这种写法：`ε₀`、`10⁻¹⁹`、`x²`）。 */
+    const MATH_UNICODE_SCRIPTS = {
+      '\u2070': '0', '\u00b9': '1', '\u00b2': '2', '\u00b3': '3', '\u2074': '4', '\u2075': '5',
+      '\u2076': '6', '\u2077': '7', '\u2078': '8', '\u2079': '9', '\u207a': '+', '\u207b': '-',
+      '\u207c': '=', '\u207d': '(', '\u207e': ')', '\u207f': 'n',
+      '\u2080': '0', '\u2081': '1', '\u2082': '2', '\u2083': '3', '\u2084': '4', '\u2085': '5',
+      '\u2086': '6', '\u2087': '7', '\u2088': '8', '\u2089': '9', '\u208a': '+', '\u208b': '-',
+      '\u208c': '=', '\u208d': '(', '\u208e': ')', '\u2090': 'a', '\u2091': 'e', '\u2092': 'o',
+      '\u2093': 'x', '\u2095': 'h', '\u2096': 'k', '\u2097': 'l', '\u2098': 'm', '\u2099': 'n',
+      '\u209a': 'p', '\u209b': 's', '\u209c': 't',
+    };
+    /** 上下标字形（`₀`、`²`）：按 Unicode 区块区分下/上。 */
+    const MATH_SCRIPT_CHAR = /^[\u2070-\u209c\u00b2\u00b3\u00b9\u00b0]$/u;
+    const MATH_SCRIPT_KIND = (ch) => (/[\u2080-\u209c]/u.test(ch) ? '_' : '^');
+    /** 关系符 → LaTeX 命令（两边都是公式时用命令排，字体才和变量一致）。 */
+    const MATH_TOKEN_REL = {
+      '\u2264': '\\le', '\u2265': '\\ge', '\u2260': '\\ne', '\u2248': '\\approx', '\u2261': '\\equiv',
+      '\u221d': '\\propto', '\u2192': '\\to', '\u21d2': '\\Rightarrow', '\u21d4': '\\Leftrightarrow',
+      '\u2190': '\\leftarrow', '\u2194': '\\leftrightarrow', '\u2208': '\\in', '\u2229': '\\cap',
+      '\u222a': '\\cup', '\u00d7': '\\times', '\u00b7': '\\cdot', '\u00b1': '\\pm', '\u221e': '\\infty',
+    };
+    const MATH_TOKEN_INTEGRAL = /^[\u222b\u222e\u222f\u2230]$/u;
+    /** 一小段 LaTeX 是否「值得排」（`x_1` 这种孤零零的不排，省得把中文段落搞花）。 */
+    const mathTexLooksReal = (tex) => {
+      const body = String(tex ?? '').replace(/\{\\text\{[^}]*\}\}/gu, '');
+      if (body.trim() === '') return false;
+      if (PLAIN_MATH_MARK_PATTERN.test(body) || MATH_SCRIPTOID_PATTERN.test(body)) return true;
+      return /[=<>×÷+-]/u.test(body) && /[0-9]/u.test(body) && /[A-Za-zͰ-Ͽ]/u.test(body);
+    };
+    /** 读一段 `_` / `^` 的作用对象：字母数字、Unicode 上下标字形，或一个 ASCII `(…)` / `{…}` 组。 */
+    const readMathScript = (text, from) => {
+      let index = from;
+      let body = '';
+      while (index < text.length) {
+        const ch = text[index];
+        if (MATH_SCRIPT_CHAR.test(ch) || /[0-9A-Za-z]/u.test(ch)) { body += ch; index += 1; continue; }
+        if (ch === '(' || ch === '{') {
+          const end = text.indexOf(ch === '(' ? ')' : '}', index + 1);
+          if (end > index + 1) {
+            const inner = text.slice(index + 1, end);
+            if (MATH_BARE_CHUNK.test(inner) || /^[0-9A-Za-z\u0370-\u03ff{},.\-+ ]+$/u.test(inner)) {
+              body += `{${inner}}`;
+              index = end + 1;
+              continue;
+            }
+          }
+        }
+        break;
+      }
+      return { body, next: index };
+    };
+    /** 读 `√(…)` / `√{…}` / `√123`：能读成组就上横线，读不动就只留根号。 */
+    const readMathRadical = (text, from) => {
+      if (text[from] === '(' || text[from] === '{') {
+        const end = text.indexOf(text[from] === '(' ? ')' : '}', from + 1);
+        if (end > from + 1) {
+          const inner = text.slice(from + 1, end);
+          if (MATH_BARE_CHUNK.test(inner) || /^[0-9A-Za-z\u0370-\u03ff{},.\-+ ]+$/u.test(inner)) return { body: `\\sqrt{${inner}}`, next: end + 1 };
+        }
+        return { body: '\\sqrt', next: from };
+      }
+      const run = /^[0-9A-Za-z.]+/u.exec(text.slice(from));
+      if (run === null) return { body: '\\sqrt', next: from };
+      return { body: `\\sqrt{${run[0]}}`, next: from + run[0].length };
+    };
+    /**
+     * 纯文本 → LaTeX 词法。**规则很窄**：调用方已经判定「这段有公式特征」，这里再逐字符
+     * 决定能不能进公式；中文、引号、破折号这类留在公式外面（宁愿少排，也不改字）。
+     */
+    /** 公式里「不带空格连在一起的一串」是否全是公式字符。 */
+    /** 中文字符、全角标点、`，。；：！？（）【】「」` 之类：公式的边界。 */
+    /**
+     * 把一个**不含空白的公式片段**转成 LaTeX（2026-11-12）。
+     * 做四件事：Unicode 上下标 → `_{}`/`^{}`；`F_x`/`n^(…)`/`∫_{a}^{b}` 的脚本；
+     * `√(…)` → `\sqrt{}`；希腊字母与关系符 → 对应命令。认不出的字符原样留下。
+     */
+    /** 2026-11-12：纯文本里直接出现的希腊小写/大写、积分号、关系符 → LaTeX 命令，
+     *  否则 `∮`/`θ` 这类字符会被当普通文字原样排（`\int` 一类还能靠大字库补，`∮` 不能）。 */
+    const PLAIN_MATH_MAP = {
+      'π': '\\pi ', 'τ': '\\tau ', 'φ': '\\varphi ', 'ϕ': '\\phi ', 'θ': '\\theta ', 'λ': '\\lambda ',
+      'μ': '\\mu ', 'σ': '\\sigma ', 'Σ': '\\Sigma ', 'Δ': '\\Delta ', 'δ': '\\delta ', 'ρ': '\\rho ',
+      'ω': '\\omega ', 'Ω': '\\Omega ', 'α': '\\alpha ', 'β': '\\beta ', 'γ': '\\gamma ', 'η': '\\eta ',
+      'ν': '\\nu ', 'κ': '\\kappa ', 'ψ': '\\psi ', 'Ψ': '\\Psi ', 'Φ': '\\Phi ', 'Λ': '\\Lambda ',
+      '∮': '\\oint ', '∬': '\\iint ', '∭': '\\iiint ', '∫': '\\int ',
+      '≈': '\\approx ', '≠': '\\neq ', '≤': '\\le ', '≥': '\\ge ', '→': '\\to ', '⇒': '\\Rightarrow ',
+      '∞': '\\infty ', '∂': '\\partial ', '∇': '\\nabla ', '⇌': '\\rightleftharpoons ',
+    };
+    const plainMathWordToTex = (word) => {
+      const clean = String(word ?? '').replace(/[\s\u3000\u00a0]/gu, '');
+      let index = 0;
+      let token = '';
+      while (index < word.length) {
+        const ch = word[index];
+        if (MATH_SCRIPT_CHAR.test(ch)) {
+          const mark = MATH_SCRIPT_KIND(ch);
+          let run = '';
+          while (index < word.length && MATH_SCRIPT_CHAR.test(word[index]) && MATH_SCRIPT_KIND(word[index]) === mark) {
+            run += MATH_UNICODE_SCRIPTS[word[index]] ?? '';
+            index += 1;
+          }
+          if (run !== '') token += `${mark}{${run}}`;
+          continue;
+        }
+        if (ch === '^' || ch === '_') {
+          const script = readMathScript(word, index + 1);
+          if (script.body === '') { index += 1; continue; }
+          // 2026-11-12：剥离脚标本体的希腊小写/拉丁小写（`F_ix` 的 `i`、`e_r21` 的 `r`），
+          // 中文与运算符一律不当斜体（`\text{}`），否则 `_{0}` 之类会渲染成斜体冒充正文。
+          const rawBody = script.body;
+          const strippedBody = rawBody.replace(/([\u0370-\u03ff]|[A-Za-z])+$/u, '');
+          if (strippedBody !== '' && /^\s*$/u.test(strippedBody) === false) {
+            token += `${ch}{\\text{${strippedBody}}}`;
+          }
+          const letterBody = rawBody.slice(strippedBody.length);
+          if (letterBody !== '') token += `${ch}{${letterBody}}`;
+          else if (strippedBody === '') token += `${ch}{\\text{${rawBody}}}`;
+          index = script.next;
+          continue;
+        }
+        if (ch === '∮') token += '\\oint ';
+        else if (ch === '∬') token += '\\iint ';
+        else if (ch === '∫') token += '\\int ';
+        else if (ch === '∑') token += '\\sum ';
+        else if (ch === '∏') token += '\\prod ';
+        else if (ch === '√') {
+          const radical = readMathRadical(word, index + 1);
+          token += radical.body;
+          index = radical.next;
+          continue;
+        } else if (ch === 'ε') token += '\\varepsilon';
+        else if (PLAIN_MATH_MAP[ch] !== undefined) token += PLAIN_MATH_MAP[ch]
+        else if (ch === '·') token += '\\cdot '
+        // 2026-11-12：`Σ`(U+03A3)/`Π`(U+03A4 系) 是希腊字母大写，字面渲染成普通字重很难看 → 一律转大算子
+        else if (ch === 'Σ') token += '\\sum '
+        else if (ch === '∏' || ch === 'Π') token += '\\prod '
+        else if (MATH_TOKEN_REL[ch] !== undefined) token += MATH_TOKEN_REL[ch];
+        else token += ch;
+        index += 1;
+      }
+      return token;
+    };
+    /** 全角标点 → 半角（公式里的 `，`、`（` 等按英文标点排）。 */
+    const PLAIN_MATH_PUNCT = { '，': ',', '。': '.', '；': ';', '：': ':', '（': '(', '）': ')', '、': ',', '！': '!', '？': '?', '＝': '=', '＋': '+' };
+    /** 公式片段之间的分隔符（`×`、`≤`、`=`…）：转换后左右补空格。 */
+    const PLAIN_MATH_SPACED = new Set(['×', '÷', '·', '≤', '≥', '≠', '≈', '∝', '→', '←', '↔', '⇒', '∈']);
+    /** 能进入一个公式片段的单字符（其余字符一律留在公式外面，保证「一个字都不吞」）。 */
+    /** 公式里「可以连在一起」的字符（字符码判断，不用 charset 正则：`/[.../u` 里没转义的 `/` 会提前结束字面量）。 */
+    const PLAIN_MATH_WORD = new Set('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._^()+[],{}\\-*/=<>|,;:'.split(''));
+    const isPlainMathWordChar = (ch) => {
+      if (ch === undefined || ch === '') return false;
+      if (PLAIN_MATH_WORD.has(ch)) return true;
+      const code = ch.codePointAt(0);
+      if (code >= 0x0370 && code <= 0x03ff) return true;
+      if (code >= 0x00c0 && code <= 0x024f) return true;
+      if (code >= 0x2070 && code <= 0x209c) return true;
+      return '²³¹°√∑∏∫∮∯∰×·±∞≤≥≈≡≠∝→⇒⇔←↔∈∩∪'.includes(ch);
+    };
+    /** 公式里出现这些符号才算「真公式」（`x_1` 这种孤零零的不算）。 */
+    const PLAIN_MATH_MARK = '∫∮∑∏√_^';
+    /**
+     * 纯文本公式 → LaTeX（2026-11-12 定稿）。
+     *
+     * 三条硬规矩：① 只搬运不改字 —— 认不出的字符（中文、引号）原样包进 `\text{}`；
+     * ② `_` / `^` 的脚本体先于 `/` 处理（`∫_{-π/2}^{π/2}` 的整体不能当分式的分子）；
+     * ③ `/` 只吃**紧邻**的一个因子（括号组或一串字母数字），`Q / (…)` 靠跳过空格实现。
+     */
+    const plainMathToTex = (text) => {
+      const source = String(text ?? '').replace(/\r/gu, ' ');
+      // 读一个「因子」：括号组（递归）或一串公式字符（`_`/`^`/`/` 除外）
+      const readFactor = (from) => {
+        if (source[from] === '(') {
+          let depth = 0;
+          for (let i = from; i < source.length; i += 1) {
+            if (source[i] === '(') depth += 1;
+            else if (source[i] === ')') {
+              depth -= 1;
+              if (depth === 0) return { tex: `\\left(${plainMathToTex(source.slice(from + 1, i))}\\right)`, next: i + 1 };
+            }
+          }
+          return null;
+        }
+        let run = '';
+        let i = from;
+        while (i < source.length && isPlainMathWordChar(source[i]) && !'_^/,;|'.includes(source[i])) { run += source[i]; i += 1; }
+        if (run === '') return null;
+        return { tex: plainMathWordToTex(run), next: i };
+      };
+      const chunks = []; // { text, math }
+      let plainBuf = '';
+      const flushPlain = () => {
+        if (plainBuf !== '') { chunks.push({ text: plainBuf, math: false }); plainBuf = ''; }
+      };
+      const emitMath = (tex) => { chunks.push({ text: tex, math: true }); };
+      // 最近一个「可当分子」的数学块下标（中间不能隔普通文字）
+      const lastMathIndex = () => {
+        for (let i = chunks.length - 1; i >= 0; i -= 1) {
+          if (chunks[i].math === true) return i;
+          if (chunks[i].text.trim() !== '') return -1;
+        }
+        return -1;
+      };
+      let index = 0;
+      while (index < source.length) {
+        const ch = source[index];
+        if (ch === ' ') { flushPlain(); if (chunks.length > 0 && chunks[chunks.length - 1].text !== ' ') chunks.push({ text: ' ', math: false }); index += 1; continue; }
+        if (ch === '_' || ch === '^') {
+          let factor = null;
+          if (source[index + 1] === '{') {
+            const close = source.indexOf('}', index + 2);
+            if (close > index + 2) factor = { tex: `${plainMathToTex(source.slice(index + 2, close))}`, next: close + 1 };
+          }
+          if (factor === null) factor = readFactor(index + 1);
+          if (factor === null) { flushPlain(); plainBuf += ch; index += 1; continue; }
+          flushPlain();
+          const target = lastMathIndex();
+          const scriptTex = ch + '{' + factor.tex + '}';
+          if (target >= 0) chunks[target] = { text: chunks[target].text + scriptTex, math: true };
+          else emitMath(scriptTex);
+          index = factor.next;
+          continue;
+        }
+        if (ch === '/') {
+          // `/` 只吃**紧邻**的因子：`Q/r`、`C²/(N·m²)` 直接叠；`… / 5 m/s` 这种带空格的
+          // 不硬叠（否则单位斜杠会被吃掉后面的词），退回普通斜杠。
+          let from = index + 1;
+          if (source[from] === ' ') from += 1;
+          const factor = readFactor(from);
+          const target = lastMathIndex();
+          if (factor !== null && target >= 0) {
+            const numerator = chunks[target].text;
+            chunks[target] = { text: `\\frac{${numerator}}{${factor.tex}}`, math: true };
+            index = factor.next;
+            continue;
+          }
+          flushPlain();
+          plainBuf += '/';
+          index += 1;
+          continue;
+        }
+        if (ch === '∑' || ch === '∏' || ch === 'Σ' || ch === 'Π') {
+          flushPlain();
+          // 2026-11-12：末尾留一个空格，`\sumF` 会被渲染器当成一个大命令名。
+          emitMath(ch === '∑' || ch === 'Σ' ? '\\sum ' : '\\prod ');
+          index += 1;
+          continue;
+        }
+        if (isPlainMathWordChar(ch)) {
+          const factor = readFactor(index);
+          if (factor !== null) {
+            flushPlain();
+            emitMath(factor.tex);
+            index = factor.next;
+            continue;
+          }
+        }
+        flushPlain();
+        plainBuf += ch;
+        index += 1;
+      }
+      flushPlain();
+      return chunks.map((chunk) => (chunk.math === true ? chunk.text : `\\text{${chunk.text}}`)).join('')
+        .replace(/\\text\{\s*\}/gu, ' ').replace(/ {2,}/gu, ' ')
+        .trim() || `\\text{}`;
+    };
+    /** 行内公式的衬线斜体外观（数字与 `\text{}` 里的中文仍按正体排）。 */
+    const MATH_INLINE_STYLE = { fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'italic', fontSize: '1.02em', letterSpacing: '0.01em' };
+    /** 整行公式：再大一号、上下留白，读起来像书上的行间公式。 */
+    const MATH_BLOCK_STYLE = { fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'italic', fontSize: '1.0625em', lineHeight: 1.75, letterSpacing: '0.01em' };
+    /** 带公式特征的一段文本 → 排好版的节点；没有公式特征就返回 `null`（调用方原样显示）。 */
+    const plainMathNodes = (text, keyPrefix, options = {}) => {
+      const source = String(text ?? '');
+      if (!PLAIN_MATH_MARK_PATTERN.test(source) && !MATH_SCRIPTOID_PATTERN.test(source)) return null;
+      // 2026-11-12 修：以前一有下标特征就整段转公式，结果中文句子里的
+      // `F = k Q₁ Q₂ / r²` 被排成一个超大分式，把整行撑高、旁边的字飞到两边。
+      // 现在只有「公式占大半、且不含中文句读」的片段整段转；否则逐段排。
+      const hanCount = (source.match(/[\u4e00-\u9fff]/gu) ?? []).length;
+      const body = source.replace(/\s/gu, '');
+      if (hanCount > 0 && hanCount * 2 >= body.length) return null;
+      if (/[。！？]/u.test(source)) return null;
+      const tex = plainMathToTex(source);
+      if (tex.trim() === '' || !mathTexLooksReal(tex)) return null;
+      return latexRender(tex, keyPrefix, options);
+    };
+    /** 反引号里的内容按**内容**判型：像公式就按公式排，其余照旧当代码。 */
+    const backtickNodes = (raw, key) => {
+      const content = String(raw ?? '');
+      const math = content.trim() === '' || /^[*`]{1,2}.+[*`]{1,2}$/u.test(content.trim()) ? null : plainMathNodes(content, `${key}-bm`, {});
+      if (math !== null) return h('span', { key, style: MATH_INLINE_STYLE }, ...math);
+      return h('code', { key, style: { fontFamily: 'Consolas, monospace', fontSize: '0.95em', padding: '0 2px' } }, content);
+    };
+    /** 整个段落都像公式（`F_x = Σ F_ix, F_y = Σ F_iy`）→ 整行居中放大，当作行间公式。 */
+    const PLAIN_MATH_BLOCK_LINE = /^[^。！？；：]{2,80}$/u;
+    const plainMathLineNodes = (line, keyPrefix) => {
+      const source = String(line ?? '').trim();
+      if (source.length < 6 || !/[=]/u.test(source)) return null;
+      if (source === '' || !PLAIN_MATH_BLOCK_LINE.test(source)) return null;
+      if (!PLAIN_MATH_MARK_PATTERN.test(source) && !MATH_SCRIPTOID_PATTERN.test(source)) return null;
+      const tex = plainMathToTex(source);
+      if (tex.trim() === '' || !mathTexLooksReal(tex)) return null;
+      // 中文占比太高的大概率是「一句话里的一个公式」，交给行内处理，别整行放大
+      const han = (source.match(/[\u4e00-\u9fff]/gu) ?? []).length;
+      if (han > 0 && han * 3 > source.length) return null;
+      return latexRender(tex, keyPrefix, {});
+    };
+    /**
+     * 段落文本的**混合**排版（2026-11-12）：先按 Markdown 行内标记切开，公式形态的片段走
+     * `plainMathNodes`，其余仍走 `analysisInline`。中文句子里的公式因此有了衬线斜体、下标
+     * 真的下降，而 `**粗体**`、反引号、`$…$` 的既有行为一点没变。
+     */
+    /**
+     * 把一段「**同一行里**的正文」拆成三类片段（2026-11-12 二修）：
+     *   - 反引号 / 粗体 / 斜体 / 中文：原样当文字（`analysisInline` 会处理标记）；
+     *   - 一段连续的公式字符（允许中间的空格）：整段交 `plainMathToTex`。
+     *
+     * 以前一有下标特征就**整段**（哪怕半句中文）转公式，结果中文被包进 `\text{}`、行内空格
+     * 变成数学空档 —— 屏幕上就是反引号露出来、`E = \frac{Q}{4π ε₀ r²}` 把整行撑高。
+     * 现在只有公式字符才进公式，中文永远留在公式外面。
+     */
+    const PLAIN_MATH_RUN_CHAR = /[0-9A-Za-z.,_^()+\-*/=<>\u0370-\u03ff\u00c0-\u024f\u2070-\u209c\u00b2\u00b3\u00b9\u00b0\u221a\u2211\u220f\u222b\u222e\u00d7\u00b7\u00b1\u221e\u2264\u2265\u2260\u2248\u221d\u2192\u2190\u2194\u21d2\u2208]/u;
+    /** 公式片段里允许夹的空格（`Q / (…)`、`∫ … dθ` 里的那一个）。 */
+    const isMathRunChar = (ch) => ch === ' ' || PLAIN_MATH_RUN_CHAR.test(ch);
+    const splitMathRuns = (text) => {
+      const pieces = [];
+      let index = 0;
+      while (index < text.length) {
+        const ch = text[index];
+        if (!isMathRunChar(ch)) {
+          let plain = '';
+          while (index < text.length && !isMathRunChar(text[index])) { plain += text[index]; index += 1; }
+          pieces.push({ text: plain, math: false });
+          continue;
+        }
+        let run = '';
+        while (index < text.length && isMathRunChar(text[index])) { run += text[index]; index += 1; }
+        // 开头/结尾的空格还给文字（别让公式左右各多一个空档）
+        const lead = /^ */u.exec(run)[0];
+        const tail = / *$/u.exec(run)[0];
+        const core = run.slice(lead.length, run.length - tail.length);
+        if (lead !== '' && pieces.length > 0) pieces.push({ text: lead, math: false });
+        if (core !== '') pieces.push({ text: core, math: true });
+        if (tail !== '') pieces.push({ text: tail, math: false });
+      }
+      return pieces;
+    };
+    const mixedTextNodes = (text, keyPrefix) => {
+      const source = String(text ?? '');
+      if (!PLAIN_MATH_MARK_PATTERN.test(source) && !MATH_SCRIPTOID_PATTERN.test(source)) return analysisInline(source, keyPrefix);
+      const out = [];
+      const push = (...nodes) => { out.push(...nodes); };
+      source.split(INLINE_MARK_PATTERN).filter((piece) => piece !== '').forEach((piece, index) => {
+        const key = `${keyPrefix}-x${index}`;
+        // 反引号与粗体整块交给 analysisInline（里面各走 backtickNodes / 递归）
+        if (/^[`*]/u.test(piece.trim())) { out.push(...analysisInline(piece, key)); return; }
+        splitMathRuns(piece).forEach((seg, segIndex) => {
+          if (!seg.math) { out.push(...analysisInline(seg.text, `${key}-p${segIndex}`)); return; }
+          const math = plainMathNodes(seg.text, `${key}-m${segIndex}`, {});
+          if (math === null) { out.push(...analysisInline(seg.text, `${key}-p${segIndex}`)); return; }
+          out.push(h('span', { key: `${key}-m${segIndex}`, style: MATH_INLINE_STYLE }, ...math));
+        });
+      });
+      // 相邻的纯文字片段并成一段（否则「库仑定律写作」+「 」会分成两个文本节点）
+      const merged = [];
+      out.forEach((node) => {
+        const last = merged[merged.length - 1];
+        if (typeof node === 'string' && typeof last === 'string') { merged[merged.length - 1] = last + node; return; }
+        merged.push(node);
+      });
+      return merged;
+    };
     /**
      * `formulas[]` 一条的渲染：`plain` 是给人看的一句话，`tex` 是排好版的式子。
      *
@@ -4353,10 +6718,97 @@ window.__ModuleLoader__.load({
         // （`V_1 \sim V_2 只表示同态像`），直接当纯文本贴会露出反斜杠命令
         ...mathInlineNodes(plain, `f${index}-plain`)) : null);
     };
+    /**
+     * 标题层级 → 视觉分级（2026-11-04）。
+     *
+     * 起因：讲义正文（物理 38 份章级讲义等）里有 `# 第 12 章` / `## 12.1 电荷` / `### 概念先行`
+     * / `#### 题目` 四级结构，但原先只给「≤2 级 1.0625em、3 级 1em、≥4 级 0.9375em」一点点字号差，
+     * 用户实测「整页只有一个加粗结构，很不清晰」。这里把字级、字重、间距、分隔线一起拉开：
+     *   - 1 级（章）：1.375em / 700 粗 / 上方粗分隔线；
+     *   - 2 级（节）：1.1875em / 700 粗 / 上方细分隔线；
+     *   - 3 级（知识块）：1.0625em / 700 粗 / 左侧色条；
+     *   - 4 级（要点）：1em / 700 粗 / 强调色；
+     *   - 5~6 级：0.9375em / 600 粗（少见，退化成弱化的小标签）。
+     * 全部用 em，跟着 .sa-reading 的 A+/A− 一起缩放。
+     */
+    const HEADING_STYLE = (level) => {
+      if (level <= 1) {
+        return {
+          margin: '20px 0 8px', fontSize: '1.375em', fontWeight: 700, lineHeight: 1.45,
+          paddingTop: 12, borderTop: '2px solid var(--dsw-alias-border-l1)',
+        };
+      }
+      if (level === 2) {
+        return {
+          margin: '20px 0 6px', fontSize: '1.1875em', fontWeight: 700, lineHeight: 1.5,
+          paddingTop: 10, borderTop: '1px solid var(--dsw-alias-border-l1)',
+        };
+      }
+      if (level === 3) {
+        return {
+          margin: '16px 0 4px', fontSize: '1.0625em', fontWeight: 700, lineHeight: 1.55,
+          paddingLeft: 8, borderLeft: '3px solid var(--dsw-alias-label-primary, #4b5563)',
+        };
+      }
+      if (level === 4) {
+        return {
+          margin: '12px 0 2px', fontSize: '1em', fontWeight: 700, lineHeight: 1.6,
+          color: 'var(--dsw-alias-label-primary, #374151)',
+        };
+      }
+      return { margin: '10px 0 2px', fontSize: '0.9375em', fontWeight: 600, lineHeight: 1.6 };
+    };
+    /**
+     * 「`**标签**：内容`」独占一段时 → 小标题式的一条要点（2026-11-04）。
+     *
+     * 讲义生成侧把每条要点写成 `准确定义：…` / `**题目**：…` / `**解答**：…`，一行一条、标签在前。
+     * 原先整段按普通 `<p>` 排出来，19 条要点长得一模一样，读者抓不到骨架；这里把标签拆成
+     * 独占一行的强调，内容另起，深浅两档分开了。只认「行首标签 + 冒号 + 内容」这个形状，
+     * 段内多行（`whiteSpace: pre-wrap` 的普通段落）不参与判定。
+     */
+    const LEAD_LABEL_PATTERN = /^(\*\*[^*\n]{1,20}\*\*|[^\s*#|>`，。；：！？、]{1,12})\s*[：:]/u;
+    const leadLabelOf = (part) => {
+      const line = String(part ?? '');
+      if (line === '' || line.includes('\n')) return null;
+      if (/^[#`>|*]/u.test(line) || isListLine(line) || isTableRow(line)) return null;
+      const hit = LEAD_LABEL_PATTERN.exec(line);
+      if (hit === null) return null;
+      const label = hit[1];
+      const raw = label.startsWith('**') ? label.slice(2, -2) : label;
+      if (raw === '' || raw.length > 12) return null;
+      return { raw, end: hit[0].length };
+    };
     /** 表格行：`| a | b |`。分隔行（`|---|:--:|`）只用来告诉解析器「上一行是表头」，渲染时丢掉。 */
     const isTableRow = (line) => /^\|.*\|$/u.test(line);
     const isTableRule = (line) => /^\|[\s:|-]+\|$/u.test(line);
     const tableCells = (line) => line.replace(/^\|/u, '').replace(/\|$/u, '').split('|').map((cell) => cell.trim());
+    /**
+     * 表格**列宽校正**（2026-11-12）。
+     *
+     * 起因：用户截图里数电的真值表 / 物理的对比表被渲成「一格一格错开的高高低低的块」——
+     * 因为少数几行多写（或少写）了竖线，后面所有单元格整体错位。只认一眼能判定的情况：
+     * 中间某行比表头**多**一格、且多出来的那一格是空的（`||`）→ 去掉空格；
+     * 表格各行列数取**众数**，只在「参差不齐」时才整体裁/补到众数。
+     */
+    const normalizeTableRows = (rows) => {
+      if (rows.length === 0) return rows;
+      const counts = new Map();
+      rows.forEach((row) => counts.set(row.length, (counts.get(row.length) ?? 0) + 1));
+      let width = rows[0].length;
+      let best = 0;
+      counts.forEach((n, w) => { if (n > best || (n === best && w > width)) { best = n; width = w; } });
+      return rows.map((row) => {
+        const cells = row.slice();
+        // 多出来的空格先删（`| 甲 | | 乙 |` → `| 甲 | 乙 |`）
+        while (cells.length > width) {
+          const emptyAt = cells.lastIndexOf('');
+          if (emptyAt < 0) break;
+          cells.splice(emptyAt, 1);
+        }
+        while (cells.length < width) cells.push('');
+        return cells;
+      });
+    };
     const ANALYSIS_CELL_STYLE = {
       border: '1px solid var(--dsw-alias-border-l1, #d9d9d9)',
       padding: '4px 8px',
@@ -4371,44 +6823,114 @@ window.__ModuleLoader__.load({
      * 生成侧习惯写「一句话定调 + 几条并列」，数字电路还会整段贴真值表；以前这些一律按
      * 纯文本贴出来，读者看到的是挤在一起的字和一堆竖线。这里只做「够用就好」的解析：
      * 不认嵌套、不认 HTML、不认脚注。
+     *
+     * 字号（2026-10-30）：这里全部用 em，基准交给外层 .sa-reading 的 calc(--dsh-content-font-size
+     * × --sa-read-scale)。原来写死 16/15/14px，专注阅读里调 A+/A− 时只有正文动、标题与表格不动。
      */
     const analysisBlockNodes = (text, keyPrefix) => {
       const nodes = [];
       /** 一组成员行 → `<ul>` 或 `<ol>`（首行是数字就用 ol）。 */
       const listNode = (items, key) => {
         const tag = /^\d/u.test(items[0].raw) ? 'ol' : 'ul';
-        return h(tag, { key, style: { margin: '6px 0 0', paddingLeft: 20, fontSize: 16, lineHeight: 1.65 } },
+        return h(tag, { key, style: { margin: '6px 0 0', paddingLeft: 20, fontSize: '1em', lineHeight: 1.65 } },
           items.map((item, index) => h('li', { key: `${key}-li${index}` }, ...analysisInline(item.text, `${key}-li${index}`))));
       };
-      analysisParagraphs(text).forEach((part, blockIndex) => {
+      let afterHeading = false;
+      // 2026-11-12：先按空行切段；再把「整行就是一条公式」的行**单独成段**。
+      // 以前它们和上下文同处一段，段内换行按 pre-wrap 显示 ——：
+      // 大分式把整行撑高、旁边的字被挤到分式上下两端（用户实测截图里最难看的一处）。
+      const splitMathBlocks = (parts) => {
+        const out = [];
+        parts.forEach((part) => {
+          let buffer = [];
+          const flush = () => { if (buffer.length > 0) { out.push(buffer.join("\n")); buffer = []; } };
+          part.split("\n").forEach((line) => {
+            // 注意：整行公式的节点**在这里就要拿住**。以前只判了 `!== null` 就又塞回纯文本，
+            // 后面再走一遍段落渲染，于是 `E = \frac{Q}{…}` 被拆成「E」「=」「大分式」三块 ——
+            // 屏幕上就是分式悬在行外、上下撑出大片空白。
+            const formula = plainMathLineNodes(line, `??-${out.length}`);
+            if (formula !== null) { flush(); out.push({ formula, source: line.trim() }); return; }
+            buffer.push(line);
+          });
+          flush();
+        });
+        return out.filter((part) => (typeof part === 'string' ? part.trim() !== '' : true));
+      };
+      splitMathBlocks(analysisParagraphs(text)).forEach((part, blockIndex) => {
         const key = `${keyPrefix}-${blockIndex}`;
+        const prevWasHeading = afterHeading;
+        // 整行公式：直接用它自己的节点（居中放大的行间公式），不再拆成「E」「=」「分式」三块
+        if (typeof part === 'object' && part !== null && part.formula) {
+          nodes.push(h('div', { key, style: { ...MATH_BLOCK_STYLE, margin: '10px 0', textAlign: 'center', maxWidth: '100%', overflowX: 'auto' } }, ...part.formula));
+          return;
+        }
         const lines = part.split('\n').map((line) => line.trim()).filter((line) => line !== '');
         if (lines.length === 0) return;
         // ① 表格：整段都是竖线行（至少两行，含一行分隔），否则会误伤正文里的 `a|b`
         if (lines.length >= 2 && lines.every(isTableRow) && lines.some(isTableRule)) {
-          const rows = lines.filter((line) => !isTableRule(line)).map(tableCells);
+          const rows = normalizeTableRows(lines.filter((line) => !isTableRule(line)).map(tableCells));
           const head = rows.shift() ?? [];
           const headRow = h('tr', { key: `${key}-head-row` },
             ...head.map((cell, index) => h('th', { key: `${key}-th${index}`, style: { ...ANALYSIS_CELL_STYLE, fontWeight: 600 } }, ...analysisInline(cell, `${key}-th${index}`))));
           const bodyRows = rows.map((row, rowIndex) => h('tr', { key: `${key}-r${rowIndex}` },
             ...row.map((cell, index) => h('td', { key: `${key}-r${rowIndex}c${index}`, style: ANALYSIS_CELL_STYLE },
               ...analysisInline(cell, `${key}-r${rowIndex}c${index}`)))));
-          const tableNode = h('table', { style: { borderCollapse: 'collapse', fontSize: 14, lineHeight: 1.5 } },
+          const tableNode = h('table', { style: { borderCollapse: 'collapse', fontSize: '0.875em', lineHeight: 1.5 } },
             head.length > 0 ? h('thead', { key: `${key}-head` }, headRow) : null,
             h('tbody', { key: `${key}-body` }, ...bodyRows));
           nodes.push(h('div', { key, style: { margin: '8px 0 0', overflowX: 'auto' } }, tableNode));
           return;
         }
         // ② 小标题：`### 一、结构` 独占一段；与正文同段时按普通文字渲染（不猜）
-        const heading = /^#{1,6}\s+(.*)$/u.exec(lines[0]);
+        // ② 标题：原只认 `###` 且只有一点点字号差（用户报「一根加粗结构，不清晰」），
+        // 2026-11-04 起认 `#`~`######` 并分级，见 HEADING_STYLE。
+        // 2026-11-12 修：以前要求「这一整段只有一行」。可讲义里标题后**很少有空行**
+        // （`# 第12章…` 紧接 `## 12.1…` 紧接正文），整段被并成一大块，`#` 就原样露出来了 ——
+        // 用户报的「只有一个加粗结构」根子在这儿。现在按行逐条收：认得的行各自成块，其余并段。
+        /** 生成节点：以 `#`~`######` 开头的一行 → 分级标题；否则 null（交给后面的分支）。 */
+        const headingNodeOf = (line, key) => {
+          const match = /^(#{1,6})\s+(.*)$/u.exec(line);
+          if (match === null) return null;
+          return h('div', { key, style: HEADING_STYLE(match[1].length) }, ...mixedTextNodes(match[2], `${key}-h`));
+        };
+        if (headingNodeOf(lines[0], `${key}-h0`) !== null && lines.length > 1) {
+          let group = [];
+          let headingIndex = 0;
+          const flushGroup = () => {
+            if (group.length === 0) return;
+            const textPart = group.join('\n');
+            nodes.push(h('p', { key: `${key}-gp${headingIndex}`, style: { margin: '6px 0 0', fontSize: '1em', lineHeight: '1.65', whiteSpace: 'pre-wrap' } },
+              ...analysisInline(textPart, `${key}-gp${headingIndex}`)));
+            group = [];
+          };
+          lines.forEach((line) => {
+            const node = headingNodeOf(line, `${key}-hx${headingIndex}`);
+            if (node !== null) { flushGroup(); nodes.push(node); headingIndex += 1; afterHeading = true; return; }
+            group.push(line);
+          });
+          flushGroup();
+          return;
+        }
+        const heading = /^(#{1,6})\s+(.*)$/u.exec(lines[0]);
         if (heading !== null && lines.length === 1) {
-          nodes.push(h('div', { key, style: { margin: '10px 0 0', fontSize: 15, fontWeight: 600 } }, ...analysisInline(heading[1], `${key}-h`)));
+          const level = heading[1].length;
+          nodes.push(h('div', { key, style: HEADING_STYLE(level) }, ...analysisInline(heading[2], `${key}-h`)));
+          afterHeading = true;
+          return;
+        }
+        // ②' 要点：`**标签**：内容` 独占一段 → 标签另起一行加重，内容在下（不再混成一片）
+        const lead = lines.length === 1 && !prevWasHeading ? leadLabelOf(lines[0]) : null;
+        if (lead !== null) {
+          const rest = lines[0].slice(lead.end).trimStart();
+          nodes.push(h('div', { key, style: { margin: '10px 0 0' } },
+            h('div', { key: `${key}-lb`, style: { fontSize: '0.9375em', fontWeight: 700, lineHeight: 1.6 } }, ...analysisInline(lead.raw, `${key}-lb`)),
+            rest === '' ? null : h('p', { key: `${key}-bd`, style: { margin: '2px 0 0', fontSize: '1em', lineHeight: 1.75, whiteSpace: 'pre-wrap' } }, ...mixedTextNodes(rest, `${key}-bd`))));
           return;
         }
         // ③ 没有列表行：普通段落（pre-wrap 保留段内换行）
         if (!lines.some(isListLine)) {
-          nodes.push(h('p', { key, style: { margin: '6px 0 0', fontSize: 16, lineHeight: 1.65, whiteSpace: 'pre-wrap' } },
-            ...analysisInline(part, key)));
+          nodes.push(h('p', { key, style: { margin: '6px 0 0', fontSize: '1em', lineHeight: 1.65, whiteSpace: 'pre-wrap' } },
+            ...mixedTextNodes(part, key)));
           return;
         }
         // ④ 有列表行：连续的列表行成一组，其余行成段落，**保持原顺序**
@@ -4416,8 +6938,8 @@ window.__ModuleLoader__.load({
         const flushParagraph = () => {
           if (buffer.length === 0) return;
           const textPart = buffer.join('\n');
-          nodes.push(h('p', { key: `${key}-p${nodes.length}`, style: { margin: '6px 0 0', fontSize: 16, lineHeight: 1.65, whiteSpace: 'pre-wrap' } },
-            ...analysisInline(textPart, `${key}-p${nodes.length}`)));
+          nodes.push(h('p', { key: `${key}-p${nodes.length}`, style: { margin: '6px 0 0', fontSize: '1em', lineHeight: 1.65, whiteSpace: 'pre-wrap' } },
+            ...mixedTextNodes(textPart, `${key}-p${nodes.length}`)));
           buffer = [];
         };
         for (let i = 0; i < lines.length; i += 1) {
@@ -4436,6 +6958,7 @@ window.__ModuleLoader__.load({
           }
         }
         flushParagraph();
+        afterHeading = false;
       });
       return nodes;
     };
@@ -4452,6 +6975,8 @@ window.__ModuleLoader__.load({
      * 其余（粗体、行内 `$…$`、列表、竖线表格）继续走 analysisBlockNodes，不重复实现。
      */
     const materialPreviewNodes = (text, keyPrefix = 'mat') => {
+      // 字号（2026-10-30）：公式与各级标题原来写死 17/16/15px，而讲义正文正是走这里排版的，
+      // 于是 A+/A− 只放大段落、标题公式纹丝不动。改成 em 后统一由 .sa-reading 的基准支配。
       const nodes = [];
       const lines = String(text ?? '').split('\n');
       let buffer = [];
@@ -4489,7 +7014,7 @@ window.__ModuleLoader__.load({
           if (tex !== '') {
             nodes.push(h('div', {
               key: `${keyPrefix}-eq${nodes.length}`,
-              style: { margin: '10px 0', textAlign: 'center', fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 17, lineHeight: 1.7 },
+              style: { ...MATH_BLOCK_STYLE, margin: '10px 0', textAlign: 'center' },
             }, ...latexNodes(tex, `${keyPrefix}-eq${nodes.length}`)));
           }
           continue;
@@ -4499,11 +7024,22 @@ window.__ModuleLoader__.load({
         if (heading !== null) {
           flush();
           const level = heading[1].length;
-          const size = level <= 2 ? 17 : level === 3 ? 16 : 15;
+          // 2026-11-04：与 analysisBlockNodes 共用一套分级（原来只有 1.0625/1/0.9375 的微弱差别，
+          // 用户实测「整页只有一个加粗结构」）。
           nodes.push(h('div', {
             key: `${keyPrefix}-h${nodes.length}`,
-            style: { margin: '12px 0 2px', fontSize: size, fontWeight: 600, lineHeight: 1.6 },
-          }, ...analysisInline(heading[2], `${keyPrefix}-h${nodes.length}`)));
+            style: HEADING_STYLE(level),
+          }, ...mixedTextNodes(heading[2], `${keyPrefix}-h${nodes.length}`)));
+          continue;
+        }
+        // 2026-11-12：整行都是公式（`F_x = Σ F_ix`、`Φ_e = ∮ E·dS` 这类纯文本写法）→ 行间公式居中放大
+        const mathLine = plainMathLineNodes(trimmed, `${keyPrefix}-ml${nodes.length}`);
+        if (mathLine !== null) {
+          flush();
+          nodes.push(h('div', {
+            key: `${keyPrefix}-ml${nodes.length}`,
+            style: { ...MATH_BLOCK_STYLE, margin: '8px 0', textAlign: 'center' },
+          }, ...mathLine));
           continue;
         }
         buffer.push(line);
@@ -4530,6 +7066,22 @@ window.__ModuleLoader__.load({
     };
 
     /**
+     * 「排版」那一档正文容器样式（2026-10-31 F2 抽出来）：
+     * 原来写死在 MaterialReading 的 h('div') 里，现在批注层也要用同一份（正文内联标记就画在里面），
+     * 抽成常量免得两边慢慢漂开。
+     */
+    const MATERIAL_READING_STYLE = {
+      margin: 0,
+      maxHeight: '52vh',
+      overflow: 'auto',
+      background: 'var(--dsw-alias-bg-base)',
+      color: 'var(--dsw-alias-label-primary)',
+      border: '1px solid var(--dsw-alias-border-l1)',
+      borderRadius: 'var(--dsw-radius-sm)',
+      padding: '10px 14px',
+    };
+
+    /**
      * 「混着公式的一句话」的排版（2026-10-27 晚）：教材 OCR 有的把公式存成带 `$…$` 的行内式，
      * 有的干脆存成**裸 LaTeX**（`T=T_1+T_2=\left(R_1+2R_2\right)C\ln2`、`\overline{A+B}`）。两种都要能读：
      * 有 `$` 走行内 Markdown，没有 `$` 但含 `\命令` 就把整段当公式排一次。
@@ -4547,16 +7099,28 @@ window.__ModuleLoader__.load({
         return [h('span', { key: `${keyPrefix}-tex`, style: { fontFamily: 'Georgia, "Times New Roman", serif' } },
           ...latexNodes(source, `${keyPrefix}-t`))];
       }
+      // 2026-11-12：没有 `$`、看起来像公式（`F_x = Σ F_ix`、`ε₀`）也按公式排一次
+      const plainMath = plainMathNodes(source, `${keyPrefix}-pm`, {});
+      if (plainMath !== null) {
+        return [h('span', { key: `${keyPrefix}-pm`, style: MATH_INLINE_STYLE }, ...plainMath)];
+      }
       return [source];
     };
 
     /**
      * 教材页正文卡（2026-10-27 晚）：默认「排版」，可切「原文」。
      * 两处用到（资料页的正文卡、知识点页「看原页」），所以抽成组件，别复制两份。
+     *
+     * 2026-10-31（F2）：带 file 时正文**连同批注层一起**交给 AnnotationLayer 渲染——批注标记要落在
+     * 正文里（内联 `<mark>`），状态必须和浮动气泡共用同一份，所以不能像 B1 那样把批注层挂在正文卡
+     * 下面当兄弟节点。不带 file（没有可写盘的对象）时还是纯正文。
      */
-    function MaterialReading({ text, page }) {
+    function MaterialReading({ text, page, file = '' }) {
       const [mode, setMode] = useState('preview');
       const body = String(text ?? '');
+      // 重排一份 22KB 讲义不便宜（自写排版器是同步解析），无关的重渲染不该重排一遍：
+      // 只有正文或页号变了才重新解析（2026-10-29 晚，配合「换正文不白闪」）。
+      const nodes = useMemo(() => materialPreviewNodes(body, `mat-${page ?? 0}`), [body, page]);
       return h('div', null,
         h('div', { className: 'sa-dock', style: { justifyContent: 'flex-end', marginBottom: 4 } },
           h('button', {
@@ -4569,21 +7133,66 @@ window.__ModuleLoader__.load({
             title: '原样显示这一页的取字文本（含 markdown 记号，便于核对 OCR）',
             onClick: () => setMode('raw'),
           }, '原文')),
-        mode === 'raw'
-          ? h('pre', { className: 'sa-reading-pre', style: MATERIAL_PRE_STYLE }, body)
-          : h('div', {
-            className: 'sa-reading',
-            style: {
-              margin: 0,
-              maxHeight: '52vh',
-              overflow: 'auto',
-              background: 'var(--dsw-alias-bg-base)',
-              color: 'var(--dsw-alias-label-primary)',
-              border: '1px solid var(--dsw-alias-border-l1)',
-              borderRadius: 'var(--dsw-radius-sm)',
-              padding: '10px 14px',
-            },
-          }, ...materialPreviewNodes(body, `mat-${page ?? 0}`)));
+        String(file ?? '') === ''
+          ? (mode === 'raw'
+            ? h('pre', { className: 'sa-reading-pre', style: MATERIAL_PRE_STYLE }, body)
+            : h('div', { className: 'sa-reading', style: MATERIAL_READING_STYLE }, ...nodes))
+          : h(AnnotationLayer, { file, text: body, mode, nodes }));
+    }
+
+    /**
+     * 阅读面正文卡（2026-10-30 W3a）：资料页与知识点页现在共用这一套视图，不再各写一份。
+     *
+     * 只合并「视图」不合并「状态」：detail / openPath 与关闭、切页回调仍由各自页签持有并传入。
+     * 刻意写成普通渲染函数（`MaterialReadingCard({...})` 直接调用）而不是 React 组件——
+     * 测试里的 `probe.flat` 只遍历元素树、不展开函数组件，如果做成 `h(MaterialReadingCard, …)`
+     * 卡里的 `MaterialReading` 就找不见了（「换正文不白闪」那条用例会红）。
+     *
+     * 行为不变项：pending 文案「读取中…」、truncated「已截断」pill、error 四类文案、页按钮高亮、
+     * ready 时的 `MaterialReading` 渲染——全部原样保留，只是把两处重复代码收到一处。
+     */
+    function MaterialReadingCard({ detail = null, openPath = null, onPage, onClose, extraActions = null, belowHeader = null, closeTitle = '关上这份正文' } = {}) {
+      if (openPath === null || openPath === undefined) return null;
+      const data = detail?.data ?? null;
+      const actions = Array.isArray(extraActions) ? extraActions.filter(Boolean) : [];
+      return h('div', { className: 'sa-card' },
+        h('div', { className: 'sa-dock' },
+          h('span', { className: 'sa-grow', title: openPath }, data?.file ?? openPath),
+          // 换正文期间的小提示（2026-10-29 晚）：只占标题栏一格，正文不动，避免整块白闪。
+          detail?.pending === true ? h('span', { className: 'sa-muted', style: { fontSize: 13 } }, '读取中…') : null,
+          ...actions,
+          data?.truncated === true ? h('span', { className: 'sa-pill today' }, '已截断') : null,
+          h('button', { className: 'sa-btn', title: closeTitle, onClick: onClose }, '关闭')),
+        belowHeader ?? null,
+        detail?.status === 'loading' ? h('div', { className: 'sa-muted' }, '正在读取…') : null,
+        detail?.status === 'error'
+          ? h('div', null,
+            h('div', { className: 'sa-error' },
+              data?.error === 'no-text'
+                ? '这份资料还没有取字产物（扫描件要先跑取字）。'
+                : data?.error === 'page-missing'
+                  ? `第 ${data?.page} 页还没有取字产物。`
+                  : data?.error === 'not-indexed'
+                    ? '这份资料不在索引里，可能索引刚被改过，刷新试试。'
+                    : `读取失败：${data?.error ?? '未知原因'}`),
+            Array.isArray(data?.pages) && data.pages.length > 0
+              ? h('div', { className: 'sa-dock', style: { marginTop: 6 } },
+                h('span', { className: 'sa-muted' }, `已有的页：${data.pages.join('、')}`))
+              : null)
+          : null,
+        detail?.status === 'ready'
+          ? h('div', null,
+            Array.isArray(data.pages) && data.pages.length > 0
+              ? h('div', { className: 'sa-dock', style: { flexWrap: 'wrap', marginBottom: 6 } },
+                h('span', { className: 'sa-muted' }, '页'),
+                ...data.pages.map((no) => h('button', {
+                  key: no,
+                  className: `sa-btn${no === data.page ? ' primary' : ''}`,
+                  onClick: () => onPage?.(no),
+                }, String(no))))
+              : null,
+            h(MaterialReading, { text: data.text, page: data.page, file: data.file ?? openPath }))
+          : null);
     }
 
     function KnowledgeTab({ docs = {}, refresh, focus = null, onFocusConsumed, initialView = null, onOpenMaterial }) {
@@ -4619,6 +7228,14 @@ window.__ModuleLoader__.load({
       const readerRef = useRef(null);
       const [focusReading, setFocusReading] = useState(false);
       const focusReturnRef = useRef(null);
+      // 正文字号倍率（2026-10-29）：专注阅读里的 A−/A+ 只改这个倍率，基准仍然是 DSH「内容字号」
+      const [readScale, setReadScale] = useState(() => clampReadScale(restoredUi.readScale));
+      const stepReadScale = (delta) => setReadScale(value => clampReadScale(Number(value) + delta));
+      // 「适应窗口」（2026-10-30）：按阅读区实际可用宽度反算倍率。量不到就保持原倍率不动。
+      const fitReadToPane = () => {
+        const column = measureReadColumnWidth(dshContentFontSize());
+        setReadScale(fitReadScale(measureReadAvailableWidth(readerRef.current, column), column));
+      };
       const enterFocusReading = event => {
         const pane = readerRef.current;
         const page = pane?.closest?.('.sa-body');
@@ -4654,6 +7271,9 @@ window.__ModuleLoader__.load({
       const [markBusy, setMarkBusy] = useState(false);
       const [markError, setMarkError] = useState('');
       const [markNote, setMarkNote] = useState('');
+      // 点了一个还没生成讲义的章（2026-10-29 用户定：右侧明说「还没生成」，不能点了没反应）。
+      // 值形如 { title }，null = 不显示。
+      const [lectureHint, setLectureHint] = useState(null);
       // 加节点表单：树上的「＋」会把课程/章/节/小节预填进来，省得手打章名挂不上大纲
       const [draft, setDraft] = useState({ name: '', chapter: '', section: '', subsection: '', courseId: null });
       // 「改挂靠」行内编辑：{ id, chapter, section, subsection }，null = 没在编辑
@@ -4711,8 +7331,8 @@ window.__ModuleLoader__.load({
 
       // 把界面状态记回模块内存（下次切回本页签时恢复）；只记显示状态，不记接口结果
       useEffect(() => {
-        readKnowledgeUi({ courseId, query: kpQuery, filter: kpFilter, view: kpView, selected, openTree, mindOpen, masteryLevels: kpMastery, detailPath: openPath, treeCourseId, subjectTrees: subjectTreesRef.current });
-      }, [courseId, kpQuery, kpFilter, kpView, selected, openTree, mindOpen, kpMastery, openPath, treeCourseId]);
+        readKnowledgeUi({ courseId, query: kpQuery, filter: kpFilter, view: kpView, selected, openTree, mindOpen, masteryLevels: kpMastery, detailPath: openPath, treeCourseId, subjectTrees: subjectTreesRef.current, readScale });
+      }, [courseId, kpQuery, kpFilter, kpView, selected, openTree, mindOpen, kpMastery, openPath, treeCourseId, readScale]);
 
       // 恢复上次用「看原页」打开的那份资料（返回/切页签回来时）
       useEffect(() => {
@@ -4730,9 +7350,16 @@ window.__ModuleLoader__.load({
         setChatBusy(false); setChatError(''); setChatSources([]); setChatThread([]);
         setKpQuery(''); setKpFilter('all'); setKpMastery([]); setMarkNote(''); setMarkError('');
       };
-      const selectForReading = id => {
+      const selectForReading = (id, options = {}) => {
         setSelected(id); setFullBrowser(false); setBrowserCollapsed(id !== null);
         if (id === null) setFocusReading(false);
+        setLectureHint(null);
+        // 2026-10-29 用户定：点知识点＝右侧换成「这个知识点自己的内容」（详解/例题/来历），
+        // 之前打开着的章讲义要跟着收掉，否则两张卡叠在一起（章讲义在上、该点详解在下）没法读。
+        // 但「点章读讲义」那条路不能先清空：清了就是「卸掉旧内容 → 空白 → 装新内容」两跳，
+        // 用户看到的就是整块白闪（m00502 报障）。所以章那条传 keepMaterial 只换正文不动卡。
+        if (options.keepMaterial === true) return;
+        setOpenPath(null); setDetail(null);
       };
       const restoreCompactScroll = useCallback(box => {
         if (!box) return;
@@ -4750,12 +7377,165 @@ window.__ModuleLoader__.load({
         box.scrollLeft = scroll.left; box.scrollTop = scroll.top;
       }, [treeCourseId, kpView]);
 
+      // 换正文不卸旧内容（2026-10-29 晚，用户报障「点章/换讲义整块白闪，像换了一页」）：
+      // 以前这里先 `setDetail({status:'loading'})`，正文卡整个卸载成「正在读取…」再重新挂载，
+      // 22KB 讲义重排一遍就是那一下白闪。现在留着上一份正文，只在标题栏挂「读取中…」；
+      // 命中正文缓存直接同步替换。后点的赢：慢响应回来时若已换了别的就丢掉（seq 比大小）。
+      const materialSeqRef = useRef(0);
       const showMaterial = async (materialPath, page) => {
+        const seq = (materialSeqRef.current += 1);
         setOpenPath(materialPath);
-        setDetail({ status: 'loading', data: null });
-        const result = await materialText(materialPath, page).catch(() => ({ ok: false, error: 'network' }));
-        setDetail({ status: result.ok ? 'ready' : 'error', data: result });
+        const cached = peekMaterialText(materialPath, page);
+        if (cached !== undefined) {
+          setDetail({ status: 'ready', data: cached, pending: false });
+          return;
+        }
+        setDetail((current) => (current?.data === null || current?.data === undefined
+          ? { status: 'loading', data: null, pending: false }
+          : { ...current, pending: true }));
+        const result = await materialTextCached(materialPath, page).catch(() => ({ ok: false, error: 'network' }));
+        if (seq !== materialSeqRef.current) return;
+        setDetail({ status: result.ok ? 'ready' : 'error', data: result, pending: false });
       };
+
+
+      const lectureCourses = objectList(docs.knowledgeAnalysis?.courses);
+      const lectureCourse = lectureCourses.find((course) => String(course.courseId) === String(treeCourseId));
+      const lectureRows = objectList(lectureCourse?.lectures);
+      const [lectureStyle, setLectureStyle] = useState('C');
+      // 讲义历史版本折叠（W6，决策 D-W6-1：默认折叠、可点开回看，不删旧版）
+      const [lectureHistoryOpen, setLectureHistoryOpen] = useState(false);
+      const lectureForEntry = (entry) => {
+        const match = String(entry?.label ?? '').match(/第\s*(\d+)\s*章/u);
+        if (match === null) return null;
+        return lectureRows.find((item) => String(item.no) === String(Number(match[1]))) ?? null;
+      };
+      const openLecture = async (lecture, styleKey = lectureStyle) => {
+        if (lecture === null || lecture === undefined) return;
+        const styles = [...objectList(lecture.styles), ...objectList(lecture.variants)];
+        // styleKey 有两种传法：档位键字符串，或直接传一个 style 条目对象。
+        // 传对象是为了「历史版本」——旧版与当前版可能同 key（A/A），只按 key 找会打开当前版而不是旧版。
+        const selectedLecture = (styleKey !== null && typeof styleKey === 'object')
+          ? styleKey
+          : styles.find((item) => String(item.key) === String(styleKey))
+            ?? styles.find((item) => String(item.key) === 'C')
+            ?? styles.find((item) => String(item.key) === 'A')
+            ?? styles[0];
+        if (selectedLecture?.file === undefined) return;
+        // 「展开完整目录 / 展开完整导图」时阅读栏是 display:none（`.sa-learning-layout[data-full-browser="true"]>.sa-reader-pane`），
+        // 讲义正文渲染进去等于没渲染——用户只看到风格按钮的高亮在跳，以为切不动。
+        // 点讲义和点知识点（selectForReading）走同一条规矩：先退回分栏阅读。
+        setFullBrowser(false);
+        setLectureStyle(String(selectedLecture.key ?? 'C'));
+        await showMaterial(selectedLecture.file);
+        // 阅读区已经看得见就别动滚动条（2026-10-29 晚用户报障：换讲义时面板「跳一下」）。
+        // 以前无条件 `scrollIntoView({block:'nearest'})`，宽屏下也会把整块面板带着滚，观感像刷新。
+        // 只有窄布局里正文整块落在视野外（`.sa-reader-pane` 顶边在视口底部之外）才把它滚进来。
+        const pane = readerRef.current;
+        if (pane === null || pane === undefined || typeof pane.scrollIntoView !== 'function') return;
+        const rect = typeof pane.getBoundingClientRect === 'function' ? pane.getBoundingClientRect() : null;
+        const viewport = typeof window !== 'undefined' && Number.isFinite(window.innerHeight) ? window.innerHeight : 0;
+        if (rect === null || viewport <= 0 || rect.top <= viewport - 120) return;
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+          window.requestAnimationFrame(() => pane.scrollIntoView({ block: 'nearest' }));
+        } else {
+          pane.scrollIntoView({ block: 'nearest' });
+        }
+      };
+      // `lectureLinks`（章行后面挂「讲义 A/B/C」三颗小按钮）已于 2026-10-29 删除：
+      // 点章名就在右侧读讲义、版本在讲义正文上方那排切，左边不再重复摆入口。
+
+      // 打开的是哪一份讲义（2026-10-29 用户要求：版本切换按钮挪到讲义正文上方）
+      // 高亮按「当前真正打开的这个文件」判，而不是上一次点了哪档——从「资料」页签直接点开某份讲义也对得上。
+      const lectureFileKey = (value) => String(value ?? '').replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+      const lectureTitle = (lecture) => `第${lecture?.no ?? '?'}章 ${String(lecture?.title ?? '').trim()}`.trim();
+      const openLectureRow = (() => {
+        if (openPath === null || openPath === undefined) return null;
+        const target = lectureFileKey(openPath);
+        if (target === '') return null;
+        for (const course of lectureCourses) {
+          for (const lecture of objectList(course?.lectures)) {
+            for (const style of [...objectList(lecture.styles), ...objectList(lecture.variants)]) {
+              if (lectureFileKey(style?.file) === target) return { course, lecture, style };
+            }
+          }
+        }
+        return null;
+      })();
+      // 讲义卡里的版本切换行：就摆在讲义正文正上方，切档不离开这份讲义。
+      // W6（2026-10-30）：主行**只列当前生效版**；被 supersededBy 取代的历史版收进「历史 N 版」折叠，
+      // 默认折叠、点开可回看（不删数据，符合 W4「永不删除旧版」）；老数据没有 supersededBy 时全部当当前版，行为不变。
+      const lectureSwitchRow = openLectureRow === null ? null : (() => {
+        const lecture = openLectureRow.lecture;
+        const allEntries = [...objectList(lecture.styles), ...objectList(lecture.variants)];
+        const currentEntries = allEntries.filter((style) => !style?.supersededBy);
+        const historyEntries = allEntries.filter((style) => Boolean(style?.supersededBy));
+        const activeKey = lectureFileKey(openLectureRow.style?.file);
+        const styleButton = (style, isHistory) => {
+          const rawVersion = style?.version;
+          const versionTag = rawVersion === undefined || rawVersion === null || String(rawVersion).trim() === ''
+            ? '' : ` · v${rawVersion}`;
+          const info = [String(style?.label ?? '').trim(),
+            style?.chars === undefined ? '' : `${style.chars} 字`,
+            String(style?.generatedAt ?? '').trim(),
+            style?.model === undefined || style?.model === null ? '' : `模型 ${style.model}`,
+            isHistory && style?.supersededBy ? `已被 v${style.supersededBy} 取代` : ''].filter((part) => part !== '').join(' · ');
+          return h('button', {
+            key: `${isHistory ? 'history' : 'current'}-${style.key}`,
+            type: 'button',
+            className: `sa-btn${lectureFileKey(style?.file) === activeKey ? ' primary' : ''}${isHistory ? ' sa-lecture-history-btn' : ''}`,
+            title: info === '' ? `切到讲义 ${style.key}` : `切到讲义 ${style.key} · ${info}`,
+            // 传条目对象而不是 key：旧版和当前版可能同 key，只按 key 会打开错的版本
+            onClick: () => openLecture(lecture, style),
+          }, `讲义 ${style.key}${versionTag}`);
+        };
+        return h('div', {
+            className: 'sa-dock sa-lecture-switch',
+            style: { flexWrap: 'wrap', marginTop: 2, marginBottom: 8 },
+          },
+          h('span', { className: 'sa-muted' }, `${lectureTitle(lecture)} · 讲义版本`),
+          h('span', { className: 'sa-lecture-links' }, ...currentEntries.map((style) => styleButton(style, false))),
+          historyEntries.length === 0 ? null : h('button', {
+            type: 'button',
+            className: 'sa-btn sa-lecture-history-toggle',
+            'aria-expanded': lectureHistoryOpen ? 'true' : 'false',
+            title: lectureHistoryOpen ? '收起历史版本' : `展开看 ${historyEntries.length} 个已被取代的历史版本`,
+            onClick: () => setLectureHistoryOpen((value) => !value),
+          }, `历史 ${historyEntries.length} 版`),
+          historyEntries.length === 0 || !lectureHistoryOpen ? null : h('span', {
+            className: 'sa-lecture-history',
+            style: { display: 'flex', flexWrap: 'wrap', gap: 4, width: '100%' },
+          }, ...historyEntries.map((style) => styleButton(style, true))));
+      })();
+
+      /**
+       * 章 → 讲义（2026-10-29 用户定）。
+       *
+       * 讲义的天然粒度就是「一章一篇」（`数电/讲义/第NN章-…`），所以「章」这一级本身就是「章详解」：
+       * 点章名 = 在右侧读这一章的讲义，展开/收起交给左边那个箭头（两件事互不干扰）。
+       * 没有讲义的章（数电第 5–8 章还没做）不静默失败，右侧给一张说明卡。
+       */
+      const isOpenChapter = (lecture) => lecture !== null && lecture !== undefined
+        && openLectureRow !== null && String(openLectureRow.lecture?.no) === String(lecture.no);
+      const openChapter = (entry) => {
+        const lecture = lectureForEntry(entry);
+        // 点章不清空已打开的正文（2026-10-29 晚 m00502）：清了就是「卸掉旧内容 → 空白 → 装新内容」两跳，
+        // 用户看到整块白闪。这里只把选中清掉（收起知识点详情卡），正文留着，由新讲义原地覆盖。
+        selectForReading(null, { keepMaterial: true });
+        if (lecture === null) {
+          setOpenPath(null); setDetail(null);
+          setLectureHint({ title: String(entry?.label ?? '').trim() });
+          return;
+        }
+        setLectureHint(null);
+        openLecture(lecture);
+      };
+      // 右侧阅读区顶部：点到的章还没有讲义
+      const lectureHintCard = lectureHint === null ? null : h('div', { className: 'sa-card sa-lecture-empty' },
+        h('h3', { className: 'sa-section-title' }, String(lectureHint.title ?? '').trim() || '本章讲义'),
+        h('p', null, '这一章的讲义还没生成。'),
+        h('p', { className: 'sa-muted', style: { fontSize: 14, marginTop: 4 } },
+          '生成流程见各科「讲义/_讲义索引.md」；生成后由 tools/lectures-sync.mjs 写进学习台。'));
 
       const pill = (text, level) => h('span', { className: `sa-pill ${level}` }, text);
 
@@ -5229,9 +8009,17 @@ window.__ModuleLoader__.load({
         }
       }, [focus]);
 
-      const detailCard = openPath === null ? null : h('div', { className: 'sa-card' },
-        h('div', { className: 'sa-dock' },
-          h('span', { className: 'sa-grow', title: openPath }, detail?.data?.file ?? openPath),
+      // 正文卡与资料页共用同一个阅读面（W3a）；知识点页额外挂「去资料页看 / 专注阅读」与讲义版本行。
+      const detailCard = MaterialReadingCard({
+        detail,
+        openPath,
+        onPage: (no) => showMaterial(openPath, no),
+        onClose: () => {
+          setOpenPath(null);
+          setDetail(null);
+          readKnowledgeUi({ detailPath: null });
+        },
+        extraActions: [
           detail?.status === 'ready'
             ? h('button', {
               className: 'sa-btn',
@@ -5239,45 +8027,17 @@ window.__ModuleLoader__.load({
               onClick: () => onOpenMaterial?.(openPath, detail.data?.page),
             }, '去资料页看')
             : null,
-          detail?.data?.truncated === true ? pill('已截断', 'today') : null,
-          h('button', {
-            className: 'sa-btn',
-            title: '关上这份正文（也可以按左上角「返回」或 Alt+←）',
-            onClick: () => {
-              setOpenPath(null);
-              setDetail(null);
-              readKnowledgeUi({ detailPath: null });
-            },
-          }, '关闭')),
-        detail?.status === 'loading' ? h('div', { className: 'sa-muted' }, '正在读取…') : null,
-        detail?.status === 'error'
-          ? h('div', null,
-            h('div', { className: 'sa-error' },
-              detail.data?.error === 'no-text'
-                ? '这份资料还没有取字产物（扫描件要先跑取字）。'
-                : detail.data?.error === 'page-missing'
-                  ? `第 ${detail.data?.page} 页还没有取字产物。`
-                  : detail.data?.error === 'not-indexed'
-                    ? '这份资料不在索引里，可能索引刚被改过，刷新试试。'
-                    : `读取失败：${detail.data?.error ?? '未知原因'}`),
-            Array.isArray(detail.data?.pages) && detail.data.pages.length > 0
-              ? h('div', { className: 'sa-dock', style: { marginTop: 6 } },
-                h('span', { className: 'sa-muted' }, `已有的页：${detail.data.pages.join('、')}`))
-              : null)
-          : null,
-        detail?.status === 'ready'
-          ? h('div', null,
-            Array.isArray(detail.data.pages) && detail.data.pages.length > 0
-              ? h('div', { className: 'sa-dock', style: { flexWrap: 'wrap', marginBottom: 6 } },
-                h('span', { className: 'sa-muted' }, '页'),
-                ...detail.data.pages.map((no) => h('button', {
-                  key: no,
-                  className: `sa-btn${no === detail.data.page ? ' primary' : ''}`,
-                  onClick: () => showMaterial(openPath, no),
-                }, String(no))))
-              : null,
-            h(MaterialReading, { text: detail.data.text, page: detail.data.page }))
-          : null);
+          isTreeView && !focusReading
+            ? h('button', {
+              className: 'sa-btn',
+              title: '占满学习台主面板，Esc 退出并回到原阅读位置',
+              onClick: enterFocusReading,
+            }, '专注阅读')
+            : null,
+        ],
+        belowHeader: lectureSwitchRow,
+        closeTitle: '关上这份正文（也可以按左上角「返回」或 Alt+←）',
+      });
 
 
       // ---- 知识网络：图 + 选中节点详情 + 手加节点 ----
@@ -5582,7 +8342,8 @@ window.__ModuleLoader__.load({
       const nodeCard = selectedNode === null ? null : h('div', { className: 'sa-card sa-node-detail', id: 'sa-kp-detail' },
         h('div', { className: 'sa-dock' },
           h('h3', { className: 'sa-grow sa-detail-title' }, selectedNode.name ?? '(未命名)'),
-          isTreeView && !focusReading ? h('button', {type:'button',className:'sa-btn',onClick:enterFocusReading,title:'占满学习台主面板，Esc退出并回到原阅读位置'}, '专注阅读') : null,
+          // 有正文打开时，专注阅读按钮挂在上面那张讲义/正文卡上，详情卡不再重复放一个
+          isTreeView && !focusReading && detailCard === null ? h('button', {type:'button',className:'sa-btn',onClick:enterFocusReading,title:'占满学习台主面板，Esc退出并回到原阅读位置'}, '专注阅读') : null,
           h('button', {
             className: 'sa-btn',
             title: '收起这个知识点的详情（回到列表本身）',
@@ -5613,6 +8374,16 @@ window.__ModuleLoader__.load({
             disabled: markBusy,
             onClick: () => patchNode(selectedNode.id, { marked: selectedNode.marked !== true }),
           }, selectedNode.marked === true ? '取消重点' : '★ 标重点')),
+        // 章讲义入口（2026-10-29 用户定）：列表/图视图没有章行可点，就在这儿放一颗「章名」按钮——
+        // 点它右侧出该章讲义，版本在右侧讲义正文上方那排切，所以按钮上不写「讲义」二字。
+        !isTreeView && lectureForEntry({ label: selectedNode.chapter }) !== null
+          ? h('div', { className: 'sa-dock', style: { marginTop: 8, flexWrap: 'wrap' } },
+            h('button', {
+              className: 'sa-btn',
+              title: '在右侧打开这一章的讲义（版本在讲义正文上方切）',
+              onClick: () => openChapter({ label: selectedNode.chapter }),
+            }, String(selectedNode.chapter).trim()))
+          : null,
         // 复习打卡 + 改挂靠：这两件都不用改掌握度，但都是「复习时真正要做的事」
         h('div', { className: 'sa-dock', style: { marginTop: 6, flexWrap: 'wrap' } },
           h('button', {
@@ -6270,15 +9041,32 @@ window.__ModuleLoader__.load({
         }
         const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
         const empty = entry.empty === true;
+        const lecture = entry.kind === 'chapter' ? lectureForEntry(entry) : null;
+        // 章行（2026-10-29 用户定）：点名称＝在右侧读这一章讲义；展开/收起只在左边箭头上。
+        const isChapter = entry.kind === 'chapter';
         return h('div', { key: entry.key, className: 'sa-kp-branch' },
           h('div', {
             className: 'sa-row sa-tree-row',
             'data-depth': depth,
             'data-open': open,
+            'data-chapter': isChapter ? 'true' : undefined,
+            'data-active': isOpenChapter(lecture) ? 'true' : undefined,
             style: { cursor: 'pointer', paddingLeft: 0, opacity: empty ? 0.8 : 1, ...reveal },
-            onClick: () => toggleTreeNode(entry.key),
+            title: isChapter ? `在右侧读「${String(entry.label ?? '').trim()}」的讲义` : undefined,
+            onClick: () => (isChapter ? openChapter(entry) : toggleTreeNode(entry.key)),
           },
-          h('span', { className: 'sa-kp-caret', 'aria-hidden': true }, '▸'),
+          h('span', {
+            className: 'sa-kp-caret',
+            role: 'button',
+            tabIndex: 0,
+            'aria-label': `${open ? '收起' : '展开'} ${String(entry.label ?? '').trim()}`,
+            'aria-expanded': open,
+            title: open ? '收起这一层' : '展开这一层',
+            onClick: (event) => { event.stopPropagation(); toggleTreeNode(entry.key); },
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); toggleTreeNode(entry.key); }
+            },
+          }, '▸'),
           h('span', { className: 'sa-tree-kind' }, ({ course: '课程', chapter: '章', section: '节', sub: '小节', group: '分组' })[entry.kind] || ''),
           h('span', { className: 'sa-grow' }, renderMatched(entry.label, kpQuery)),
           entry.page ? h('span', { className: 'sa-muted', style: { fontSize: 14 } }, `p.${entry.page}`) : null,
@@ -6322,6 +9110,7 @@ window.__ModuleLoader__.load({
             : h('span', { className: 'sa-muted', style: { fontSize: 14 } }, `${entry.count} 个`),
           empty ? null : h('span', { className: 'sa-muted', style: { fontSize: 14 } }, `熟练 ${entry.stats.mastered}`)),
           depth === 0 ? null : h('div', { style: { paddingLeft: 0 } }, masteryBar(entry.stats)),
+          // 左边不再放「讲义 A/B/C」小按钮（2026-10-29 用户定：版本切换统一在右侧讲义正文上方）
           open
             ? h('div', { className: 'sa-kp-children' },
               entry.children.map((child, index) => treeRow(child, depth + 1, Math.min(index, 12) * 14)))
@@ -6408,6 +9197,9 @@ window.__ModuleLoader__.load({
               const isPoint=item.kind==='point',isChapter=item.kind==='chapter',isBranch=item.expandable===true;
               const selectedPoint=isPoint && item.id===selected;
               const state=MASTERY_STYLE[isPoint ? Math.min(Math.max(item.mastery||0,0),3) : 0];
+              // 导图/图视图里点章节点只管展开/收起（2026-10-29 定）：
+              // 导图上「点一下」本来就是展开，若顺带把讲义拉到右侧会把人从图里踢出去（整图被分栏取代）。
+              // 读章讲义走树/目录那侧的章名，以及详情卡上的章名按钮。
               const activate=()=>isPoint ? selectForReading(item.id) : toggleMindChapter(item.key);
               const level=({root:'总览',course:'课程',chapter:'章',section:'节',sub:'小节',group:'分组',point:'知识点'})[item.kind] || '';
               return h('g',{key:item.key,className: 'sa-mind-node',
@@ -6641,12 +9433,23 @@ window.__ModuleLoader__.load({
               h('span', null, renderMatched(entry.label, kpQuery))));
         }
         const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
+        const lecture = entry.kind === 'chapter' ? lectureForEntry(entry) : null;
+        const isChapter = entry.kind === 'chapter';
+        // 章行拆成两个按钮（2026-10-29 用户定）：左边箭头管展开、右边名称点一下在阅读区读该章讲义。
+        // 讲义版本不再堆在左边（`讲义 A/B/C` 三颗），统一在右侧讲义正文上方那排切。
+        const active = isOpenChapter(lecture);
         return h('li', { key: entry.key, className: 'sa-compact-branch', 'data-kind': entry.kind },
-          h('button', { type: 'button', className: 'sa-compact-toggle', 'aria-expanded': open,
-            title: entry.label, onClick: () => toggleTreeNode(entry.key) },
-            h('span', { className: 'sa-compact-arrow', 'aria-hidden': true }, open ? '▾' : '▸'),
-            h('span', { className: 'sa-compact-name' }, renderMatched(entry.label, kpQuery)),
-            h('span', { className: 'sa-compact-count' }, String(entry.count || 0))),
+          h('div', { className: 'sa-compact-row' },
+            h('button', { type: 'button', className: 'sa-compact-arrow-btn', 'aria-expanded': open,
+              'aria-label': `${open ? '收起' : '展开'} ${String(entry.label ?? '').trim()}`,
+              title: open ? '收起这一层' : '展开这一层',
+              onClick: (event) => { event.stopPropagation(); toggleTreeNode(entry.key); } },
+              h('span', { className: 'sa-compact-arrow', 'aria-hidden': true }, open ? '▾' : '▸')),
+            h('button', { type: 'button', className: 'sa-compact-point', 'aria-current': active ? 'true' : undefined,
+              title: isChapter ? `在右侧读「${String(entry.label ?? '').trim()}」的讲义` : entry.label,
+              onClick: () => (isChapter ? openChapter(entry) : toggleTreeNode(entry.key)) },
+              h('span', { className: 'sa-compact-name' }, renderMatched(entry.label, kpQuery)),
+              h('span', { className: 'sa-compact-count' }, active ? '讲义' : String(entry.count || 0)))),
           open && entry.children?.length ? h('ul', { className: 'sa-compact-children' }, entry.children.map(compactTreeRow)) : null);
       };
       const compactTree = h('div', { className: 'sa-compact-scroll', key: treeCourseId, ref: restoreCompactScroll,
@@ -6665,31 +9468,284 @@ window.__ModuleLoader__.load({
         h('button', { type: 'button', className: 'sa-btn', 'aria-expanded': fullBrowser,
           onClick: () => { setFullBrowser(value => !value); setBrowserCollapsed(false); } },
           fullBrowser ? '返回分栏阅读' : (kpView === 'tree' ? '展开完整目录' : '展开完整导图')));
+      // 专注阅读顶部标题（2026-10-29）：读的是讲义就报讲义（章名 + 档位），否则回落到知识点名
+      // 专注阅读顶部的字号控件（2026-10-29 用户要求「能自由选择字体大小」）：
+      // 显示的是「DSH 内容字号 × 倍率」的整数 px；A−/A+ 一格 1px（16px 基准下）。
+      const readFontPx = Math.round(dshContentFontSize() * readScale);
+      const focusReadingTitle = openLectureRow !== null
+        ? `${lectureTitle(openLectureRow.lecture)} · 讲义 ${openLectureRow.style?.key ?? ''}`
+        : openPath !== null
+          ? String(detail?.data?.file ?? openPath)
+          : (selectedNode?.name ?? '专注阅读');
       const treeWorkspace = h('div', { className: 'sa-learning-layout', 'data-full-browser': fullBrowser ? 'true' : 'false',
         'data-browser-collapsed': browserCollapsed ? 'true' : 'false' },
         h('section', { className: 'sa-browser-pane', 'aria-label': '选择知识点' }, browsingHeader,
           h('div', { className: 'sa-browser-content', id: 'sa-browser-content' },
             fullBrowser ? h('div', { key: kpView, className: 'sa-kp-view sa-full-browser' }, kpView === 'tree' ? treeCard : mindCard) : compactTree)),
         h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: focusReading ? -1 : 0, 'data-focus-reader': focusReading ? 'true' : 'false',
+          style: { '--sa-read-scale': String(readScale) },
           'aria-label': selectedNode ? '知识点阅读：' + selectedNode.name : '知识点阅读区' },
           focusReading ? h('div',{className:'sa-focus-header'},
-            h('strong',null,selectedNode?.name || '专注阅读'),
+            h('strong',null,focusReadingTitle),
+            h('span',{className:'sa-read-size',role:'group','aria-label':'正文字号'},
+              h('button',{type:'button',className:'sa-btn','aria-label':'减小字号',title:'字号减 1px',onClick:()=>stepReadScale(-READ_SCALE_STEP)},'A−'),
+              h('output',{className:'sa-zoom-value','aria-live':'polite',title:'正文字号：DSH 内容字号 × 本次倍率'},String(readFontPx)+'px'),
+              h('button',{type:'button',className:'sa-btn','aria-label':'增大字号',title:'字号加 1px',onClick:()=>stepReadScale(READ_SCALE_STEP)},'A+'),
+              // 2026-10-30：「重置」改成「100%」，同时补「适应窗口」。原来叫「重置」太含糊
+              // （重置什么？），而 100% 跟导图那排缩放一个口径、也直接说清了「倍率回到 1」；
+              // 两颗按钮都做 setReadScale(1) 只会让人猜区别，所以合并成一颗。
+              h('button',{type:'button',className:'sa-btn','aria-label':'字号 100%',title:`100%：完全跟随 DSH 设置里的「内容字号」（${Math.round(dshContentFontSize())}px）`,onClick:()=>setReadScale(1)},'100%'),
+              h('button',{type:'button',className:'sa-btn','aria-label':'字号适应窗口',title:'按阅读区宽度把正文栏拉回 80 字一行：窄面板缩小、宽面板放大',onClick:fitReadToPane},'适应窗口')),
             h('span',{className:'sa-muted'},'Esc 退出'),
             h('button',{type:'button',className:'sa-btn',onClick:exitFocusReading},'退出专注阅读')) : null,
-          nodeCard || h('div', { className: 'sa-card sa-reader-empty' },
+          // 顺序（2026-10-29 用户定）：讲义正文在上、知识点讲解在下。
+          // 讲义是「点进来的那一份」，先读它；详情卡（标题/掌握度/详解…）跟在后头当背景资料。
+          // 点知识点时 detailCard 会被收掉（见 selectForReading），所以这里是「一份内容」而不是两张卡叠着。
+          lectureHintCard,
+          detailCard,
+          nodeCard || (detailCard === null && lectureHintCard === null ? h('div', { className: 'sa-card sa-reader-empty' },
             h('h3', null, '选一个知识点开始阅读'),
-            h('p', null, '展开知识树中的章、节，点击知识点名称。详解、例题和配图会显示在这里。'),
-            h('p', { className: 'sa-muted' }, '查看全章关系时，可展开完整导图；点选后自动回到阅读布局。')),
-          detailCard));
+            h('p', null, '点章名读该章讲义；展开章/节，点知识点名称读它自己的详解、例题和配图。'),
+            h('p', { className: 'sa-muted' }, '查看全章关系时，可展开完整导图；点选后自动回到阅读布局。')) : null)));
 
       return h('div', { className: 'sa-knowledge-page' },
         kpToolbar,
         isTreeView ? treeWorkspace : h('div', null,
           h('div', { key: kpView, className: 'sa-kp-view' }, kpView === 'graph' ? graphCard : kpView === 'list' ? knowledgeListCard : explainCard),
-          nodeCard, detailCard),
+          // 与树视图同一顺序：讲义正文在前，详情卡在后
+          lectureHintCard, detailCard, nodeCard),
         kpView === 'explain' ? null : dueCard,
         kpView === 'explain' ? null : batchCard,
         addNodeCard, jobCard);
+    }
+
+    // ---------------------------------------------------------------------
+    // 学习记录（P3，2026-10-30）：时间线 + 归档对话 + 交互助手
+    // ---------------------------------------------------------------------
+    /**
+     * 「学习记录」页签：把「读过 / 批注过 / 标了什么知识点」按时间摊开，并给一个多轮对话面板。
+     *
+     * 边界（决策 E1/E2、契约 §5.6）：
+     * - 时间线只用 阅读位置.json / 批注.json / 知识点网络.json 里已有的事实，**不埋点、不统计时长**；
+     * - 对话与批注**不当证据回流**：聊天只喂「当前知识点证据 +（用户显式勾选的）当前阅读段落」；
+     * - 注入阅读段落默认关闭，只有点上面的按钮才带 context，且服务端重读磁盘、6000 字截断。
+     */
+    function RecordsTab({ docs = {}, refresh }) {
+      const courses = objectList(docs.courses?.courses);
+      const nodes = objectList(docs.knowledgeNetwork?.nodes);
+      const [courseId, setCourseId] = useState('');
+      const [log, setLog] = useState(null);
+      const [status, setStatus] = useState('loading');
+      const [error, setError] = useState('');
+      const [session, setSession] = useState(null); // {id,title,courseId,scope,messages}
+      const [draft, setDraft] = useState('');
+      const [inject, setInject] = useState(false);
+      const [busy, setBusy] = useState(false);
+      const [newNodeId, setNewNodeId] = useState('');
+
+      const courseName = (id) => courses.find((c) => c.id === id)?.name ?? (id || '未匹配课程');
+
+      const loadLog = async (cid) => {
+        setStatus('loading');
+        setError('');
+        const result = await fetchStudyLog(cid);
+        if (result.ok !== true) {
+          setStatus('error');
+          setError(assistantChatErrorMessage(result));
+          return;
+        }
+        setLog(result);
+        setStatus('ready');
+      };
+      useEffect(() => {
+        loadLog(courseId);
+      }, [courseId]);
+
+      const openChat = async (entry) => {
+        setError('');
+        const result = await fetchChatSession(entry.courseId ?? courseId, entry.id);
+        if (result.ok !== true) {
+          setError(assistantChatErrorMessage(result));
+          return;
+        }
+        setSession(result.chat);
+        setInject(false);
+      };
+
+      const startNew = () => {
+        const node = newNodeId === '' ? null : nodes.find((n) => n.id === newNodeId);
+        const scope = node === undefined || node === null
+          ? { type: 'free' }
+          : { type: 'node', nodeId: node.id, courseId: String(node.courseId ?? '') };
+        setSession({
+          id: null,
+          title: node === null || node === undefined ? '临时对话' : String(node.name ?? '对话'),
+          courseId: (node?.courseId) || courseId || (courses[0]?.id ?? ''),
+          scope,
+          messages: [],
+        });
+        setInject(false);
+        setDraft('');
+      };
+
+      const send = async () => {
+        if (session === null || busy) return;
+        const text = draft.trim();
+        if (text === '') return;
+        const history = objectList(session.messages).map((m) => ({ role: m.role, content: String(m.content ?? '') }));
+        const payload = {
+          courseId: session.courseId || courseId || (courses[0]?.id ?? ''),
+          scope: session.scope,
+          name: session.title,
+          messages: [...history, { role: 'user', content: text }],
+        };
+        if (session.id) payload.chatId = session.id;
+        if (inject && log?.readingPosition) {
+          payload.context = { type: 'material', path: log.readingPosition.path, page: log.readingPosition.page };
+        }
+        setBusy(true);
+        setError('');
+        const result = await assistantChat(payload);
+        setBusy(false);
+        if (result.ok !== true) {
+          setError(assistantChatErrorMessage(result));
+          return;
+        }
+        setDraft('');
+        const reloaded = await fetchChatSession(result.chat?.courseId ?? payload.courseId, result.chat?.id ?? session.id);
+        if (reloaded.ok === true) setSession(reloaded.chat);
+        loadLog(courseId);
+      };
+
+      const removeChat = async (entry) => {
+        if (!window.confirm(`删除这条对话「${entry.title || '未命名'}」？删除后无法恢复。`)) return;
+        const result = await deleteChatSession(entry.courseId ?? courseId, entry.id);
+        if (result.ok !== true) {
+          setError(assistantChatErrorMessage(result));
+          return;
+        }
+        if (session !== null && session.id === entry.id) setSession(null);
+        loadLog(courseId);
+      };
+
+      const head = h('div', { className: 'sa-card' },
+        h('h3', null, '学习记录'),
+        h('div', { className: 'sa-dock' },
+          h('span', { className: 'sa-muted' }, '课程'),
+          h('select', {
+            className: 'sa-input',
+            value: courseId,
+            onChange: (event) => setCourseId(event.target.value),
+          }, h('option', { value: '' }, '全部'),
+          ...courses.map((course) => h('option', { key: course.id, value: course.id }, course.name))),
+          h('span', { className: 'sa-spacer' }),
+          h('button', { className: 'sa-btn', onClick: () => loadLog(courseId) }, '刷新')));
+
+      const errorBanner = error === '' ? null : h('div', { className: 'sa-error', style: { margin: '6px 0' } }, error);
+
+      // ── 时间线：只用现有 JSON 的事实，不埋点、不编造时长 ──
+      const kindIcon = { read: '📖', annotation: '✏️', knowledge: '★' };
+      const timelineEvents = status === 'ready' ? objectList(log?.timeline) : [];
+      const timelineSection = h('div', { className: 'sa-card' },
+        h('h3', null, '时间线'),
+        h('div', { className: 'sa-muted', style: { fontSize: 12, marginBottom: 6 } },
+          '数据只来自 阅读位置.json、批注.json、知识点网络.json——不统计时长，也不埋点。'),
+        status === 'loading' ? h('div', { className: 'sa-muted' }, '读取中…') : null,
+        status === 'ready' && timelineEvents.length === 0
+          ? h('div', { className: 'sa-muted' }, '还没有学习记录。读一份资料、写一条批注、或复习一个知识点，这里就会出现条目。')
+          : null,
+        ...timelineEvents.map((ev, index) => h('div', { key: `${ev.kind}-${index}`, className: 'sa-row sa-log-row' },
+          h('span', { className: 'sa-log-icon', title: String(ev.kind ?? '') }, kindIcon[ev.kind] ?? '•'),
+          h('div', { className: 'sa-grow' },
+            h('div', { className: 'sa-log-title' }, String(ev.title ?? '')),
+            typeof ev.detail === 'string' && ev.detail !== ''
+              ? h('div', { className: 'sa-muted', style: { fontSize: 12 } }, ev.detail)
+              : null),
+          h('div', { style: { textAlign: 'right' } },
+            h('div', { className: 'sa-muted', style: { fontSize: 12 } }, formatStamp(ev.at)),
+            h('div', { className: 'sa-muted', style: { fontSize: 11 }, title: '数据来源' }, `来源：${ev.basis ?? '—'}`)))));
+
+      // ── 归档对话列表 + 新建 ──
+      const chatEntries = status === 'ready' ? objectList(log?.chats) : [];
+      const chatSection = h('div', { className: 'sa-card' },
+        h('h3', null, '对话'),
+        chatEntries.length === 0
+          ? h('div', { className: 'sa-muted' }, status === 'ready' ? '还没有归档对话。选一个知识点或直接开一个自由对话。' : '读取中…')
+          : null,
+        ...chatEntries.map((entry) => h('div', { key: entry.id, className: 'sa-row' },
+          h('button', {
+            className: 'sa-btn sa-grow',
+            style: { textAlign: 'left' },
+            title: `${courseName(entry.courseId)} · ${entry.messageCount ?? 0} 条`,
+            onClick: () => openChat(entry),
+          },
+          `${entry.title || '未命名'}　`,
+          h('span', { className: 'sa-muted', style: { fontSize: 12 } },
+            `${courseName(entry.courseId)} · ${entry.messageCount ?? 0} 条 · ${formatStamp(entry.updatedAt)}`)),
+          h('button', { className: 'sa-btn', onClick: () => removeChat(entry) }, '删除'))),
+        h('div', { className: 'sa-dock', style: { marginTop: 8 } },
+          h('select', {
+            className: 'sa-input',
+            value: newNodeId,
+            onChange: (event) => setNewNodeId(event.target.value),
+          }, h('option', { value: '' }, '不绑定知识点（自由对话）'),
+          ...nodes.map((node) => h('option', { key: node.id, value: node.id }, `${node.name}（${courseName(node.courseId)}）`))),
+          h('button', { className: 'sa-btn primary', onClick: startNew }, '新对话')));
+
+      // ── 对话面板（多轮）──
+      const readingPosition = log?.readingPosition ?? null;
+      const canInject = readingPosition !== null && typeof readingPosition === 'object' && typeof readingPosition.path === 'string';
+      const sessionPanel = session === null ? null : h('div', { className: 'sa-card' },
+        h('div', { className: 'sa-dock' },
+          h('span', { className: 'sa-grow' }, h('strong', null, session.title || '对话')),
+          h('span', { className: 'sa-muted', style: { fontSize: 12 } }, courseName(session.courseId)),
+          h('button', { className: 'sa-btn', onClick: () => setSession(null) }, '返回')),
+        h('div', { className: 'sa-chat-log' },
+          objectList(session.messages).length === 0
+            ? h('div', { className: 'sa-muted' }, '有什么想问的？直接输入。')
+            : objectList(session.messages).map((message, index) => h('div', {
+              key: index,
+              className: `sa-chat-msg ${message.role === 'user' ? 'user' : 'assistant'}`,
+            },
+            h('div', { className: 'sa-chat-role' }, message.role === 'user' ? '我' : '助手'),
+            h('div', { className: 'sa-chat-text' }, String(message.content ?? '')),
+            Array.isArray(message.sources) && message.sources.length > 0
+              ? h('div', { className: 'sa-muted', style: { fontSize: 11 } }, `依据：${message.sources.join('、')}`)
+              : null,
+            message.context !== null && typeof message.context === 'object'
+              ? h('div', { className: 'sa-muted', style: { fontSize: 11 } },
+                `含当前阅读段落${message.context.truncated === true ? `（只读了前 ${message.context.chars} 字）` : ''}`)
+              : null))),
+        h('div', { className: 'sa-dock', style: { marginTop: 6, alignItems: 'center' } },
+          canInject
+            ? h('button', {
+              className: `sa-btn${inject ? ' primary' : ''}`,
+              title: '把当前阅读的这份资料这一页发给模型作参考（默认不发）',
+              onClick: () => setInject((value) => !value),
+            }, inject ? '✓ 让助手读当前阅读段落' : '让助手读当前阅读段落')
+            : h('span', { className: 'sa-muted', style: { fontSize: 12 } }, '还没有阅读位置——去资料页翻一页，就能让助手读它了。'),
+          canInject
+            ? h('span', { className: 'sa-muted', style: { fontSize: 12 } },
+              `${readingPosition.path} 第 ${readingPosition.page ?? '—'} 页（上限约 6000 字，超出只读前 N 字）`)
+            : null),
+        h('div', { className: 'sa-dock', style: { marginTop: 6, alignItems: 'flex-end' } },
+          h('textarea', {
+            className: 'sa-input sa-grow',
+            rows: 2,
+            value: draft,
+            placeholder: '输入你的问题…（Ctrl/⌘+Enter 发送）',
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') send();
+            },
+          }),
+          h('button', { className: `sa-btn primary${busy ? ' disabled' : ''}`, disabled: busy, onClick: send }, busy ? '思考中…' : '发送')),
+        session.id
+          ? h('div', { className: 'sa-dock', style: { marginTop: 4 } },
+            h('button', { className: 'sa-btn', onClick: () => removeChat({ id: session.id, title: session.title, courseId: session.courseId }) }, '删除这条对话'))
+          : null);
+
+      return h('div', null, head, errorBanner, sessionPanel, timelineSection, chatSection);
     }
 
     function SettingsTab({ docs, refresh, busy, run, setBusy }) {
@@ -7136,6 +10192,7 @@ window.__ModuleLoader__.load({
         ['grades', TEXT.tabs.grades],
         ['materials', TEXT.tabs.materials],
         ['knowledge', TEXT.tabs.knowledge],
+        ['records', TEXT.tabs.records],
         ['settings', TEXT.tabs.settings],
       ];
 
@@ -7159,6 +10216,8 @@ window.__ModuleLoader__.load({
         body = h(MaterialsTab, { key: `materials-${navVersion}`, docs, refresh, onOpenKnowledge, focus: materialFocus, onFocusConsumed: () => setMaterialFocus(null) });
       } else if (tab === 'knowledge') {
         body = h(KnowledgeTab, { key: `knowledge-${navVersion}`, docs, refresh, focus: kpFocus, onFocusConsumed: () => setKpFocus(null), onOpenMaterial });
+      } else if (tab === 'records') {
+        body = h(RecordsTab, { key: `records-${navVersion}`, docs, refresh });
       } else {
         body = h(SettingsTab, { docs, refresh, busy, run, setBusy });
       }
@@ -7474,9 +10533,44 @@ window.__ModuleLoader__.load({
         // 否则「索引有数据、界面渲染成空白」这种问题只能靠重启宿主以后肉眼发现。
         materialsTab: MaterialsTab,
         knowledgeTab: KnowledgeTab,
+        // 资料树（2026-10-30 W3b）：纯函数派生，测试直接验「从 path 目录段分组」「其他兜底」「不读新 schema 字段」
+        buildMaterialsTree,
+        materialFolderKey,
+        materialMeta,
+        materialKindLabel,
+        materialBaseName,
+        // 阅读面正文卡（2026-10-30 W3a）：资料页 / 知识点页共用
+        materialReadingCard: MaterialReadingCard,
         // 今日页（2026-10-22 凌晨）：待复习知识点卡要能单独渲染
         todayTab: TodayTab,
         materialText,
+        // 正文缓存（2026-10-29 晚）：测试要能验「同一份资料第二次打开不再发请求」与缓存上限
+        materialTextCached,
+        peekMaterialText,
+        MATERIAL_TEXT_CACHE,
+        // 批注渲染计划（2026-10-30 B1）：纯函数，测试直接验 found/fuzzy/lost 三态与偏移刷新
+        buildAnnotationRenderPlan,
+        // 批注读取（2026-10-30 B1）：按 file 拉取 + 缓存 + 失效
+        annotationsFor,
+        peekAnnotations,
+        invalidateAnnotations,
+        // 批注渲染（2026-10-30 B1）：高亮切段、待处理列表、覆盖层组件
+        annotationHighlightNodes,
+        annotationPendingList,
+        annotationLayer: AnnotationLayer,
+        // 批注交互（2026-10-31 F2）：选区→锚点、气泡定位、正文内联标记、提交参数
+        annotationQuoteHits,
+        resolveAnnotationAnchor,
+        placeAnnotationBubble,
+        annotationRenderedText,
+        annotationMarkOffsets,
+        annotationMarkedNodes,
+        annotationCreateItem,
+        annotationRenderedOffsetOfRange,
+        annotationSelectionSnapshot,
+        // 正文组件（2026-10-29 晚）：测试要断言「换正文时不卸载、旧正文还在」，
+        // 但假 React 不会展开函数组件，只能从元素节点上看它拿到的 text
+        materialReading: MaterialReading,
         // 设置页（2026-10-21 夜）：数据备份与生成记录卡，测试要能单独渲染
         settingsTab: SettingsTab,
         // 整个面板（2026-10-23 凌晨）：tools/panel-smoke.mjs 用真实数据把 7 个页签全渲一遍，
@@ -7513,6 +10607,12 @@ window.__ModuleLoader__.load({
         // 公式排版（2026-10-26 深夜）：LaTeX → 符号（上下标/分式/根号/希腊字母），
         // 保证界面上不再出现 `\Rightarrow` 这种源码
         latexNodes,
+        plainMathToTex,
+        plainMathNodes,
+        plainMathLineNodes,
+        mixedTextNodes,
+        backtickNodes,
+        MATH_INLINE_STYLE,
         latexRender,
         formulaCard,
         // 章节进度（2026-10-21 夜第三段）：四档分布 + 到熟练数，列表章头用它画小条
@@ -7528,6 +10628,9 @@ window.__ModuleLoader__.load({
         buildMindMap,
         clampMindZoom,
         fitMindZoom,
+        // 阅读区缩放（2026-10-30）：倍率夹取 + 「适应窗口」反算，测试直接验纯函数与按钮
+        clampReadScale,
+        fitReadScale,
         knowledgeTreeCourses,
         subjectTreeState,
         patchSubjectTree,

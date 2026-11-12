@@ -9,6 +9,11 @@ study-assistant-data/
 data/
 *.local.json
 
+# 网络学堂「一键重连」的本地账号密码与专用 Edge profile：只在本机，绝不进仓库
+.learn-credential.json
+.learn-edge/
+网络学堂.json
+
 # 听课/录音产物与临时中间物
 _recordings/
 *.aac
