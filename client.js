@@ -6613,6 +6613,15 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     const PLAIN_MATH_BLOCK_LINE = /^[^。！？；：]{2,80}$/u;
     const plainMathLineNodes = (line, keyPrefix) => {
       const source = String(line ?? '').trim();
+      // 2026-11-16（续修 v2）：两条「不是裸公式行」的硬拦截——
+      //   ① 表格行（`| … |`）：它属于表格分支（analysisBlockNodes:6876），
+      //      以前表头里带 `_`/`=`（`| 情形 | … $L_1=S\cdot A$ … |`）会被这里误判成
+      //      「整行公式」抢走，导致表格少表头、竖线裸印。← 2.1 表格裸印的真凶。
+      //   ② 含字面 `$` 的行（`$$…$$` 或行内 `$…$`）：`plainMathToTex` 会把 `$$` 译成
+      //      `\text{$}`、latexRender 再原样输出 `$`，屏幕上就是 `$$L_1=S· A$$`。
+      //      这类行交给 `$` 分支（mixedTextNodes / analysisInline）剥两层后排版。
+      if (/^\|.*\|$/u.test(source)) return null;
+      if (source.includes('$')) return null;
       if (source.length < 6 || !/[=]/u.test(source)) return null;
       if (source === '' || !PLAIN_MATH_BLOCK_LINE.test(source)) return null;
       if (!PLAIN_MATH_MARK_PATTERN.test(source) && !MATH_SCRIPTOID_PATTERN.test(source)) return null;
@@ -6664,14 +6673,20 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return pieces;
     };
     const mixedTextNodes = (text, keyPrefix) => {
-      const source = String(text ?? '');
+      let source = String(text ?? '');
+      // 2026-11-16：生成侧截断常留下孤零零的一个 `$`（`… ) $(f(v_i), f(v_j)) \in E_2`），
+      // 它让整段行内公式配不成对，`$` 会裸露。照抄 mathInlineNodes:7095-7096：奇数个 `$` 全剥掉。
+      const dollarCount = (source.match(/\$/gu) ?? []).length;
+      if (dollarCount % 2 === 1) source = source.replace(/\$/gu, '');
       if (!PLAIN_MATH_MARK_PATTERN.test(source) && !MATH_SCRIPTOID_PATTERN.test(source)) return analysisInline(source, keyPrefix);
       const out = [];
       const push = (...nodes) => { out.push(...nodes); };
       source.split(INLINE_MARK_PATTERN).filter((piece) => piece !== '').forEach((piece, index) => {
         const key = `${keyPrefix}-x${index}`;
-        // 反引号与粗体整块交给 analysisInline（里面各走 backtickNodes / 递归）
-        if (/^[`*]/u.test(piece.trim())) { out.push(...analysisInline(piece, key)); return; }
+        // 反引号、粗体与 `$` 公式块整块交给 analysisInline（`$` 块由 :5510-5517 的剥两层/
+        // 单层逻辑正确走 latexNodes；此前只认 ` 和 *，`$…$` / `$$…$$` 落到 splitMathRuns 被
+        // PLAIN_MATH_RUN_CHAR 不含 `$` 拆成字面 `$` 输出 —— explain 详解段绕过 :5510 修复的回归）
+        if (/^[`*$]/u.test(piece.trim())) { out.push(...analysisInline(piece, key)); return; }
         splitMathRuns(piece).forEach((seg, segIndex) => {
           if (!seg.math) { out.push(...analysisInline(seg.text, `${key}-p${segIndex}`)); return; }
           const math = plainMathNodes(seg.text, `${key}-m${segIndex}`, {});
@@ -6845,6 +6860,15 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           let buffer = [];
           const flush = () => { if (buffer.length > 0) { out.push(buffer.join("\n")); buffer = []; } };
           part.split("\n").forEach((line) => {
+            // 2026-11-16（续修 v2）：独立成段的 `$$…$$`（如 `$$L_1 = S\cdot A$$`）当**居中块级公式**。
+            // 以前它被 plainMathLineNodes 抓走、而 plainMathToTex 不剥 `$$`，屏幕上是 `$$L_1=S· A$$`。
+            // 这里先认 `$$…$$`（允许同一行内首尾成对），剥掉两层 `$` 再喂 latexNodes；公式为空则退回纯文本。
+            const dollars = /^\$\$(.*)\$\$$/u.exec(String(line).trim());
+            if (dollars !== null && dollars[1].trim() !== '') {
+              flush();
+              out.push({ formula: latexNodes(dollars[1], `??bb-${out.length}`), source: String(line).trim() });
+              return;
+            }
             // 注意：整行公式的节点**在这里就要拿住**。以前只判了 `!== null` 就又塞回纯文本，
             // 后面再走一遍段落渲染，于是 `E = \frac{Q}{…}` 被拆成「E」「=」「大分式」三块 ——
             // 屏幕上就是分式悬在行外、上下撑出大片空白。

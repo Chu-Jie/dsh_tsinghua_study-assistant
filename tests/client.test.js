@@ -2768,6 +2768,126 @@ test('行内 $$…$$ 不许漏出一个 $（2026-10-31 修：数电讲义「代�
   assert.ok(flat.includes('⊕'), flat);
 });
 
+test('mixedTextNodes 里的 $ 公式不许裸露（2026-11-16 修：explain 详解段走混排时绕过 $$ 剥两层）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || node === undefined || node === false || typeof node !== 'object') return '';
+    return (node.children || []).map(textOf).join('');
+  };
+  const hasStrong = (nodes) => {
+    let found = false;
+    const walk = (n) => {
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      if (!n || typeof n !== 'object') return;
+      if (n.type === 'strong') found = true;
+      (n.children || []).forEach(walk);
+    };
+    walk(nodes);
+    return found;
+  };
+  const hasMathSpan = (nodes) => {
+    let found = false;
+    const walk = (n) => {
+      if (Array.isArray(n)) { n.forEach(walk); return; }
+      if (!n || typeof n !== 'object') return;
+      if (n.type === 'span' && typeof n.props?.style === 'object' && n.props.style !== null) found = true;
+      (n.children || []).forEach(walk);
+    };
+    walk(nodes);
+    return found;
+  };
+  // ① 混排：中文 + 行内 $…$（带下标特征，会走 mixedTextNodes 的 splitMathRuns 分支）
+  const a = textOf(lib.mixedTextNodes('一个教室里有两盏灯 $L_1$、$L_2$ 和一个总闸 $S$', 'r1'));
+  assert.ok(!a.includes('$'), `mixedTextNodes 行内 $…$ 不许漏 $：${a}`);
+  assert.ok(a.includes('L') && a.includes('两盏灯'), `正文与公式内容要在：${a}`);
+  // ② $$…$$ 块（带下标特征触发 mixed 分支），不许残留任何 $
+  const b = textOf(lib.mixedTextNodes('灯要亮，必须同时满足： $$L_1 = S\\cdot A$$', 'r2'));
+  assert.ok(!b.includes('$'), `mixedTextNodes 里 $$…$$ 不许漏 $：${b}`);
+  assert.ok(/\\cdot|·|⋅/u.test(b) || b.includes('S'), `公式要排版：${b}`);
+  // ③ 粗体里套公式 **对长度 $n$ 的查找链**：不许漏 $，且 strong 节点仍在
+  const cNodes = lib.mixedTextNodes('**对长度 $n$ 的查找链**', 'r3');
+  const c = textOf(cNodes);
+  assert.ok(!c.includes('$'), `粗体里套公式不许漏 $：${c}`);
+  assert.ok(hasStrong(cNodes), `strong 节点要保留：${JSON.stringify(cNodes)}`);
+  assert.ok(c.includes('n') && c.includes('查找链'), `粗体内文字要在：${c}`);
+  // ④ 落单的 $（生成侧截断遗留），照抄 mathInlineNodes:7093 那条
+  const d = textOf(lib.mixedTextNodes('边集 $(f(v_i), f(v_j)) \\in E_2 的约束', 'r4'));
+  assert.ok(!d.includes('$'), `落单 $ 不许裸露：${d}`);
+  // ⑤ 回归保护：无 $ 的裸公式仍走 plainMathNodes（返回值含公式 span，不裸露反斜杠）
+  const eNodes = lib.mixedTextNodes('通量 Φ_e = ∮ E·dS = q/ε₀ 恒定', 'r5');
+  const e = textOf(eNodes);
+  assert.ok(!e.includes('$'), `裸公式不许出现 $：${e}`);
+  assert.ok(!/\\[A-Za-z]+/u.test(e), `裸公式不许露 LaTeX 源码：${e}`);
+  assert.ok(hasMathSpan(eNodes), `裸公式仍应排成公式 span：${JSON.stringify(eNodes)}`);
+});
+
+test('独立成段 $$…$$ 渲染成块级公式、$ 不许裸露（2026-11-16 续修 v2：plainMathLineNodes 不剥 $$）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || node === undefined || node === false || typeof node !== 'object') return '';
+    return (node.children || []).map(textOf).join('');
+  };
+  const flat = (nodes) => nodes.map((node) => textOf(node)).join('');
+  // analysisBlockNodes 对「单独成段」的 $$…$$：块级 div，内容排版正确，无任何字面 $
+  const blocks = lib.analysisBlockNodes('$$L_1 = S\\cdot A$$', 'bb');
+  assert.equal(blocks.length, 1, '单独一行 $$…$$ 只出一条块');
+  assert.equal(blocks[0].type, 'div', '$$…$$ 要渲成块级 div（居中行间公式）');
+  const out = textOf(blocks[0]);
+  assert.ok(!out.includes('$'), `$$…$$ 不许漏 $：${JSON.stringify(out)}`);
+  assert.ok(out.includes('L') && out.includes('S'), `公式内容要在：${JSON.stringify(out)}`);
+  assert.ok(!/\\cdot/u.test(out), `\\cdot 不许以源码出现：${JSON.stringify(out)}`);
+  // 两行 $$…$$ 各自成块
+  const two = lib.analysisBlockNodes('$$L_1 = S\\cdot A$$\n\n$$L_2 = S\\cdot B$$', 'bb2');
+  assert.equal(two.length, 2, '两行 $$…$$ 各成一块');
+  assert.equal(two[0].type, 'div');
+  assert.equal(two[1].type, 'div');
+  assert.ok(!flat(two).includes('$'), `两行 $$…$$ 不许漏 $：${JSON.stringify(flat(two))}`);
+});
+
+test('含 $ 单元格的表格要渲染成 <table>、竖线与 $ 都不裸露（2026-11-16 续修 v2：表头被 plainMathLineNodes 抢走）', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const textOf = (node) => {
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join('');
+    if (node === null || node === undefined || node === false || typeof node !== 'object') return '';
+    return (node.children || []).map(textOf).join('');
+  };
+  const flat = (nodes) => nodes.map((node) => textOf(node)).join('');
+  const src = '| 情形 | $S$ | $A$ | $B$ | $L_1=S\\cdot A$ | $L_2=S\\cdot B$ | 结论 |\n'
+    + '| --- | --- | --- | --- | --- | --- | --- |\n'
+    + '| 总闸断，分开关全开 | 0 | 1 | 1 | 0 | 0 | 都不亮 |\n'
+    + '| 总闸通，只开 $A$ | 1 | 1 | 0 | 1 | 0 | 只有 $L_1$ 亮 |';
+  const nodes = lib.analysisBlockNodes(src, 'tb');
+  // 整表只出一条（div > table），表头不能丢
+  assert.equal(nodes.length, 1, `整张表应只出一条块，实际 ${nodes.length}`);
+  const box = nodes[0];
+  const table = box.children.find((n) => n && n.type === 'table');
+  assert.ok(table, `必须渲染成 <table>：${JSON.stringify(box.children.map((n) => n && n.type))}`);
+  const thead = table.children.find((n) => n && n.type === 'thead');
+  const tbody = table.children.find((n) => n && n.type === 'tbody');
+  assert.ok(thead, '必须有表头 thead（表头曾被误当整行公式抢走）');
+  assert.ok(tbody, '必须有 tbody');
+  const headRow = thead.children[0];
+  assert.equal(headRow.children.length, 7, `表头应有 7 列，实际 ${headRow.children.length}`);
+  // 表头第一格「情形」在（不是被公式化吞掉）
+  assert.equal(textOf(headRow.children[0]), '情形');
+  // 全表不许露 $、不许露竖线（真表格用 <table> 排版，字面 | 不该出现）
+  const txt = flat(nodes);
+  assert.ok(!txt.includes('$'), `表格不许漏 $：${JSON.stringify(txt)}`);
+  assert.ok(!txt.includes('|'), `表格不许漏竖线 |：${JSON.stringify(txt)}`);
+  // 表头里 $L_1=S\cdot A$ 排成公式（L 与 sub 存在），不露源码
+  assert.ok(!/\\cdot/u.test(txt), `表格里 \\cdot 不许露源码：${JSON.stringify(txt)}`);
+  // tbody 行数 = 2 条数据行
+  assert.equal(tbody.children.length, 2, `tbody 应 2 行，实际 ${tbody.children.length}`);
+});
+
 test('split reader: compact selection and full-map return preserve the navigator',()=>{
  const test=statefulClient(),lib=test.half.DESCRIPTORS.internals;
  const docs={courses:{courses:[{id:'a',name:'Alpha'}]},knowledgeNetwork:{nodes:[{id:'a1',courseId:'a',chapter:'第1章 A',section:'1.1',name:'First point'},{id:'a2',courseId:'a',chapter:'第1章 A',section:'1.1',name:'Second point'}]}};

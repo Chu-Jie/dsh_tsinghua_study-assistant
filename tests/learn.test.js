@@ -47,6 +47,7 @@ import {
   parseLearnKey,
   htmlToText,
   parseHomeworkDetail,
+  parseDetailAjaxId,
   fetchHomeworkDetail,
 } from '../lib/learn.js';
 
@@ -694,5 +695,93 @@ test('fetchHomeworkDetail：正常页出结构化字段与原文链接；非 200
     assert.equal(out.status, 500);
   } finally {
     restoreBad();
+  }
+});
+
+// ────────────────── 作业说明：静态页是空壳，靠 detail ajax 补 ──────────────────
+//
+// 真机实测（2026-11-16，物理 HW9）：平台把「作业说明」放在一个空的 `#zysm` div 里，
+// 页面脚本随后自己 `MyApp.post("/b/wlxt/kczy/zy/student/detail", {id:"<作业id>"}, …)`
+// 拿到 `msg` 再填进去。所以静态抓页面时说明永远是空的 —— 这就是「平台有、插件显示为空」的根因。
+
+const VIEW_WITH_AJAX = `<!doctype html><html><body>
+<div id="userid">2025000000</div>
+<div class="ttee">作业内容及要求：</div>
+<div class="list"><div class="fl left">作业标题</div><div class="right"><p>9</p></div></div>
+<div class="list"><div class="fl left">作业说明</div><div class="fl right">
+  <div id="zysm" style="height: auto; font-size: 14px; margin-left: 4px;" class="c55">
+
+  </div>
+</div></div>
+<script type="text/javascript">
+  $(function() {
+    var detailUrl = "/b/wlxt/kczy/zy/student/detail";
+    MyApp.post(detailUrl,{id:"26ef84e8a13dda7b01a19a509827069e"},function(data){
+      var zysm=data.msg;
+      $("#zysm").html(MyApp.escapeChars(zysm).replace(/&nbsp;/g, ' '));
+    });
+  });
+</script>
+</body></html>`;
+
+test('parseDetailAjaxId：从页面脚本里抠出 detail ajax 的作业 id', () => {
+  assert.equal(parseDetailAjaxId(VIEW_WITH_AJAX), '26ef84e8a13dda7b01a19a509827069e');
+  // 抠不到就返回 null，让上层退回原有逻辑（不硬编任何 id）
+  assert.equal(parseDetailAjaxId(DETAIL_HTML), null);
+  assert.equal(parseDetailAjaxId(''), null);
+  assert.equal(parseDetailAjaxId(null), null);
+});
+
+test('fetchHomeworkDetail：作业说明为空时，靠 detail ajax 的 msg 补进来', async () => {
+  const calls = [];
+  const restore = stubFetch(async (url, init) => {
+    calls.push({ url: String(url), method: init.method });
+    if (String(url).includes('/f/wlxt/kczy/zy/student/viewYxzy')) {
+      return { status: 200, headers: { get: () => null }, text: async () => VIEW_WITH_AJAX };
+    }
+    if (String(url).includes('/b/wlxt/kczy/zy/student/detail')) {
+      // 平台把说明当 HTML 塞在 msg 里（还带转义实体）
+      const body = JSON.stringify({
+        result: 'success',
+        msg: '&lt;p&gt;1. 22.2&lt;/p&gt; \n  &lt;p&gt;2. 22.3&lt;/p&gt; \n  &lt;p&gt;3. 22.6&lt;/p&gt;',
+      });
+      return { status: 200, headers: { get: () => null }, text: async () => body };
+    }
+    throw new Error('unexpected url ' + url);
+  });
+  try {
+    const out = await fetchHomeworkDetail('2026-2027-1152225553', '26ef84e8a13dda7b01a19a50987506cf', 'JSESSIONID=1; XSRF-TOKEN=tok');
+    assert.equal(out.ok, true);
+    assert.equal(out.detail.title, '9');
+    // 说明被补成纯文本，逐行（相邻 <p> 之间会有空行，这是 htmlToText 对块级标签的正常处理）
+    assert.equal(out.detail.description, '1. 22.2\n\n2. 22.3\n\n3. 22.6');
+    // 确实发了两次请求：先 GET 页面、再 POST detail
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].url.includes('viewYxzy'));
+    assert.equal(calls[1].method, 'POST');
+    assert.ok(calls[1].url.includes('/b/wlxt/kczy/zy/student/detail'));
+    // 平台靠查询串 `_csrf` 校验（复刻 ajaxSend 钩子），learnPost 必须带上
+    assert.ok(calls[1].url.includes('_csrf=tok'));
+  } finally {
+    restore();
+  }
+});
+
+test('fetchHomeworkDetail：detail ajax 失败时退回 null，不把整个详情弄挂', async () => {
+  const restore = stubFetch(async (url) => {
+    if (String(url).includes('/f/wlxt/kczy/zy/student/viewYxzy')) {
+      return { status: 200, headers: { get: () => null }, text: async () => VIEW_WITH_AJAX };
+    }
+    // detail 接口 403（缺 csrf 的典型表现）：补拉失败
+    return { status: 403, headers: { get: () => null }, text: async () => 'forbidden' };
+  });
+  try {
+    const out = await fetchHomeworkDetail('w', 'x', 'JSESSIONID=1');
+    assert.equal(out.ok, true);
+    // 说明补不到就给 null，其余字段照常
+    assert.equal(out.detail.description, null);
+    assert.equal(out.detail.title, '9');
+  } finally {
+    restore();
   }
 });
