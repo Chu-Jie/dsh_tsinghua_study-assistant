@@ -21,11 +21,16 @@ import {
   chatFilePath,
   chatTitleFor,
   clipContext,
+  DURATION_MIN_SECONDS,
+  learningDurationPath,
   newChatId,
+  normalizeDurationRecord,
   normalizeReadingPosition,
   normalizeScope,
   readChatIndex,
   readChatSession,
+  readLearningDurations,
+  appendLearningDuration,
   safeName,
   writeChatSession,
 } from '../lib/study-log.js';
@@ -155,6 +160,60 @@ test('对话落盘：写单条 → 索引重建、按更新时间倒序、路径
     const expected = path.join(dir, '学习记录', '对话', 'c_ds', 'chat_a.json');
     assert.equal(chatFilePath(dir, 'c_ds', 'chat_a'), expected);
     assert.ok(backupRoot(dir).endsWith(path.join('学习记录', '_backup')));
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ─────────────────── 学习时长（C2，2026-11-17） ───────────────────
+
+test('学习时长规整：合法记录补 recordedAt；<5s / 坏字段各自拒收并给 reason', () => {
+  const base = { startAt: '2026-11-17T02:00:00.000Z', endAt: '2026-11-17T02:25:00.000Z', seconds: 1500, scopeType: 'node', mode: 'pomodoro', courseId: 'c_ds', nodeId: 'k1' };
+  const ok = normalizeDurationRecord(base, '2026-11-17T02:25:01.000Z');
+  assert.equal(ok.ok, true);
+  assert.equal(ok.value.seconds, 1500);
+  assert.equal(ok.value.mode, 'pomodoro');
+  assert.equal(ok.value.scopeType, 'node');
+  assert.equal(ok.value.recordedAt, '2026-11-17T02:25:01.000Z', '未带 recordedAt 时补 nowIso');
+
+  // <5 秒不落盘（正好 5 也算合格，与 DURATION_MIN_SECONDS 对齐）
+  assert.equal(normalizeDurationRecord({ ...base, seconds: 4 }).reason, 'bad-seconds');
+  assert.equal(normalizeDurationRecord({ ...base, seconds: DURATION_MIN_SECONDS }).ok, true, '恰好 5 秒要过');
+  assert.equal(normalizeDurationRecord({ ...base, seconds: 1.5 }).reason, 'bad-seconds', '非整数秒拒收');
+  // 起止
+  assert.equal(normalizeDurationRecord({ ...base, startAt: '' }).reason, 'missing-start');
+  assert.equal(normalizeDurationRecord({ ...base, endAt: '' }).reason, 'missing-end');
+  assert.equal(normalizeDurationRecord({ ...base, startAt: 'not-a-date' }).reason, 'bad-time');
+  assert.equal(normalizeDurationRecord({ ...base, endAt: '2026-11-17T01:00:00.000Z' }).reason, 'end-before-start', 'endAt 早于 startAt 拒收');
+  // 白名单
+  assert.equal(normalizeDurationRecord({ ...base, scopeType: 'weird' }).reason, 'bad-scope');
+  assert.equal(normalizeDurationRecord({ ...base, mode: 'timer' }).reason, 'bad-mode');
+  // 路径逃逸
+  assert.equal(normalizeDurationRecord({ ...base, scopeType: 'material', path: '../x.md' }).reason, 'bad-path');
+});
+
+test('学习时长落盘：追加两条 → 读回顺序一致、数量对；路径在 学习记录/学习时长.json', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sa-duration-'));
+  try {
+    assert.deepEqual(await readLearningDurations(dir), [], '空文件应回空数组');
+    const r1 = { startAt: '2026-11-17T02:00:00.000Z', endAt: '2026-11-17T02:25:00.000Z', seconds: 1500, scopeType: 'node', courseId: 'c_ds', nodeId: 'k1', mode: 'pomodoro', recordedAt: '2026-11-17T02:25:01.000Z' };
+    const r2 = { startAt: '2026-11-17T03:00:00.000Z', endAt: '2026-11-17T03:00:30.000Z', seconds: 30, scopeType: 'stopwatch', courseId: 'c_ds', nodeId: 'k2', mode: 'stopwatch', recordedAt: '2026-11-17T03:00:31.000Z' };
+    const w1 = await appendLearningDuration(dir, r1);
+    assert.equal(w1.total, 1);
+    const w2 = await appendLearningDuration(dir, r2);
+    assert.equal(w2.total, 2);
+    const all = await readLearningDurations(dir);
+    assert.equal(all.length, 2);
+    assert.equal(all[0].nodeId, 'k1', '保持追加顺序');
+    assert.equal(all[1].seconds, 30);
+    assert.equal(learningDurationPath(dir), path.join(dir, '学习记录', '学习时长.json'));
+    // 落盘文件结构 {version:1, records:[...]}
+    const raw = JSON.parse(await fs.readFile(learningDurationPath(dir), 'utf8'));
+    assert.equal(raw.version, 1);
+    assert.ok(Array.isArray(raw.records));
+    // 备份目录也要有旧版本（追加写前会备份）
+    const backups = (await fs.readdir(path.join(dir, '学习记录', '_backup'))).filter((name) => name.startsWith('学习时长.json.') && name.endsWith('.bak'));
+    assert.ok(backups.length >= 1, '追加写要进 _backup');
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

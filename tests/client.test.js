@@ -97,7 +97,17 @@ function loadClient(options = {}) {
   const serviceReads = [];
   const injectedStyles = [];
   const context = {
-    window: {},
+    window: { localStorage: options.localStorage ?? (() => {
+      // 最小 localStorage 桩：护眼模式持久化用。默认每次 loadClient 一份全新内存表，
+      // 需要预置初值或断言写回的用例通过 options.localStorage 传入受控桩。
+      const store = new Map();
+      return {
+        getItem: k => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)); },
+        removeItem: k => { store.delete(k); },
+        clear: () => store.clear(),
+      };
+    })() },
     console,
     setTimeout,
     clearTimeout,
@@ -1474,6 +1484,39 @@ test('client.js：点知识点看到预生成的详解（含例题与来历）�
 });
 
 
+test('client.js：知识点详解接入批注层，虚拟文件键用 kp:<nodeId>（2026-11-17 C1 并入 B 卡修复③）', { skip: isPhase1 ? '第 1 阶段空骨架，无资料页' : false }, () => {
+  const probe = statefulClient();
+  const internals = probe.half.DESCRIPTORS.internals;
+  const docs = {
+    courses: { courses: [{ id: 'c_ds', name: '数据结构' }] },
+    knowledgeNetwork: { nodes: [{ id: 'n1', name: '无序向量去重', courseId: 'c_ds', chapter: '第 2 章 向量', section: '2.5', mastery: 1, evidence: [] }] },
+    knowledgeAnalysis: {
+      courses: [{
+        courseId: 'c_ds',
+        points: [{ id: 'n1', title: '无序向量去重', level: '核心', keywords: ['去重'], explain: '先讲人话。', analogy: '像挑苹果。', pitfalls: ['忘了排序'], examples: [{ prompt: '去重', steps: ['判重'], answer: '返回', method: '先判重复' }], sources: [{ file: 'a.pdf', page: 62, quote: '唯一化' }] }],
+      }],
+    },
+  };
+  internals.readKnowledgeUi({ selected: 'n1' });
+  probe.begin();
+  const tree = internals.knowledgeTab({ docs, initialView: 'list' });
+  const flat = probe.flat(tree);
+  // 详解正文里应交给批注层，且 file 键为 kp:n1（函数组件元素只入扁平表不展开，按 type 找）
+  const layer = flat.find((n) => n && n.type === internals.annotationLayer);
+  assert.ok(layer, '详解正文要交给 AnnotationLayer 渲染');
+  assert.equal(layer.props.file, 'kp:n1', '批注虚拟键必须是 kp:<nodeId>');
+  assert.equal(layer.props.mode, 'preview', '详解批注走预览态');
+  // 节点原样传给批注层：正文子树不能是空的，且锚点文本能取到正文叶子（供批注 quote 定位）
+  assert.ok(typeof layer.props.text === 'string' && layer.props.text.length > 0, '批注锚点文本不能为空');
+  assert.ok(Array.isArray(layer.props.nodes) && layer.props.nodes.length > 0, '正文子节点要原样传给批注层');
+  assert.ok(layer.props.text.includes('先讲人话'), `锚点文本要覆盖详解正文：${layer.props.text.slice(0, 80)}`);
+
+  internals.resetKnowledgeUi();
+  internals.resetMaterialsUi();
+  internals.resetNavigation();
+});
+
+
 test('client.js：知识网络布局是层级树（课程→章→点），坐标确定、父子对齐', { skip: isPhase1 ? '第 1 阶段空骨架，无资料页' : false }, () => {
   const { half } = loadClient();
   const internals = half.DESCRIPTORS.internals;
@@ -2745,6 +2788,54 @@ test('material preview: 教材页正文按「排版」读，页眉/分隔线丢�
   assert.ok(flat.includes('电荷元'), `正文要保留：${flat}`);
 });
 
+test('讲义按节切片（C2 翻页）：按 ## 二级标题切，无 ## 回整章，首段章总览单列', () => {
+  const test = statefulClient();
+  const lib = test.half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.splitLectureSections, 'function', 'client 要把讲义分节导出给测试用');
+
+  // ① 正常一章：章标题(#)、若干 `## 节`、节内有 `### 小节`；小节的 ### 不能当节切开
+  const chapter = [
+    '# 第 1 章 绪论',
+    '本章导览文字。',
+    '## 1.1 计算机与算法',
+    '### 1.1.1 概念',
+    '1.1 正文。',
+    '## 1.2 复杂度度量',
+    '### 1.2.1 记号',
+    '1.2 正文。',
+    '## 1.3 复杂度分析',
+    '1.3 正文。',
+  ].join('\n');
+  const secs = lib.splitLectureSections(chapter);
+  // 首段「章总览」（# 标题 + 导览文字）单列一节，然后 1.1 / 1.2 / 1.3 三节
+  assert.equal(secs.length, 4, `应有 4 节（导览+3节），实得：${secs.map((s) => s.title).join(' | ')}`);
+  assert.equal(secs[0].title, '本章导览');
+  assert.ok(secs[0].body.includes('本章导览文字'), '导览体要含导览文字');
+  assert.equal(secs[1].title, '1.1 计算机与算法');
+  assert.ok(secs[1].body.includes('1.1.1 概念'), '### 小节应留在所属节的 body 内，不被切出去');
+  assert.ok(secs[1].body.includes('1.1 正文'), '该节正文在其 body 里');
+  assert.equal(secs[2].title, '1.2 复杂度度量');
+  assert.equal(secs[3].title, '1.3 复杂度分析');
+  // 每节 body 不串到下一节
+  assert.ok(!secs[1].body.includes('1.2 正文'), '1.1 的 body 不能吃到 1.2 的内容');
+
+  // ② 首个 ## 之前没内容 → 不应产生空「章总览」节
+  const noHead = ['## 2.1 甲', '甲正文。', '## 2.2 乙', '乙正文。'].join('\n');
+  const secs2 = lib.splitLectureSections(noHead);
+  assert.equal(secs2.length, 2);
+  assert.equal(secs2[0].title, '2.1 甲');
+
+  // ③ 完全没有 ## 二级标题（章级讲义/退回按章翻）→ 整章当一节
+  const flat = ['# 第 3 章 整章', '没有小节的整章正文。'].join('\n');
+  const secs3 = lib.splitLectureSections(flat);
+  assert.equal(secs3.length, 1, '无 ## 时整章一节');
+  assert.equal(secs3[0].body, flat, 'body 就是原文');
+
+  // ④ 空串不崩
+  assert.equal(lib.splitLectureSections('').length, 1);
+  assert.equal(lib.splitLectureSections(null).length, 1);
+});
+
 test('行内 $$…$$ 不许漏出一个 $（2026-10-31 修：数电讲义「代码原文」根因）', () => {
   const { half } = loadClient();
   const lib = half.DESCRIPTORS.internals;
@@ -3079,12 +3170,12 @@ test('lecture entry: 讲义也能进专注阅读，标题报章名与档位',()=
  f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
  const page={scrollTop:240,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:-120})};
- const focusButtons=f.filter(n=>n.type==='button'&&text(n)==='专注阅读');
- assert.equal(focusButtons.length,1,'讲义打开时只留一个专注阅读按钮（挂在正文卡上，详情卡不重复）');
+ const focusButtons=f.filter(n=>n.type==='button'&&text(n)==='进入学习模式');
+ assert.equal(focusButtons.length,1,'讲义打开时只留一个进入学习模式按钮（挂在正文卡上，详情卡不重复）');
  focusButtons[0].props.onClick({currentTarget:{}});f=render();
  assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'true');
  assert.ok(f.some(n=>n.type==='strong'&&text(n).includes('讲义 C')),'专注标题要报档位');
- f.find(n=>n.type==='button'&&text(n)==='退出专注阅读').props.onClick();f=render();
+ f.find(n=>n.type==='button'&&text(n)==='退出学习模式').props.onClick();f=render();
  assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
 });
 
@@ -3143,7 +3234,7 @@ test('lecture links: 专注阅读垫不透明纸底，字号跟随 DSH 内容字
  f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
  const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
- f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();
+ f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
  const pane=()=>f.find(n=>n.props?.className==='sa-reader-pane');
  const sizeLabel=()=>{const outs=f.filter(n=>n.props?.className==='sa-zoom-value');assert.equal(outs.length,1,'专注标题栏只留一个字号读数');return text(outs[0]);};
  const press=(label)=>{f.find(n=>n.type==='button'&&(n.props?.['aria-label']===label||text(n)===label)).props.onClick();f=render();};
@@ -3185,7 +3276,7 @@ test('read scale: 适应窗口按阅读区宽度反算倍率，夹在 A+/A− �
  const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
  const setPane=(extra)=>{f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0}),...extra};};
  setPane({clientWidth:800});
- f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();
+ f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
  const pane=()=>f.find(n=>n.props?.className==='sa-reader-pane');
  const press=(label)=>{f.find(n=>n.type==='button'&&(n.props?.['aria-label']===label||text(n)===label)).props.onClick();f=render();};
  // 按钮本身要在场、要有 aria-label（源码级要求：新按钮不能只靠肉眼找）
@@ -3213,10 +3304,218 @@ test('focus reading: entry, exit and close retain the same selected content',()=
  function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs}));}
  let f=render();const page={scrollTop:240,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:-120})};
- f.find(n=>n.type==='button'&&text(n)==='专注阅读').props.onClick({currentTarget:{}});f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'true');
+ f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'true');
  assert.ok(f.some(n=>n.type==='h3'&&text(n)==='Focus point'));
- f.find(n=>n.type==='button'&&text(n)==='退出专注阅读').props.onClick();f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
+ f.find(n=>n.type==='button'&&text(n)==='退出学习模式').props.onClick();f=render();assert.equal(f.find(n=>n.props?.className==='sa-reader-pane').props['data-focus-reader'],'false');
  assert.equal(page.scrollTop,240);assert.ok(f.some(n=>n.props?.id==='sa-kp-detail'));
+});
+
+test('学习模式（2026-11-17 C1）：进入后打 data-study-mode，顶部三功能位空壳就位，退出后摘掉',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+ lib.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs}));};
+ let f=render();
+ const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+ // 入口按钮文案已从「专注阅读」改为「进入学习模式」
+ f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
+ const pane=f.find(n=>n.props?.className==='sa-reader-pane');
+ assert.equal(pane.props['data-study-mode'],'true','进入学习模式后 sa-reader-pane 要打 data-study-mode="true"');
+ assert.equal(pane.props['data-focus-reader'],'true','旧 data-focus-reader 仍保留（兼容与既有断言）');
+ // 顶部条同时带 sa-study-header 类与三个 slot
+ assert.ok(f.some(n=>n.props?.className==='sa-focus-header sa-study-header'),'顶部条要带 sa-study-header');
+ const slots=f.filter(n=>String(n.props?.className??'').includes('sa-study-slot')&&n.props?.['data-slot']);
+ assert.deepEqual(slots.map(n=>n.props['data-slot']).sort(),['clock','marks','switch'],'三功能位 data-slot 必须是 clock/switch/marks');
+ // 退出后两个标记都摘掉
+ f.find(n=>n.type==='button'&&text(n)==='退出学习模式').props.onClick();f=render();
+ const pane2=f.find(n=>n.props?.className==='sa-reader-pane');
+ assert.equal(pane2.props['data-study-mode'],'false','退出后 data-study-mode 要回 false');
+ assert.equal(pane2.props['data-focus-reader'],'false');
+ // CSS：全屏靠 position:fixed + 极大 z-index，且旧 data-focus-reader 纸底选择器仍在（降级/兼容）
+ const css=fs.readFileSync(CLIENT_FILE,'utf8');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\{[^}]*position:fixed/.test(css),'学习模式必须 position:fixed 全屏');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\{[^}]*z-index:2147483000/.test(css),'学习模式面 z-index 要够大以盖侧边栏');
+ assert.ok(/\.sa-root:has\(\.sa-reader-pane\[data-study-mode="true"\]\)\{z-index:2147483000\}/.test(css),'学习模式下 .sa-root 要抬 z-index');
+ assert.ok(/\.sa-study-slot\{[^}]*border:1px dashed/.test(css),'三功能位占位要有可辨识的虚线框');
+ // C1fix（2026-11-17）：工具栏改为窗口左侧竖条，避开 DSH 顶部栏；正文容器 padding-left 让位。
+ assert.ok(/\.sa-focus-header\{[^}]*position:fixed/.test(css),'C1fix：工具栏要 fixed 定位（不再 sticky 顶部）');
+ assert.ok(/\.sa-focus-header\{[^}]*left:0/.test(css),'C1fix：工具栏贴窗口左侧');
+ assert.ok(/\.sa-focus-header\{[^}]*flex-direction:column/.test(css),'C1fix：工具栏竖直排列');
+ assert.ok(!/\.sa-focus-header\{[^}]*position:sticky/.test(css),'C1fix：工具栏不能再是 sticky 顶部（会与 DSH 顶部栏重叠）');
+ assert.ok(/\.sa-study-slots\{[^}]*flex-direction:column/.test(css),'C1fix：三功能位容器竖直排列');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\{[^}]*padding:18px 18px 18px 212px/.test(css),'C1fix：正文要给左侧竖条让位（padding-left）');
+});
+
+test('护眼模式（2026-11-17 C1feat）：开关在学习模式竖条内、aria-pressed 随点击翻转、data-eye-care 随状态挂/摘',()=>{
+ const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+ lib.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs}));};
+ let f=render();
+ const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+ f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
+ // 开关存在：学习模式下竖条里有「护眼：关」按钮，aria-pressed=false
+ const toggleOf=()=>f.find(n=>n.type==='button'&&(text(n)==='护眼：开'||text(n)==='护眼：关'));
+ let toggle=toggleOf();
+ assert.ok(toggle,'学习模式竖条里要有护眼开关');
+ assert.equal(toggle.props['aria-pressed'],'false','初始关闭时 aria-pressed=false');
+ assert.equal(text(toggle),'护眼：关','初始关闭时文案为「护眼：关」');
+ // 未开护眼时，学习模式面不带 data-eye-care（不套护眼变量）
+ let pane=f.find(n=>n.props?.className==='sa-reader-pane');
+ assert.notEqual(pane.props['data-eye-care'],'true','未开护眼时 data-eye-care 不是 true');
+ // 点开关：翻成开，aria-pressed=true、文案「护眼：开」、pane 挂 data-eye-care="true"
+ toggle.props.onClick();f=render();
+ toggle=toggleOf();
+ assert.equal(toggle.props['aria-pressed'],'true','打开后 aria-pressed=true');
+ assert.equal(text(toggle),'护眼：开','打开后文案为「护眼：开」');
+ pane=f.find(n=>n.props?.className==='sa-reader-pane');
+ assert.equal(pane.props['data-eye-care'],'true','打开护眼后学习模式面要挂 data-eye-care="true"');
+ // 再点：关回，data-eye-care 摘掉
+ toggle.props.onClick();f=render();
+ assert.equal(toggleOf().props['aria-pressed'],'false','再次点击回到关闭');
+ assert.notEqual(f.find(n=>n.props?.className==='sa-reader-pane').props['data-eye-care'],'true','关护眼后 data-eye-care 不是 true');
+ // CSS：护眼覆盖选择器存在，含 --sa-eye-bg / --sa-eye-fg，且有暗色分支（暖深底）
+ const css=fs.readFileSync(CLIENT_FILE,'utf8');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\]\{[^}]*--sa-eye-bg:#f5ebd0/.test(css),'浅色护眼要用米黄底 #f5ebd0');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\]\{[^}]*--sa-eye-fg:#2b2b26/.test(css),'浅色护眼要用暖黑字 #2b2b26');
+ assert.ok(/body\[data-ds-dark-theme\] \.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\]\{[^}]*--sa-eye-bg:#2e2a20/.test(css),'暗色护眼要用暖深底 #2e2a20，不能铺亮米黄');
+ assert.ok(/body\[data-ds-dark-theme\] \.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\]\{[^}]*--sa-eye-fg:#e8e2cf/.test(css),'暗色护眼要用暖米字 #e8e2cf');
+ // 返修（「中间颜色基本没变」）：护眼时阅读面要 background-image:none（去掉 alias 层叠色白底），
+ // 且正文卡 .sa-card / .sa-node-detail 要透明（去掉自带 background:var(--dsw-alias-bg-layer-1) 的白底遮盖）。
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\]\{[^}]*background-image:none/.test(css),'护眼要让阅读面去掉白底 background-image');
+ assert.ok(/\.sa-reader-pane\[data-study-mode="true"\]\[data-eye-care="true"\] \.sa-card,[\s\S]{0,80}\.sa-node-detail\{background:transparent/.test(css),'护眼要让正文卡透明，露出米黄纸底');
+ // 三插槽结构不被护眼开关挤占：clock/switch/marks 仍在
+ const slots=f.filter(n=>String(n.props?.className??'').includes('sa-study-slot')&&n.props?.['data-slot']);
+ assert.deepEqual(slots.map(n=>n.props['data-slot']).sort(),['clock','marks','switch'],'护眼开关不能破坏三插槽 clock/switch/marks');
+});
+
+test('护眼模式（2026-11-17 C1feat）：localStorage 读取容错与写回（sa_kp_eye_care）',()=>{
+ // 预置 '1' → 初始即开
+ const pre=true;const store=new Map([['sa_kp_eye_care','1']]);
+ const stub={getItem:k=>(store.has(k)?store.get(k):null),setItem:(k,v)=>{store.set(k,String(v));},removeItem:k=>{store.delete(k);}};
+ const p1=statefulClient({localStorage:stub}),lib1=p1.half.DESCRIPTORS.internals;
+ const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+ lib1.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+ const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const render1=()=>{p1.begin();return p1.flat(lib1.knowledgeTab({docs}));};
+ let f1=render1();
+ const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+ f1.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+ f1.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f1=render1();
+ const t1=f1.find(n=>n.type==='button'&&(text(n)==='护眼：开'||text(n)==='护眼：关'));
+ assert.equal(t1.props['aria-pressed'],'true','预置 sa_kp_eye_care=1 时初始即开');
+ assert.equal(f1.find(n=>n.props?.className==='sa-reader-pane').props['data-eye-care'],'true','预置为开时学习模式面直接带 data-eye-care');
+ // 点击关闭：写回 '0'
+ t1.props.onClick();f1=render1();
+ assert.equal(store.get('sa_kp_eye_care'),'0','关闭护眼要写回 localStorage sa_kp_eye_care=0');
+ // 再开回：写回 '1'
+ f1.find(n=>n.type==='button'&&(text(n)==='护眼：关')).props.onClick();f1=render1();
+ assert.equal(store.get('sa_kp_eye_care'),'1','再打开要写回 sa_kp_eye_care=1');
+
+ // localStorage 抛错时不能崩：getItem/setItem 都抛，初始回 false，切换也不抛
+ const throwing={getItem:()=>{throw new Error('denied');},setItem:()=>{throw new Error('denied');}};
+ const p2=statefulClient({localStorage:throwing}),lib2=p2.half.DESCRIPTORS.internals;
+ lib2.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+ const text2=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+ const render2=()=>{p2.begin();return p2.flat(lib2.knowledgeTab({docs}));};
+ let f2=render2();
+ f2.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+ f2.find(n=>n.type==='button'&&text2(n)==='进入学习模式').props.onClick({currentTarget:{}});f2=render2();
+ const t2=f2.find(n=>n.type==='button'&&(text2(n)==='护眼：开'||text2(n)==='护眼：关'));
+ assert.equal(t2.props['aria-pressed'],'false','localStorage 抛错时初始回 false，不崩');
+ assert.doesNotThrow(()=>t2.props.onClick(),'localStorage 写抛错时切换也不能崩');
+});
+
+// ═══════════════ C2 学习时钟 + 翻页（2026-11-17） ═══════════════
+
+test('学习时钟（C2）：clock 插槽出正计时/番茄两档切换、默认正计时、番茄预设 25/5 50/10',()=>{
+  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+  const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+  lib.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+  const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+  const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs}));};
+  const enter=()=>{let g=render();const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+    g.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+    g.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});return render();};
+  let f=enter();
+  const clockSlot=f.find(n=>n.props?.['data-slot']==='clock');
+  assert.ok(clockSlot,'clock 插槽存在');
+  assert.ok(probe.flat(clockSlot).some(n=>String(n.props?.className??'').includes('sa-clock')),'clock 插槽里渲染了 sa-clock 组件');
+  const tabOf=(label)=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-tab')&&text(n)===label);
+  assert.ok(tabOf('正计时'),'有「正计时」切换按钮');
+  assert.ok(tabOf('番茄钟'),'有「番茄钟」切换按钮');
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-clock-time')&&text(n)==='00:00'),'默认正计时显示 00:00');
+  assert.ok(f.some(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-btn')&&text(n)==='开始'),'正计时有「开始」按钮');
+  tabOf('番茄钟').props.onClick();f=render();
+  const presetOf=(label)=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-preset')&&text(n)===label);
+  assert.ok(presetOf('25/5'),'番茄钟有 25/5 预设');
+  assert.ok(presetOf('50/10'),'番茄钟有 50/10 预设');
+  assert.ok(String(presetOf('25/5').props.className).includes('primary'),'默认选中 25/5');
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-clock-time')&&text(n)==='25:00'),'默认 25/5 档初始显示 25:00');
+  presetOf('50/10').props.onClick();f=render();
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-clock-time')&&text(n)==='50:00'),'切 50/10 后初始显示 50:00');
+});
+
+test('学习时钟（C2）：正计时开始/暂停翻转文案；番茄预设写 localStorage sa_kp_pomodoro',()=>{
+  const store=new Map();
+  const stub={getItem:k=>(store.has(k)?store.get(k):null),setItem:(k,v)=>{store.set(k,String(v));},removeItem:k=>{store.delete(k);}};
+  const probe=statefulClient({localStorage:stub}),lib=probe.half.DESCRIPTORS.internals;
+  const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[{id:'p',name:'Focus point',courseId:'a',chapter:'第1章 A'}]}};
+  lib.readKnowledgeUi({selected:'p',treeCourseId:'a'});
+  const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+  const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs}));};
+  let f=render();const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
+  const startBtn=()=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-btn')&&(text(n)==='开始'||text(n)==='暂停'));
+  assert.equal(text(startBtn()),'开始','正计时初始是「开始」');
+  startBtn().props.onClick();f=render();
+  assert.equal(text(startBtn()),'暂停','点开始后变「暂停」');
+  startBtn().props.onClick();f=render();
+  assert.equal(text(startBtn()),'开始','点暂停后变回「开始」');
+  f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-tab')&&text(n)==='番茄钟').props.onClick();f=render();
+  f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-clock-preset')&&text(n)==='50/10').props.onClick();f=render();
+  assert.equal(store.get('sa_kp_pomodoro'),'50-10','选 50/10 后要写 localStorage sa_kp_pomodoro=50-10');
+});
+
+test('翻页（C2）：switch 插槽出上/下篇 + 下拉；到头按钮 disabled；下拉按序列跳转',()=>{
+  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+  const docs={courses:{courses:[{id:'a',name:'A'}]},knowledgeNetwork:{nodes:[
+    {id:'p1',name:'第一点',courseId:'a',chapter:'第1章 A'},
+    {id:'p2',name:'第二点',courseId:'a',chapter:'第1章 A'},
+    {id:'p3',name:'第三点',courseId:'a',chapter:'第1章 A'},
+  ]}};
+  lib.readKnowledgeUi({selected:'p1',treeCourseId:'a'});
+  const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+  const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs}));};
+  let f=render();const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
+  const switchSlot=f.find(n=>n.props?.['data-slot']==='switch');
+  assert.ok(switchSlot,'switch 插槽存在');
+  assert.ok(probe.flat(switchSlot).some(n=>String(n.props?.className??'').includes('sa-pager')),'switch 插槽里渲染了 sa-pager');
+  const prevBtn=()=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-pager-btn')&&text(n)==='上一篇');
+  const nextBtn=()=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-pager-btn')&&text(n)==='下一篇');
+  assert.equal(prevBtn().props.disabled,true,'第一篇时「上一篇」禁用（到头停）');
+  assert.notEqual(nextBtn().props.disabled,true,'第一篇时「下一篇」可用');
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-pager-count')&&text(n)==='1 / 3'),'计数为 1 / 3');
+  // 点下一篇：DOM 计数变 2 / 3（setSelected 在测试探针里不落 readKnowledgeUi，用计数判跳转）
+  nextBtn().props.onClick();f=render();
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-pager-count')&&text(n)==='2 / 3'),'点下一篇后计数变 2 / 3');
+  const sel=f.find(n=>String(n.props?.className??'').includes('sa-pager-select'));
+  assert.ok(sel,'有下拉跳转 select');
+  const opts=probe.flat(sel).filter(n=>n.type==='option');
+  assert.ok(opts.some(o=>text(o)==='第一点')&&opts.some(o=>text(o)==='第三点'),'下拉含本课程三个知识点');
+  assert.equal(String(sel.props.value),'1','下拉当前值跟着跳到 index 1');
+  // 下拉跳到第三点（index 2）
+  const third=opts.find(o=>text(o)==='第三点');
+  sel.props.onChange({target:{value:third.props.value}});f=render();
+  assert.ok(f.some(n=>String(n.props?.className??'').includes('sa-pager-count')&&text(n)==='3 / 3'),'下拉跳转后计数变 3 / 3');
+  assert.equal(nextBtn().props.disabled,true,'最后一篇时「下一篇」禁用（到头停）');
 });
 
 test('正文缓存：同一份资料只取一次、失败不缓存、页号算不同键（2026-10-29 晚）',async()=>{

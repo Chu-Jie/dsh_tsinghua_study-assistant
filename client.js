@@ -2189,7 +2189,7 @@ window.__ModuleLoader__.load({
 /* 正文字号（2026-10-29）：基准听 DSH 设置里的「内容字号」（宿主把它发布成 body 上的
    --dsh-content-font-size），再乘 --sa-read-scale（专注阅读里的 A−/A+）。子规则改用 em，
    才能跟着一起缩放——原来全是写死的 16px !important，调字号完全没反应。 */
-.sa-reading{max-width:80ch;font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1));line-height:1.85;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
+.sa-reading{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1));line-height:1.85;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
 .sa-reading p{margin:12px 0 0!important;font-size:1em!important;line-height:1.85!important}
 .sa-reading .sa-section-title{padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sa-reading .sa-dock:first-child>.sa-section-title{border:0;padding-top:0}
@@ -2198,7 +2198,7 @@ window.__ModuleLoader__.load({
 .sa-example-answer{font-size:1.0625em!important;font-weight:700;line-height:1.7;margin-top:12px!important;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l1)}
 .sa-reading .sa-grow{white-space:normal;overflow:visible;overflow-wrap:anywhere}
 .sa-reading .sa-formula{font-size:1em!important;line-height:1.8;padding:12px 14px!important;overflow:auto}
-.sa-reading-pre{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1))!important;line-height:1.85!important;font-family:inherit!important;padding:16px!important;max-width:80ch;box-sizing:border-box;overflow-wrap:anywhere}
+.sa-reading-pre{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1))!important;line-height:1.85!important;font-family:inherit!important;padding:16px!important;box-sizing:border-box;overflow-wrap:anywhere}
 /* 批注覆盖层（B1 2026-10-30 / F2 2026-10-31）：标记叠在正文字面上，不改原文。全部走主题令牌。
    F2 起正文本身就由批注层渲染（内联 <mark> 要画在正文里），所以这一层不再自带分隔线，
    分隔线挪到下方「兜底工具条 + 列表」那一块（.sa-annotation-tools）。
@@ -2318,6 +2318,11 @@ window.__ModuleLoader__.load({
 /* 讲义正文挪到详情卡上面后（2026-10-29），详情卡不再独占整栏高度，否则要滚过一整屏空白才看到它 */
 .sa-reader-pane>.sa-card+.sa-node-detail{min-height:0}
 .sa-reader-pane .sa-reading{max-width:100%}
+/* 横向滚动（2026-11-17 C1 并入 B 卡修复）：正文本体已去掉写死 80ch，宽面板里铺满可用宽度；
+   真正的宽内容（多层表格、超长公式、长代码）交给容器横向滚动，而不是把字挤成一列或裁掉。
+   fitReadScale/measureReadColumnWidth 的 80ch「设计行宽」保持不动——「适应窗口」仍按它反算倍率。 */
+.sa-reader-pane .sa-reading .sa-formula,.sa-reader-pane .sa-reading-pre{overflow-x:auto;max-width:100%}
+.sa-reading table{max-width:100%;overflow-x:auto;display:block}
 .sa-reader-pane .sa-reading-pre{max-height:none!important;overflow:visible!important;max-width:100%}
 .sa-reader-pane .sa-reading img{max-width:100%;height:auto}
 .sa-reader-empty{min-height:100%;box-sizing:border-box;margin-bottom:0;padding:28px}
@@ -2363,11 +2368,46 @@ window.__ModuleLoader__.load({
    平时看不出来，可专注面是直接盖在目录/正文上的，那 41~55% 的透明就把下面的字透了上来。
    所以这里在玻璃色下面垫一层宿主静态调色板的实色（浅 neutral-bluish-00 / 深 -875，
    字面量兜底）：普通主题下两层同色，观感不变；玻璃主题下玻璃色叠在白/深底上，不透但仍有釉光。 */
-.sa-reader-pane[data-focus-reader="true"]{position:absolute;inset:0;z-index:8;display:block;height:100%;overflow:auto;overscroll-behavior:contain;--sa-focus-paper:var(--dsw-static-neutral-bluish-00, #fff);--sa-focus-paper-base:#fff;background-color:var(--sa-focus-paper);background-image:linear-gradient(var(--dsw-alias-bg-layer-1),var(--dsw-alias-bg-layer-1));padding:0 18px 18px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+/* 学习模式（2026-11-17 C1）：把「专注阅读」从「占满面板」升级成「全屏覆盖整个 DSH 窗口」。
+   覆盖范围用 position:fixed;inset:0 直接盖住视口（含侧边栏），不再只盖 .sa-root 主面板。
+   层级：.sa-root 自身 isolation:isolate + z-index:1 会形成层叠上下文，其子元素 z-index 只能在
+   .sa-root 内部比较、盖不过侧边栏；所以这里①把根临时抬到极大 z-index（:has 见下一条），
+   ②面本身也取大 z-index 兜底。旧 data-focus-reader 选择器全部保留（测试与降级仍用），
+   新增 data-study-mode 覆盖全屏行为。 */
+.sa-reader-pane[data-study-mode="true"]{position:fixed;inset:0;z-index:2147483000;display:block;height:100%;width:100%;overflow:auto;overscroll-behavior:contain;--sa-focus-paper:var(--dsw-static-neutral-bluish-00, #fff);--sa-focus-paper-base:#fff;background-color:var(--sa-focus-paper);background-image:linear-gradient(var(--dsw-alias-bg-layer-1),var(--dsw-alias-bg-layer-1));padding:18px 18px 18px 212px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+/* 抬根：学习模式下 .sa-root 要盖过兄弟（侧边栏等）；:has 不支持的旧浏览器下由上面的面 z-index 兜底。 */
+.sa-root:has(.sa-reader-pane[data-study-mode="true"]){z-index:2147483000}
+body[data-ds-dark-theme] .sa-reader-pane[data-study-mode="true"]{--sa-focus-paper:var(--dsw-static-neutral-bluish-875, #232324);--sa-focus-paper-base:#232324}
+/* 护眼模式（2026-11-17 C1feat）：只作用于学习模式面。开＝在 [data-study-mode="true"] 上再挂 data-eye-care="true"，
+   用 --sa-eye-bg / --sa-eye-fg 覆盖纸底色与文字色；关＝属性不出现，完全沿用上面的默认纸底（零影响）。
+   浅色主题：米黄底 + 暖黑字（减轻蓝光、久看不累）。暗色主题：暖深底 + 暖米字，避免暗色下铺亮米黄刺眼。
+   竖条 .sa-focus-header 背景引用 --sa-focus-paper-base，会自动跟随米黄/暖深底，与正文同色系。 */
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"]{--sa-eye-bg:#f5ebd0;--sa-eye-fg:#2b2b26;--sa-focus-paper:var(--sa-eye-bg);--sa-focus-paper-base:var(--sa-eye-bg);background-color:var(--sa-eye-bg);background-image:none;color:var(--sa-eye-fg)}
+body[data-ds-dark-theme] .sa-reader-pane[data-study-mode="true"][data-eye-care="true"]{--sa-eye-bg:#2e2a20;--sa-eye-fg:#e8e2cf;--sa-focus-paper:var(--sa-eye-bg);--sa-focus-paper-base:var(--sa-eye-bg);background-color:var(--sa-eye-bg);background-image:none;color:var(--sa-eye-fg)}
+/* 正文容器让位（2026-11-17 C1feat 返修）：正文卡 .sa-card / .sa-node-detail 自带 background:var(--dsw-alias-bg-layer-1)（:2082），
+   会把下层米黄纸底盖成白/灰 —— 这是「中间颜色基本没变」的成因。护眼时把这些卡的背景改成透明/竖条纸色，
+   让米黄（浅）/暖深（暗）纸底透出来，文字与标题也统一成暖黑/暖米色；边框改暖色调降突兀。 */
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-node-detail{background:transparent;border-color:color-mix(in srgb,var(--sa-eye-fg) 18%,transparent);box-shadow:none;color:var(--sa-eye-fg)}
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card *,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-node-detail *{color:inherit}
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-detail-title,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card h1,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card h2,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card h3,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card h4,
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-card strong{color:var(--sa-eye-fg)}
+.sa-reader-pane[data-study-mode="true"][data-eye-care="true"] .sa-muted{color:color-mix(in srgb,var(--sa-eye-fg) 65%,transparent)}
+/* 兼容旧标记 data-focus-reader（既有测试断言这些选择器；降级/回退时也用）。与 data-study-mode 同款纸底。 */
+.sa-reader-pane[data-focus-reader="true"]{position:fixed;inset:0;z-index:2147483000;display:block;height:100%;overflow:auto;overscroll-behavior:contain;--sa-focus-paper:var(--dsw-static-neutral-bluish-00, #fff);--sa-focus-paper-base:#fff;background-color:var(--sa-focus-paper);background-image:linear-gradient(var(--dsw-alias-bg-layer-1),var(--dsw-alias-bg-layer-1));padding:18px 18px 18px 212px;box-sizing:border-box;border-radius:var(--dsw-radius-sm)}
+.sa-root:has(.sa-reader-pane[data-focus-reader="true"]){z-index:2147483000}
 body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-paper:var(--dsw-static-neutral-bluish-875, #232324);--sa-focus-paper-base:#232324}
 .sa-root:has(.sa-reader-pane[data-focus-reader="true"])>.sa-body{overflow:hidden}
+.sa-root:has(.sa-reader-pane[data-study-mode="true"])>.sa-body{overflow:hidden}
 .sa-knowledge-page:has([data-focus-reader="true"]){animation:none!important;transform:none!important}
+.sa-knowledge-page:has([data-study-mode="true"]){animation:none!important;transform:none!important}
 .sa-reader-pane[data-focus-reader="true"]>.sa-node-detail,.sa-reader-pane[data-focus-reader="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
+.sa-reader-pane[data-study-mode="true"]>.sa-node-detail,.sa-reader-pane[data-study-mode="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
 /* 专注阅读标题条（2026-10-31 F1：修「正文从标题条上方/两侧透出来」）。两个成因，都实测过：
    ① sticky 只会贴到滚动容器**内容盒**的上边缘（Chrome 实测：容器 padding-top 12/18px 时，
       条子 sticky 后 top 仍是 12，正文从那一条带子里滚上来；负 margin-top 也压不上去，
@@ -2377,9 +2417,41 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       带透明度（实测 alpha 0.45），等于把条子本身做成半透明 —— 改成「实色底 + 纸面色」两层：
       实色底（--sa-focus-paper-base，浅 #fff / 深 #232324）保证任何主题下都不透字，
       纸面色（--sa-focus-paper）保留釉光，且不再引用 alias 层叠色。 */
-.sa-focus-header{position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 18px;margin:0 -18px 16px;background-color:var(--sa-focus-paper-base, #fff);background-image:linear-gradient(var(--sa-focus-paper, #fff),var(--sa-focus-paper, #fff));border-bottom:1px solid var(--dsw-alias-border-l1)}
-.sa-focus-header>strong{flex:1;min-width:140px;font-size:18px}
+/* C1fix（2026-11-17）：学习模式工具栏从"顶部 sticky 横条"改为"窗口左侧竖条"。
+   原因：顶部 sticky 横条与 DSH 自身顶部栏重叠、按键点不灵。只改定位，功能/DOM/文案全不动。
+   竖条 fixed 在视口左缘整列到底，避开顶部栏；正文容器用 padding-left 让位（见 .sa-reader-pane[data-study-mode]）。
+   旧 data-focus-reader 的横条样式分支也一并改成左侧竖条，保持降级一致。 */
+.sa-focus-header{position:fixed;left:0;top:0;bottom:0;width:200px;z-index:2147483000;display:flex;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:10px;padding:12px;overflow-y:auto;box-sizing:border-box;background-color:var(--sa-focus-paper-base, #fff);background-image:linear-gradient(var(--sa-focus-paper, #fff),var(--sa-focus-paper, #fff));border-right:1px solid var(--dsw-alias-border-l1)}
+.sa-focus-header>strong{flex:0 0 auto;min-width:0;font-size:18px;line-height:1.3;word-break:break-word}
 .sa-focus-header .sa-muted{font-size:14px}
+/* 竖条底部区：Esc 提示 + 退出按钮贴底（margin-top:auto 把剩余空隙吃掉，让它们沉到竖条底）。 */
+.sa-study-footer{margin-top:auto;display:flex;flex-direction:column;gap:8px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1)}
+/* 学习模式顶部三功能位（2026-11-17 C1）：时钟 / 切文档 / 高光索引。本阶段只占位：虚线框 + 灰字提示，
+   不接任何逻辑；阶段二/三往 .sa-study-slot 内渲染即可，结构与 data-slot 值固定不变。 */
+.sa-study-slots{display:flex;flex-direction:column;align-items:stretch;gap:8px;flex-wrap:nowrap}
+.sa-study-slot{display:inline-flex;align-items:center;justify-content:center;min-height:26px;min-width:52px;padding:2px 8px;border:1px dashed var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);font-size:12px;color:var(--dsw-alias-label-tertiary);background:transparent}
+.sa-study-slot-hint{white-space:nowrap}
+@media (prefers-reduced-motion:no-preference){.sa-study-slot{transition:border-color .15s ease}}
+/* 已填充的插槽（C2）：clock/switch 有内容后不再用虚线占位框，改成常规容器 */
+.sa-study-slot.sa-study-clock,.sa-study-slot.sa-study-switch{border-style:solid;justify-content:flex-start;align-items:stretch;color:var(--dsw-alias-label-secondary)}
+/* 学习时钟（C2）：模式切换 + 预设 + 时间 + 按钮 + 今日累计 */
+.sa-clock{display:flex;flex-direction:column;gap:6px;width:100%}
+.sa-clock-tabs,.sa-clock-presets{display:flex;gap:4px;flex-wrap:wrap}
+.sa-clock-tab,.sa-clock-preset{flex:1 1 auto;min-height:24px;padding:2px 6px;font-size:12px}
+.sa-clock-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sa-clock-time{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;min-width:64px;letter-spacing:.5px}
+.sa-clock-phase{font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.sa-clock-phase[data-phase="studying"]{color:var(--dsw-alias-state-success-primary)}
+.sa-clock-phase[data-phase="break"]{color:var(--dsw-alias-label-secondary)}
+.sa-clock-btn{min-height:24px;padding:2px 8px;font-size:12px}
+.sa-clock-today{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+/* 翻页（C2）：上/下篇 + 计数 + 下拉 */
+.sa-pager{display:flex;flex-direction:column;gap:6px;width:100%}
+.sa-pager-row{display:flex;align-items:center;gap:6px}
+.sa-pager-btn{min-height:24px;padding:2px 6px;font-size:12px;flex:1 1 0;white-space:nowrap}
+.sa-pager-btn:disabled{opacity:.45;cursor:not-allowed}
+.sa-pager-count{font-size:12px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sa-pager-select{width:100%;box-sizing:border-box;font-size:12px;min-height:24px;padding:2px 4px;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1, #fff);color:inherit}
 .sa-zoom-controls{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 .sa-read-size{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
 .sa-read-size .sa-btn{min-height:26px;padding:2px 8px;font-size:13px}
@@ -2387,9 +2459,11 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 @container (max-width:860px){
  .sa-browser-pane{position:static;height:auto}
  .sa-learning-layout[data-full-browser="true"]{height:auto}
- .sa-reader-pane[data-focus-reader="true"]{padding:0 12px 12px}
- /* 窄屏专注面左右内边距缩到 12px，标题条的负 margin 与内 padding 要同步缩，否则又留出 6px 透字带 */
- .sa-focus-header{padding:12px;margin:0 -12px 16px}
+ .sa-reader-pane[data-focus-reader="true"]{padding:12px 12px 12px 132px}
+ .sa-reader-pane[data-study-mode="true"]{padding:12px 12px 12px 132px}
+ /* C1fix：窄屏竖条收窄到 120px，正文让位 132px；字号控件在竖条里自然折行。 */
+ .sa-focus-header{width:120px;padding:10px;gap:8px}
+ .sa-focus-header>strong{font-size:15px}
 }
 @media print{
  .sa-browser-pane,.sa-focus-header,.sa-zoom-controls,.sa-read-size{display:none!important}
@@ -5255,6 +5329,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     // 正文字号倍率（2026-10-29）：专注阅读里 A−/A+ 调的是这个倍率，1 = 完全跟随 DSH 设置里的
     // 「内容字号」。步长 1/16 在 16px 基准下正好 1px 一格，界面显示的是「基准 × 倍率」的整数 px。
     const READ_SCALE_STEP = 0.0625;
+    // 学习时长最短落盘秒数（C2，2026-11-17）：与 lib/study-log.js 的 DURATION_MIN_SECONDS 同值。
+    // 客户端只做提前拦截，服务端仍独立校验（<5 秒一律拒）。
+    const DURATION_MIN_SECONDS = 5;
     const READ_SCALE_MIN = 0.75;
     const READ_SCALE_MAX = 1.75;
     /** 夹到合法区间并对齐步长（坏值一律回 1）。 */
@@ -6988,6 +7065,45 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     };
 
     /**
+     * 讲义正文按「节」切片（C2 学习模式翻页，2026-11-17）。
+     *
+     * 为什么要有：讲义是「一章一个 md」，章内用 `## 1.1 标题` 分节、`### 1.1.1` 分小节。
+     * 学习模式的「上一篇/下一篇」要按**节**翻（章总览 → 各节 → 下一章），而不是按章翻。
+     * 之前 pagerState 直接拿 lectureRows（一章一条）当序列，所以「下一篇」在跳章。
+     *
+     * 规则：
+     *   - 用 `^##\s+\d` 认「节」标题（`##` 二级 + 数字开头，避开 `## 易错清单` 这种无编号的？其实也保留——
+     *     只要 `## ` 二级标题都算一节；但章内的 `# 第 N 页` 页眉是 `#` 一级，不会误切）。
+     *   - 首个 `##` 之前的内容（若有）算「本章导览」一节（index 0），让章总览也是序列的一页。
+     *   - 若整份没有任何 `##` 二级标题 → 整章当一节（退回按章翻，到头停）。
+     * 返回 `[{ title, body }]`；body 保留原始 markdown（交给 MaterialReading 渲染）。
+     */
+    const splitLectureSections = (text) => {
+      const source = String(text ?? '');
+      const lines = source.split('\n');
+      // 找所有 `## ` 二级标题的起始行号（不含 `#` 一级页眉 / `###` 三级小节）。
+      const marks = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        if (/^##(?!#)\s+\S/u.test(lines[i].trim())) marks.push(i);
+      }
+      if (marks.length === 0) {
+        return [{ title: '本章全文', body: source }];
+      }
+      const sections = [];
+      // 首个 ## 之前的章总览（有非空内容才单列一节）。
+      const headEnd = marks[0];
+      const headBody = lines.slice(0, headEnd).join('\n').trim();
+      if (headBody !== '') sections.push({ title: '本章导览', body: lines.slice(0, headEnd).join('\n') });
+      for (let k = 0; k < marks.length; k += 1) {
+        const start = marks[k];
+        const end = k + 1 < marks.length ? marks[k + 1] : lines.length;
+        const titleLine = lines[start].trim().replace(/^##\s+/u, '').trim();
+        sections.push({ title: titleLine || `第 ${k + 1} 节`, body: lines.slice(start, end).join('\n') });
+      }
+      return sections;
+    };
+
+    /**
      * 教材页正文的**预览排版**（2026-10-27 晚加）。
      *
      * 为什么要有：资料页那张「正文卡」原来是 `<pre>` 直出 OCR 的 markdown 原文，
@@ -7255,6 +7371,23 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       // 正文字号倍率（2026-10-29）：专注阅读里的 A−/A+ 只改这个倍率，基准仍然是 DSH「内容字号」
       const [readScale, setReadScale] = useState(() => clampReadScale(restoredUi.readScale));
       const stepReadScale = (delta) => setReadScale(value => clampReadScale(Number(value) + delta));
+      // 护眼模式（2026-11-17 C1feat）：只作用于学习模式面，状态存浏览器 localStorage（key sa_kp_eye_care，'1'/'0'），
+      // 下次进学习模式保持上次选择。初始读取与写回都 try/catch：localStorage 不可用/被禁/无痕模式下一律回 false、不抛错。
+      const EYE_CARE_KEY = 'sa_kp_eye_care';
+      const readEyeCareStored = () => {
+        try {
+          const ls = typeof localStorage !== 'undefined' ? localStorage : (typeof window !== 'undefined' ? window.localStorage : null);
+          return !!ls && ls.getItem(EYE_CARE_KEY) === '1';
+        } catch (error) { return false; }
+      };
+      const writeEyeCareStored = (value) => {
+        try {
+          const ls = typeof localStorage !== 'undefined' ? localStorage : (typeof window !== 'undefined' ? window.localStorage : null);
+          if (ls) ls.setItem(EYE_CARE_KEY, value ? '1' : '0');
+        } catch (error) { /* 写失败静默：不影响本次会话内状态 */ }
+      };
+      const [eyeCare, setEyeCare] = useState(() => readEyeCareStored());
+      const toggleEyeCare = () => setEyeCare(value => { const next = !value; writeEyeCareStored(next); return next; });
       // 「适应窗口」（2026-10-30）：按阅读区实际可用宽度反算倍率。量不到就保持原倍率不动。
       const fitReadToPane = () => {
         const column = measureReadColumnWidth(dshContentFontSize());
@@ -7269,6 +7402,175 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         setFocusReading(true);
       };
       const exitFocusReading = () => setFocusReading(false);
+
+      // ═══════════ 学习时钟（C2，2026-11-17）：正计时 + 番茄钟 ═══════════
+      // 落盘口径：每段「学习场」结束落一条到 学习记录/学习时长.json（<5 秒不记）；
+      // 落盘只在服务端（POST /study-log/duration），客户端只负责计时与触发落盘。
+      // 番茄预设两档（25/5、50/10），不做任意输入，选档存 localStorage key sa_kp_pomodoro。
+      const POMODORO_KEY = 'sa_kp_pomodoro';
+      const POMODORO_PRESETS = [
+        { id: '25-5', label: '25/5', studySec: 25 * 60, breakSec: 5 * 60 },
+        { id: '50-10', label: '50/10', studySec: 50 * 60, breakSec: 10 * 60 },
+      ];
+      const readLocalStorage = (key, fallback) => {
+        try {
+          const ls = typeof localStorage !== 'undefined' ? localStorage : (typeof window !== 'undefined' ? window.localStorage : null);
+          return ls && ls.getItem(key) !== null ? ls.getItem(key) : fallback;
+        } catch (error) { return fallback; }
+      };
+      const writeLocalStorage = (key, value) => {
+        try {
+          const ls = typeof localStorage !== 'undefined' ? localStorage : (typeof window !== 'undefined' ? window.localStorage : null);
+          if (ls) ls.setItem(key, String(value));
+        } catch (error) { /* 写失败静默 */ }
+      };
+      const localDateStamp = (date = new Date()) => {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+      };
+      // 时钟 UI 状态
+      const [clockMode, setClockMode] = useState('stopwatch'); // 'stopwatch' | 'pomodoro'
+      const [pomodoroPresetId, setPomodoroPresetId] = useState(() => {
+        const stored = readLocalStorage(POMODORO_KEY, '25-5');
+        return POMODORO_PRESETS.some((p) => p.id === stored) ? stored : '25-5';
+      });
+      const pomodoroPreset = POMODORO_PRESETS.find((p) => p.id === pomodoroPresetId) ?? POMODORO_PRESETS[0];
+      // 正计时：secElapsed 秒数，running 是否在跑；overallTimerRef 保存整段累计秒（跨暂停）
+      const [stopwatchSec, setStopwatchSec] = useState(0);
+      const [stopwatchRunning, setStopwatchRunning] = useState(false);
+      // 番茄状态机：phase 'idle' | 'studying' | 'break'；remain 剩余秒；running 是否在跑
+      const [pomodoroPhase, setPomodoroPhase] = useState('idle');
+      const [pomodoroRemain, setPomodoroRemain] = useState(pomodoroPreset.studySec);
+      const [pomodoroRunning, setPomodoroRunning] = useState(false);
+      // 「今日累计 X 分钟」（从服务端拉，进入学习模式或落盘后刷新）
+      const [todayMinutes, setTodayMinutes] = useState(null);
+      const durationAnchorRef = useRef(null); // 当前学习段的起点时间戳（ms），null=未开始
+      const durationSigRef = useRef(null); // 当前学习段的落点签名 {scopeType,courseId,nodeId,path,chapterNo}
+      const durationActiveSecRef = useRef(0); // 当前学习段的「有效学习秒」（暂停不计，休息段不累加）
+
+      // 拉「今日累计分钟」（只读；GET /study-log/duration?date=）。
+      const refreshTodayMinutes = async () => {
+        try {
+          const response = await fetch(`${API}/study-log/duration?date=${localDateStamp()}`);
+          const result = await response.json().catch(() => null);
+          if (result?.ok) setTodayMinutes(Math.round((Number(result.totalSeconds) || 0) / 60));
+        } catch (error) { /* 静默 */ }
+      };
+
+      // 计算一「段」的落点签名：当前在读讲义就走 material（带章号+路径），否则走知识点 node。
+      const currentDurationSignature = () => {
+        if (openLectureRow !== null) {
+          return { scopeType: 'material', courseId: String(treeCourseId || ''), nodeId: '', path: lectureFileKey(openPath), chapterNo: String(openLectureRow.lecture?.no ?? '') };
+        }
+        if (selected !== null && selected !== undefined && selectedNode !== null) {
+          return { scopeType: 'node', courseId: String(selectedNode.courseId ?? ''), nodeId: String(selected), path: '', chapterNo: '' };
+        }
+        return { scopeType: 'free', courseId: String(effectiveCourseId || ''), nodeId: '', path: '', chapterNo: '' };
+      };
+
+      // 落一条学习时长（服务端校验 ≥5 秒；<5 秒服务端也会拒，这里先本地挡一道）。
+      // 关键：seconds 用「有效学习秒」durationActiveSecRef（暂停不计、休息段不累加），而不是墙钟差——
+      // 墙钟差会把暂停/休息时间也算进去，与任务卡「暂停不计时」的口径冲突。
+      const flushDurationSegment = (reason) => {
+        const anchor = durationAnchorRef.current;
+        const sig = durationSigRef.current;
+        const seconds = Math.round(durationActiveSecRef.current);
+        durationAnchorRef.current = null;
+        durationSigRef.current = null;
+        durationActiveSecRef.current = 0;
+        if (anchor === null || sig === null) return;
+        if (seconds < DURATION_MIN_SECONDS) return; // <5 秒不记
+        const endMs = Date.now();
+        const body = {
+          startAt: new Date(anchor).toISOString(),
+          endAt: new Date(endMs).toISOString(),
+          seconds,
+          scopeType: sig.scopeType,
+          courseId: sig.courseId,
+          nodeId: sig.nodeId,
+          path: sig.path,
+          chapterNo: sig.chapterNo,
+          mode: reason?.mode === 'pomodoro' ? 'pomodoro' : 'stopwatch',
+        };
+        fetch(`${API}/study-log/duration`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify(body),
+        }).then((response) => response.json().catch(() => null)).then((result) => {
+          if (result?.ok) refreshTodayMinutes();
+        }).catch(() => { /* 落盘失败静默，不打断阅读 */ });
+      };
+
+      // 开始一段（如果没在段内就记起点；签名变了就先把旧段落了再开新段）。
+      const beginDurationSegment = () => {
+        const sig = currentDurationSignature();
+        const prevSig = durationSigRef.current;
+        const changed = prevSig === null
+          || prevSig.scopeType !== sig.scopeType || prevSig.courseId !== sig.courseId
+          || prevSig.nodeId !== sig.nodeId || prevSig.path !== sig.path || prevSig.chapterNo !== sig.chapterNo;
+        if (durationAnchorRef.current !== null && changed) flushDurationSegment();
+        if (durationAnchorRef.current === null) { durationAnchorRef.current = Date.now(); durationActiveSecRef.current = 0; }
+        durationSigRef.current = sig;
+      };
+
+      // 进入学习模式时拉一次今日累计；退出学习模式时把未落的学习段落掉（≥5s 才落）。
+      useEffect(() => {
+        if (focusReading) { refreshTodayMinutes(); }
+        else { flushDurationSegment(); setStopwatchRunning(false); setPomodoroRunning(false); }
+        return () => { /* 卸载不额外处理 */ };
+      }, [focusReading]);
+
+      // 正计时推进：每秒 +1（暂停时该 effect 不跑，故不累加，等同「暂停不计时」）。
+      useEffect(() => {
+        if (!stopwatchRunning) return undefined;
+        const id = window.setInterval(() => {
+          setStopwatchSec((value) => value + 1);
+          // 只有「正计时」是当前模式且在跑时，才把这一秒算进当前学习段
+          if (clockMode === 'stopwatch') {
+            beginDurationSegment();
+            durationActiveSecRef.current += 1;
+          }
+        }, 1000);
+        return () => window.clearInterval(id);
+      }, [stopwatchRunning, clockMode]);
+
+      // 番茄推进：studying 阶段递减 remain；到 0 → 落一条学习时长 → 转 break；break 到 0 → 回 studying。
+      useEffect(() => {
+        if (!pomodoroRunning || pomodoroPhase === 'idle') return undefined;
+        const id = window.setInterval(() => {
+          setPomodoroRemain((value) => {
+            if (value > 1) {
+              // studying 且在跑 → 记这一秒有效学习（休息段不累加）
+              if (pomodoroPhase === 'studying') durationActiveSecRef.current += 1;
+              return value - 1;
+            }
+            // 到点
+            if (pomodoroPhase === 'studying') {
+              flushDurationSegment({ mode: 'pomodoro' });
+              setPomodoroPhase('break');
+              return pomodoroPreset.breakSec;
+            }
+            if (pomodoroPhase === 'break') {
+              // 休息结束 → 自动进下一学习段
+              durationAnchorRef.current = Date.now();
+              durationActiveSecRef.current = 0;
+              durationSigRef.current = currentDurationSignature();
+              setPomodoroPhase('studying');
+              return pomodoroPreset.studySec;
+            }
+            return 0;
+          });
+        }, 1000);
+        return () => window.clearInterval(id);
+      }, [pomodoroRunning, pomodoroPhase, pomodoroPreset.studySec, pomodoroPreset.breakSec]);
+
+      const fmtClock = (totalSec) => {
+        const s = Math.max(0, Math.floor(totalSec));
+        const mm = Math.floor(s / 60);
+        const ss = s % 60;
+        return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+      };
+
       useEffect(() => {
         if (!focusReading || typeof window === 'undefined') return;
         const pane=readerRef.current,saved=focusReturnRef.current;
@@ -7427,6 +7729,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const lectureCourse = lectureCourses.find((course) => String(course.courseId) === String(treeCourseId));
       const lectureRows = objectList(lectureCourse?.lectures);
       const [lectureStyle, setLectureStyle] = useState('C');
+      // 当前打开讲义在第几节（C2 学习模式翻节）：0-based；切章/切讲义时复位到 0。
+      const [lectureSection, setLectureSection] = useState(0);
       // 讲义历史版本折叠（W6，决策 D-W6-1：默认折叠、可点开回看，不删旧版）
       const [lectureHistoryOpen, setLectureHistoryOpen] = useState(false);
       const lectureForEntry = (entry) => {
@@ -7452,6 +7756,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         setFullBrowser(false);
         setLectureStyle(String(selectedLecture.key ?? 'C'));
         await showMaterial(selectedLecture.file);
+        setLectureSection(0); // 切章/切讲义 → 回到第一节
         // 阅读区已经看得见就别动滚动条（2026-10-29 晚用户报障：换讲义时面板「跳一下」）。
         // 以前无条件 `scrollIntoView({block:'nearest'})`，宽屏下也会把整块面板带着滚，观感像刷新。
         // 只有窄布局里正文整块落在视野外（`.sa-reader-pane` 顶边在视口底部之外）才把它滚进来。
@@ -8033,9 +8338,19 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         }
       }, [focus]);
 
+      // 讲义按节切片（C2，2026-11-17）：读到的是某章讲义时，阅读区只渲染「当前这一节」的 markdown；
+      // 非讲义资料照旧整份渲染。切片只改喂给 MaterialReading 的 text，不动 detail 本身（批注、页号等仍按原 detail）。
+      const lectureSections = openLectureRow !== null && detail?.status === 'ready' && typeof detail?.data?.text === 'string'
+        ? splitLectureSections(detail.data.text)
+        : null;
+      const safeSectionIndex = lectureSections === null ? 0 : Math.min(Math.max(lectureSection, 0), lectureSections.length - 1);
+      const displayDetail = (lectureSections !== null && lectureSections.length > 0)
+        ? { ...detail, data: { ...detail.data, text: lectureSections[safeSectionIndex].body } }
+        : detail;
+
       // 正文卡与资料页共用同一个阅读面（W3a）；知识点页额外挂「去资料页看 / 专注阅读」与讲义版本行。
       const detailCard = MaterialReadingCard({
-        detail,
+        detail: displayDetail,
         openPath,
         onPage: (no) => showMaterial(openPath, no),
         onClose: () => {
@@ -8054,9 +8369,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           isTreeView && !focusReading
             ? h('button', {
               className: 'sa-btn',
-              title: '占满学习台主面板，Esc 退出并回到原阅读位置',
+              title: '全屏进入沉浸式学习模式，Esc 退出并回到原阅读位置',
               onClick: enterFocusReading,
-            }, '专注阅读')
+            }, '进入学习模式')
             : null,
         ],
         belowHeader: lectureSwitchRow,
@@ -8261,113 +8576,128 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
             h('h3', { className: 'sa-section-title' }, '详解'),
             pill('未分析', 'soon')),
-          h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
+          h('div', { className: 'sa-muted', style: { fontSize: '0.875em', marginTop: 2 } },
             '这个知识点还没有预生成详解（资料分析.json 里没有它的条目）。可以先用下面的「讲解」三档现场生成一份。'))
-        : h('div', { className: 'sa-reading', style: { marginTop: 16 } },
-          h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
-            h('h3', { className: 'sa-section-title' }, '详解'),
-            typeof selectedPoint.level === 'string' && selectedPoint.level !== '' ? pill(selectedPoint.level, 'later') : null,
-            ...(Array.isArray(selectedPoint.keywords) ? selectedPoint.keywords.slice(0, 8) : [])
-              .filter((word) => typeof word === 'string' && word !== '')
-              .map((word, index) => pill(word, 'soon'))),
-          ...analysisBlockNodes(selectedPoint.explain, 'exp'),
-          detailFigures.length > 0
-            ? h('div', { className: 'sa-reading', style: { marginTop: 8 } },
-              ...detailFigures.map((figure, index) => {
-                const page = Number(figure.page);
-                const caption = typeof figure.caption === 'string' ? figure.caption.trim() : '';
-                const hasPage = Number.isFinite(page) && page > 0;
-                return h('figure', { key: `fig${index}`, style: { margin: '8px 0 0' } },
-                  h('img', {
-                    src: `${API}/materials/image?path=${encodeURIComponent(figure.path)}`,
-                    alt: caption,
-                    loading: 'lazy',
-                    style: {
-                      display: 'block',
-                      maxWidth: '100%',
-                      background: '#fff',
-                      border: '1px solid var(--dsw-alias-border-l1)',
-                      borderRadius: 'var(--dsw-radius-sm)',
-                    },
-                    // 图没了（索引登记过但文件被删）就收起，不留一个破图框
-                    onError: (event) => {
-                      if (event !== null && event !== undefined && event.currentTarget !== null) event.currentTarget.style.display = 'none';
-                    },
-                  }),
-                  caption !== '' || hasPage
-                    ? h('figcaption', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
-                      `${caption}${hasPage ? `${caption !== '' ? ' · ' : ''}教材第 ${page} 页` : ''}`)
-                    : null);
-              }))
-            : null,
-          typeof selectedPoint.analogy === 'string' && selectedPoint.analogy.trim() !== ''
-            ? h('div', { style: { marginTop: 8, fontSize: 16, lineHeight: 1.6 } },
-              h('strong', null, '打个比方：'), ...mathInlineNodes(selectedPoint.analogy.trim(), 'ana'))
-            : null,
-          ...(Array.isArray(selectedPoint.formulas) ? selectedPoint.formulas : [])
-            .filter((formula) => formula !== null && typeof formula === 'object')
-            .map((formula, index) => formulaCard(formula, index)),
-          (Array.isArray(selectedPoint.pitfalls) ? selectedPoint.pitfalls : []).filter((item) => typeof item === 'string' && item.trim() !== '').length > 0
-            ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
-              h('h4', { className: 'sa-section-title' }, '易错'),
-              ...selectedPoint.pitfalls.filter((item) => typeof item === 'string' && item.trim() !== '')
-                .map((item, index) => h('div', { key: `pf${index}`, style: { fontSize: 16, lineHeight: 1.6 } },
-                  '✗ ', ...mathInlineNodes(item.trim(), `pf${index}`))))
-            : null,
-          (Array.isArray(selectedPoint.examples) ? selectedPoint.examples : []).filter((item) => item !== null && typeof item === 'object').length > 0
-            ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
-              h('h4', { className: 'sa-section-title' }, '例题'),
-              ...selectedPoint.examples.filter((item) => item !== null && typeof item === 'object').map((example, index) => h('div', {
-                key: `ex${index}`,
-                className: 'sa-example',
-                style: {
-                  marginTop: 6,
-                  padding: '6px 8px',
-                  border: '1px solid var(--dsw-alias-border-l1)',
-                  borderRadius: 'var(--dsw-radius-sm)',
+        : (() => {
+          // 详解正文的子节点（2026-11-17 C1 并入 B 卡修复③：接入 AnnotationLayer，虚拟 key 用 kp:<nodeId>）。
+          // 先把整块内容组织成子节点数组，再整体交给 AnnotationLayer 渲染——
+          // 批注标记要落在正文里（内联 <mark>），状态与浮动气泡共用同一份，与 MaterialReading 一致。
+          const analysisChildren = [
+            h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
+              h('h3', { className: 'sa-section-title' }, '详解'),
+              typeof selectedPoint.level === 'string' && selectedPoint.level !== '' ? pill(selectedPoint.level, 'later') : null,
+              ...(Array.isArray(selectedPoint.keywords) ? selectedPoint.keywords.slice(0, 8) : [])
+                .filter((word) => typeof word === 'string' && word !== '')
+                .map((word, index) => pill(word, 'soon'))),
+            ...analysisBlockNodes(selectedPoint.explain, 'exp'),
+            detailFigures.length > 0
+              ? h('div', { className: 'sa-reading', style: { marginTop: 8 } },
+                ...detailFigures.map((figure, index) => {
+                  const page = Number(figure.page);
+                  const caption = typeof figure.caption === 'string' ? figure.caption.trim() : '';
+                  const hasPage = Number.isFinite(page) && page > 0;
+                  return h('figure', { key: `fig${index}`, style: { margin: '8px 0 0' } },
+                    h('img', {
+                      src: `${API}/materials/image?path=${encodeURIComponent(figure.path)}`,
+                      alt: caption,
+                      loading: 'lazy',
+                      style: {
+                        display: 'block',
+                        maxWidth: '100%',
+                        background: '#fff',
+                        border: '1px solid var(--dsw-alias-border-l1)',
+                        borderRadius: 'var(--dsw-radius-sm)',
+                      },
+                      // 图没了（索引登记过但文件被删）就收起，不留一个破图框
+                      onError: (event) => {
+                        if (event !== null && event !== undefined && event.currentTarget !== null) event.currentTarget.style.display = 'none';
+                      },
+                    }),
+                    caption !== '' || hasPage
+                      ? h('figcaption', { className: 'sa-muted', style: { fontSize: '0.875em', marginTop: 2 } },
+                        `${caption}${hasPage ? `${caption !== '' ? ' · ' : ''}教材第 ${page} 页` : ''}`)
+                      : null);
+                }))
+              : null,
+            typeof selectedPoint.analogy === 'string' && selectedPoint.analogy.trim() !== ''
+              ? h('div', { style: { marginTop: 8, fontSize: '1em', lineHeight: 1.6 } },
+                h('strong', null, '打个比方：'), ...mathInlineNodes(selectedPoint.analogy.trim(), 'ana'))
+              : null,
+            ...(Array.isArray(selectedPoint.formulas) ? selectedPoint.formulas : [])
+              .filter((formula) => formula !== null && typeof formula === 'object')
+              .map((formula, index) => formulaCard(formula, index)),
+            (Array.isArray(selectedPoint.pitfalls) ? selectedPoint.pitfalls : []).filter((item) => typeof item === 'string' && item.trim() !== '').length > 0
+              ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
+                h('h4', { className: 'sa-section-title' }, '易错'),
+                ...selectedPoint.pitfalls.filter((item) => typeof item === 'string' && item.trim() !== '')
+                  .map((item, index) => h('div', { key: `pf${index}`, style: { fontSize: '1em', lineHeight: 1.6 } },
+                    '✗ ', ...mathInlineNodes(item.trim(), `pf${index}`))))
+              : null,
+            (Array.isArray(selectedPoint.examples) ? selectedPoint.examples : []).filter((item) => item !== null && typeof item === 'object').length > 0
+              ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
+                h('h4', { className: 'sa-section-title' }, '例题'),
+                ...selectedPoint.examples.filter((item) => item !== null && typeof item === 'object').map((example, index) => h('div', {
+                  key: `ex${index}`,
+                  className: 'sa-example',
+                  style: {
+                    marginTop: 6,
+                    padding: '6px 8px',
+                    border: '1px solid var(--dsw-alias-border-l1)',
+                    borderRadius: 'var(--dsw-radius-sm)',
+                  },
                 },
-              },
-              h('div', { style: { fontSize: 16, whiteSpace: 'pre-wrap' } }, ...mathInlineNodes(String(example.prompt ?? ''), 'exp')),
-              ...(Array.isArray(example.steps) ? example.steps : [])
-                .filter((step) => typeof step === 'string' && step.trim() !== '')
-                .map((step, stepIndex) => h('div', { key: `st${stepIndex}`, className: 'sa-example-step', style: { fontSize: 14, marginTop: 2 } },
-                  `${stepIndex + 1}. `, ...mathInlineNodes(step.trim(), `st${stepIndex}`))),
-              typeof example.answer === 'string' && example.answer.trim() !== ''
-                ? h('div', { className: 'sa-example-answer', style: { fontSize: 16, marginTop: 4 } }, '答：', ...mathInlineNodes(example.answer.trim(), 'ans'))
-                : null,
-              typeof example.method === 'string' && example.method.trim() !== ''
-                ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } }, '套路：', ...mathInlineNodes(example.method.trim(), 'mtd'))
-                : null)))
-            : null,
-          (Array.isArray(selectedPoint.sources) ? selectedPoint.sources : []).filter((item) => item !== null && typeof item === 'object').length > 0
-            ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
-              h('h4', { className: 'sa-section-title' }, '来历'),
-              ...selectedPoint.sources.filter((item) => item !== null && typeof item === 'object').map((source, index) => {
-                const file = typeof source.file === 'string' ? source.file : '';
-                const page = Number(source.page);
-                return h('div', { key: `src${index}`, className: 'sa-dock', style: { gap: 6, flexWrap: 'wrap', marginTop: 2 } },
-                  h('span', { className: 'sa-grow', style: { fontSize: 14 } },
-                    `${file}${Number.isFinite(page) && page > 0 ? ` · 第 ${page} 页` : ''}`,
-                    // 2026-10-27 晚：引文里的公式同样要排版，否则 `$\boldsymbol{D}$` 这种会原样露出
-                    ...(typeof source.quote === 'string' && source.quote !== ''
-                      ? [' —— 「', ...mathInlineNodes(source.quote, `srcq${index}`), '」']
-                      : [])),
-                  file !== ''
-                    ? h('button', {
-                      className: 'sa-btn',
-                      style: { padding: '0 6px', fontSize: 14 },
-                      title: '读这一页的原文（只读）',
-                      onClick: () => showMaterial(file, Number.isFinite(page) && page > 0 ? page : undefined),
-                    }, '看原文页')
-                    : null);
-              }))
-            : null);
+                h('div', { style: { fontSize: '1em', whiteSpace: 'pre-wrap' } }, ...mathInlineNodes(String(example.prompt ?? ''), 'exp')),
+                ...(Array.isArray(example.steps) ? example.steps : [])
+                  .filter((step) => typeof step === 'string' && step.trim() !== '')
+                  .map((step, stepIndex) => h('div', { key: `st${stepIndex}`, className: 'sa-example-step', style: { fontSize: '0.875em', marginTop: 2 } },
+                    `${stepIndex + 1}. `, ...mathInlineNodes(step.trim(), `st${stepIndex}`))),
+                typeof example.answer === 'string' && example.answer.trim() !== ''
+                  ? h('div', { className: 'sa-example-answer', style: { fontSize: '1em', marginTop: 4 } }, '答：', ...mathInlineNodes(example.answer.trim(), 'ans'))
+                  : null,
+                typeof example.method === 'string' && example.method.trim() !== ''
+                  ? h('div', { className: 'sa-muted', style: { fontSize: '0.875em', marginTop: 2 } }, '套路：', ...mathInlineNodes(example.method.trim(), 'mtd'))
+                  : null)))
+              : null,
+            (Array.isArray(selectedPoint.sources) ? selectedPoint.sources : []).filter((item) => item !== null && typeof item === 'object').length > 0
+              ? h('div', { className: 'sa-reading', style: { marginTop: 16 } },
+                h('h4', { className: 'sa-section-title' }, '来历'),
+                ...selectedPoint.sources.filter((item) => item !== null && typeof item === 'object').map((source, index) => {
+                  const file = typeof source.file === 'string' ? source.file : '';
+                  const page = Number(source.page);
+                  return h('div', { key: `src${index}`, className: 'sa-dock', style: { gap: 6, flexWrap: 'wrap', marginTop: 2 } },
+                    h('span', { className: 'sa-grow', style: { fontSize: 14 } },
+                      `${file}${Number.isFinite(page) && page > 0 ? ` · 第 ${page} 页` : ''}`,
+                      // 2026-10-27 晚：引文里的公式同样要排版，否则 `$\boldsymbol{D}$` 这种会原样露出
+                      ...(typeof source.quote === 'string' && source.quote !== ''
+                        ? [' —— 「', ...mathInlineNodes(source.quote, `srcq${index}`), '」']
+                        : [])),
+                    file !== ''
+                      ? h('button', {
+                        className: 'sa-btn',
+                        style: { padding: '0 6px', fontSize: 14 },
+                        title: '读这一页的原文（只读）',
+                        onClick: () => showMaterial(file, Number.isFinite(page) && page > 0 ? page : undefined),
+                      }, '看原文页')
+                      : null);
+                }))
+              : null,
+          ];
+          // 正文纯文本（供批注锚点定位）：取渲染后的叶子文本，保证与界面显示一致。
+          const analysisBody = annotationRenderedText(analysisChildren);
+          const kpFile = `kp:${selectedNode?.id ?? ''}`;
+          // 用 kp:<nodeId> 作为虚拟文件键走批注层；没有节点 id 时退回纯正文，别写到空键上。
+          if (kpFile === 'kp:') {
+            return h('div', { className: 'sa-reading', style: { marginTop: 16 } }, ...analysisChildren);
+          }
+          return h('div', { style: { marginTop: 16 } },
+            h(AnnotationLayer, { file: kpFile, text: analysisBody, mode: 'preview', nodes: analysisChildren }));
+        })();
 
       const nodeCard = selectedNode === null ? null : h('div', { className: 'sa-card sa-node-detail', id: 'sa-kp-detail' },
         h('div', { className: 'sa-dock' },
           h('h3', { className: 'sa-grow sa-detail-title' }, selectedNode.name ?? '(未命名)'),
           // 有正文打开时，专注阅读按钮挂在上面那张讲义/正文卡上，详情卡不再重复放一个
-          isTreeView && !focusReading && detailCard === null ? h('button', {type:'button',className:'sa-btn',onClick:enterFocusReading,title:'占满学习台主面板，Esc退出并回到原阅读位置'}, '专注阅读') : null,
+          isTreeView && !focusReading && detailCard === null ? h('button', {type:'button',className:'sa-btn',onClick:enterFocusReading,title:'全屏进入沉浸式学习模式，Esc退出并回到原阅读位置'}, '进入学习模式') : null,
           h('button', {
             className: 'sa-btn',
             title: '收起这个知识点的详情（回到列表本身）',
@@ -9501,16 +9831,166 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         : openPath !== null
           ? String(detail?.data?.file ?? openPath)
           : (selectedNode?.name ?? '专注阅读');
+
+      // ═══════════ clock 插槽渲染（C2）：正计时 + 番茄钟 ═══════════
+      // 开关/档位都只看 clockMode/pomodoroPreset；点开始/暂停驱动上面那几条 useEffect。
+      const clockActions = clockMode === 'stopwatch'
+        ? (() => {
+            const running = stopwatchRunning;
+            return [
+              h('output', { className: 'sa-clock-time', 'aria-live': 'polite', title: '本次正计时（暂停不累加）' }, fmtClock(stopwatchSec)),
+              h('button', { type: 'button', className: 'sa-btn sa-clock-btn', onClick: () => {
+                setStopwatchRunning((value) => {
+                  const next = !value;
+                  if (next) beginDurationSegment(); else flushDurationSegment();
+                  return next;
+                });
+              } }, running ? '暂停' : '开始'),
+              h('button', { type: 'button', className: 'sa-btn sa-clock-btn', title: '清零计时（会把当前这段落了再归零）', onClick: () => {
+                flushDurationSegment();
+                setStopwatchRunning(false); setStopwatchSec(0);
+              } }, '归零'),
+            ];
+          })()
+        : (() => {
+            const running = pomodoroRunning;
+            const phaseLabel = pomodoroPhase === 'studying' ? '学习' : pomodoroPhase === 'break' ? '休息' : '待开始';
+            return [
+              h('output', { className: 'sa-clock-time', 'aria-live': 'polite', title: `番茄钟 · ${phaseLabel}` }, fmtClock(pomodoroRemain)),
+              h('span', { className: 'sa-clock-phase', 'data-phase': pomodoroPhase }, phaseLabel),
+              h('button', { type: 'button', className: 'sa-btn sa-clock-btn', onClick: () => {
+                if (pomodoroPhase === 'idle') {
+                  // 首次启动：进 studying，记学习段起点
+                  durationAnchorRef.current = Date.now();
+                  durationSigRef.current = currentDurationSignature();
+                  setPomodoroPhase('studying');
+                  setPomodoroRemain(pomodoroPreset.studySec);
+                  setPomodoroRunning(true);
+                  return;
+                }
+                setPomodoroRunning((value) => {
+                  const next = !value;
+                  if (!next && pomodoroPhase === 'studying') flushDurationSegment({ mode: 'pomodoro' });
+                  return next;
+                });
+              } }, running ? '暂停' : '开始'),
+              h('button', { type: 'button', className: 'sa-btn sa-clock-btn', title: '重置番茄钟（会把当前学习段落了）', onClick: () => {
+                flushDurationSegment({ mode: 'pomodoro' });
+                setPomodoroRunning(false); setPomodoroPhase('idle'); setPomodoroRemain(pomodoroPreset.studySec);
+              } }, '重置'),
+            ];
+          })();
+      const clockSlotContent = h('div', { className: 'sa-clock' },
+        h('div', { className: 'sa-clock-tabs', role: 'group', 'aria-label': '计时模式' },
+          h('button', { type: 'button', className: `sa-btn sa-clock-tab${clockMode === 'stopwatch' ? ' primary' : ''}`, 'aria-pressed': clockMode === 'stopwatch' ? 'true' : 'false', onClick: () => setClockMode('stopwatch') }, '正计时'),
+          h('button', { type: 'button', className: `sa-btn sa-clock-tab${clockMode === 'pomodoro' ? ' primary' : ''}`, 'aria-pressed': clockMode === 'pomodoro' ? 'true' : 'false', onClick: () => setClockMode('pomodoro') }, '番茄钟')),
+        clockMode === 'pomodoro'
+          ? h('div', { className: 'sa-clock-presets', role: 'group', 'aria-label': '番茄时长' },
+              ...POMODORO_PRESETS.map((preset) => h('button', {
+                key: preset.id, type: 'button',
+                className: `sa-btn sa-clock-preset${preset.id === pomodoroPresetId ? ' primary' : ''}`,
+                'aria-pressed': preset.id === pomodoroPresetId ? 'true' : 'false',
+                onClick: () => {
+                  // 换档：重置番茄钟并把 remain 设为该档学习时长
+                  flushDurationSegment({ mode: 'pomodoro' });
+                  setPomodoroPresetId(preset.id); writeLocalStorage(POMODORO_KEY, preset.id);
+                  setPomodoroRunning(false); setPomodoroPhase('idle'); setPomodoroRemain(preset.studySec);
+                },
+              }, preset.label)))
+          : null,
+        h('div', { className: 'sa-clock-row' }, ...clockActions),
+        todayMinutes === null ? null : h('span', { className: 'sa-clock-today', title: '今日在本学习台累计的学习分钟数' }, `今日累计 ${todayMinutes} 分钟`));
+
+      // ═══════════ switch 插槽渲染（C2）：上/下篇 + 下拉跳转（仅本课程内，到头停）═══════════
+      // 序列来源（2026-11-17 改为按节翻）：
+      //   - 打开的是讲义 → 本章讲义正文按「节」切片（splitLectureSections），序列=节；本章最后一节
+      //     「下一篇」跨到下一章讲义的第一节；第一章第一节「上一篇」/ 最后一章最后一节「下一篇」灰（到头停）。
+      //   - 否则 → 知识点序列（netRows 顺序），保持原样。
+      const pagerState = (() => {
+        if (openLectureRow !== null) {
+          // 本章讲义正文（detail.data.text）→ 节切片；detail 未就绪时给一节占位，避免闪 0/0。
+          const chapterText = detail?.status === 'ready' && typeof detail?.data?.text === 'string' ? detail.data.text : '';
+          const sections = splitLectureSections(chapterText);
+          const idx = Math.min(Math.max(lectureSection, 0), sections.length - 1);
+          // 兄弟章（本课程讲义按章号升序）用于跨章翻。
+          const ordered = [...lectureRows].sort((a, b) => Number(a?.no ?? 0) - Number(b?.no ?? 0));
+          const chapterIdx = ordered.findIndex((item) => String(item?.no) === String(openLectureRow.lecture?.no));
+          return { kind: 'lecture', list: sections, index: idx, labelOf: (item) => String(item?.title ?? ''), ordered, chapterIdx };
+        }
+        const list = netRows;
+        const idx = list.findIndex((item) => String(item?.id) === String(selected));
+        return { kind: 'node', list, index: idx, labelOf: (item) => String(item?.name ?? '未命名') };
+      })();
+      const pagerGoto = (state, targetIndex) => {
+        if (state.kind === 'lecture') {
+          if (targetIndex >= 0 && targetIndex < state.list.length) { setLectureSection(targetIndex); return; }
+          // 越界 → 跨章：下一篇进下一章第一节；上一篇进上一章最后一节。
+          const nextChapter = state.ordered[state.chapterIdx + (targetIndex >= state.list.length ? 1 : -1)];
+          if (nextChapter === undefined || nextChapter === null) return; // 到头停
+          const dir = targetIndex >= state.list.length ? 'next' : 'prev';
+          openLecture(nextChapter).then(() => {
+            // openLecture 里已把 lectureSection 复位到 0；进上一章最后一节时需再定位到末节。
+            if (dir === 'prev') {
+              const styles = [...objectList(nextChapter.styles), ...objectList(nextChapter.variants)];
+              const styleFile = (styles.find((item) => String(item.key) === String(lectureStyle))
+                ?? styles.find((item) => String(item.key) === 'C')
+                ?? styles.find((item) => String(item.key) === 'A')
+                ?? styles[0])?.file ?? '';
+              const prevSecs = splitLectureSections(peekMaterialText(styleFile)?.text ?? '');
+              setLectureSection(Math.max(prevSecs.length - 1, 0));
+            }
+          });
+          return;
+        }
+        const item = state.list[targetIndex];
+        if (item === undefined || item === null) return;
+        selectForReading(item.id);
+      };
+      const pagerCanPrev = pagerState.kind === 'lecture'
+        ? (pagerState.index > 0 || pagerState.chapterIdx > 0)
+        : pagerState.index > 0;
+      const pagerCanNext = pagerState.kind === 'lecture'
+        ? (pagerState.index >= 0 && (pagerState.index < pagerState.list.length - 1 || pagerState.chapterIdx < pagerState.ordered.length - 1))
+        : (pagerState.index >= 0 && pagerState.index < pagerState.list.length - 1);
+      const switchSlotContent = pagerState.list.length === 0
+        ? h('span', { className: 'sa-study-slot-hint' }, pagerState.kind === 'lecture' ? '本课程无讲义' : '本课程无知识点')
+        : h('div', { className: 'sa-pager' },
+            h('div', { className: 'sa-pager-row' },
+              h('button', { type: 'button', className: 'sa-btn sa-pager-btn', disabled: !pagerCanPrev, title: pagerCanPrev ? `上一篇：${pagerState.labelOf(pagerState.list[pagerState.index - 1])}` : '已经是第一篇', onClick: () => pagerGoto(pagerState, pagerState.index - 1) }, '上一篇'),
+              h('span', { className: 'sa-pager-count', title: pagerState.kind === 'lecture' ? '当前节 / 本章总节数' : '当前篇 / 总篇数' }, pagerState.index >= 0 ? `${pagerState.index + 1} / ${pagerState.list.length}` : `— / ${pagerState.list.length}`),
+              h('button', { type: 'button', className: 'sa-btn sa-pager-btn', disabled: !pagerCanNext, title: pagerCanNext ? `下一篇：${pagerState.labelOf(pagerState.list[pagerState.index + 1])}` : '已经是最后一篇', onClick: () => pagerGoto(pagerState, pagerState.index + 1) }, '下一篇')),
+            h('select', {
+              className: 'sa-pager-select',
+              'aria-label': pagerState.kind === 'lecture' ? '跳转到本节' : '跳转到知识点',
+              value: pagerState.index >= 0 ? String(pagerState.index) : '',
+              onChange: (event) => {
+                const nextIndex = Number(event.target.value);
+                if (Number.isInteger(nextIndex) && nextIndex >= 0) pagerGoto(pagerState, nextIndex);
+              },
+            },
+              pagerState.index < 0 ? h('option', { value: '' }, '跳转…') : null,
+              ...pagerState.list.map((item, i) => h('option', { key: String(item?.id ?? item?.no ?? i), value: String(i) }, pagerState.labelOf(item)))));
+
+
       const treeWorkspace = h('div', { className: 'sa-learning-layout', 'data-full-browser': fullBrowser ? 'true' : 'false',
         'data-browser-collapsed': browserCollapsed ? 'true' : 'false' },
         h('section', { className: 'sa-browser-pane', 'aria-label': '选择知识点' }, browsingHeader,
           h('div', { className: 'sa-browser-content', id: 'sa-browser-content' },
             fullBrowser ? h('div', { key: kpView, className: 'sa-kp-view sa-full-browser' }, kpView === 'tree' ? treeCard : mindCard) : compactTree)),
         h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: focusReading ? -1 : 0, 'data-focus-reader': focusReading ? 'true' : 'false',
+          'data-study-mode': focusReading ? 'true' : 'false',
+          'data-eye-care': focusReading && eyeCare ? 'true' : 'false',
           style: { '--sa-read-scale': String(readScale) },
           'aria-label': selectedNode ? '知识点阅读：' + selectedNode.name : '知识点阅读区' },
-          focusReading ? h('div',{className:'sa-focus-header'},
+          focusReading ? h('div',{className:'sa-focus-header sa-study-header'},
             h('strong',null,focusReadingTitle),
+            // 学习模式顶部三功能位（2026-11-17 C1）：本阶段只占位空壳，阶段二/三往三个 slot 里填内容。
+            // data-slot 值固定为 clock|switch|marks，供后续复用与测试锚定。
+            h('div',{className:'sa-study-slots','aria-label':'学习模式工具栏'},
+              h('div',{className:'sa-study-slot sa-study-clock','data-slot':'clock'}, clockSlotContent),
+              h('div',{className:'sa-study-slot sa-study-switch','data-slot':'switch'}, switchSlotContent),
+              h('div',{className:'sa-study-slot sa-study-marks','data-slot':'marks'},
+                h('span',{className:'sa-study-slot-hint'},'高光索引'))),
             h('span',{className:'sa-read-size',role:'group','aria-label':'正文字号'},
               h('button',{type:'button',className:'sa-btn','aria-label':'减小字号',title:'字号减 1px',onClick:()=>stepReadScale(-READ_SCALE_STEP)},'A−'),
               h('output',{className:'sa-zoom-value','aria-live':'polite',title:'正文字号：DSH 内容字号 × 本次倍率'},String(readFontPx)+'px'),
@@ -9520,8 +10000,13 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               // 两颗按钮都做 setReadScale(1) 只会让人猜区别，所以合并成一颗。
               h('button',{type:'button',className:'sa-btn','aria-label':'字号 100%',title:`100%：完全跟随 DSH 设置里的「内容字号」（${Math.round(dshContentFontSize())}px）`,onClick:()=>setReadScale(1)},'100%'),
               h('button',{type:'button',className:'sa-btn','aria-label':'字号适应窗口',title:'按阅读区宽度把正文栏拉回 80 字一行：窄面板缩小、宽面板放大',onClick:fitReadToPane},'适应窗口')),
-            h('span',{className:'sa-muted'},'Esc 退出'),
-            h('button',{type:'button',className:'sa-btn',onClick:exitFocusReading},'退出专注阅读')) : null,
+            // 护眼模式开关（2026-11-17 C1feat）：新增独立控件，放字号控件下方、竖条底部区上方。
+            // 不占 data-slot（三插槽 clock/switch/marks 结构不动），aria-pressed 反映开关状态，点击切换并写 localStorage。
+            h('button',{type:'button',className:'sa-btn sa-eye-toggle','aria-pressed':eyeCare?'true':'false',title:'护眼模式：米黄/暖深底 + 暖黑字，减轻蓝光。状态会记住，下次进学习模式保持',onClick:toggleEyeCare},eyeCare?'护眼：开':'护眼：关'),
+            // C1fix：Esc 提示 + 退出按钮收进竖条底部区（.sa-study-footer 用 margin-top:auto 沉底）。
+            h('div',{className:'sa-study-footer'},
+              h('span',{className:'sa-muted'},'Esc 退出'),
+              h('button',{type:'button',className:'sa-btn',onClick:exitFocusReading},'退出学习模式'))) : null,
           // 顺序（2026-10-29 用户定）：讲义正文在上、知识点讲解在下。
           // 讲义是「点进来的那一份」，先读它；详情卡（标题/掌握度/详解…）跟在后头当背景资料。
           // 点知识点时 detailCard 会被收掉（见 selectForReading），所以这里是「一份内容」而不是两张卡叠着。
@@ -10628,6 +11113,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         // 教材页正文卡的排版预览（2026-10-27 晚）：跨行 `$$…$$`、`#` 标题、分隔线，
         // 其余交给 analysisBlockNodes；「排版 / 原文」两档由 MaterialReading 组件切换
         materialPreviewNodes,
+        // 讲义按「节」切片（2026-11-17 C2）：学习模式上/下篇翻节用
+        splitLectureSections,
         // 公式排版（2026-10-26 深夜）：LaTeX → 符号（上下标/分式/根号/希腊字母），
         // 保证界面上不再出现 `\Rightarrow` 这种源码
         latexNodes,
