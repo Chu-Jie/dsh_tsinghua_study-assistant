@@ -2496,73 +2496,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 讲解：让宿主用「这一个知识点」的资料现场生成一档讲解，结果落盘缓存。
-     *
-     * 后端先看缓存：已有就直接回 `cached: true`（面板连点两下不会重复烧 token），
-     * 要重生成显式传 `force`。三档指令原文在服务端，客户端只发档位键。
-     */
-    async function explainNode(nodeId, style, options = {}) {
-      const response = await fetch(`${API}/knowledge/explain`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
-        body: JSON.stringify({ node: nodeId, style, force: options.force === true }),
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /**
-     * 读某一份已生成的讲解正文（只读缓存）。
-     *
-     * 讲解清单只回元信息（档位/字数/时间），正文按需再取一次——
-     * 9 份缓存还行，将来上百份时列表不该一次把全文拉完。
-     */
-    async function explainCached(nodeId, style) {
-      const query = new URLSearchParams({ node: String(nodeId ?? '') });
-      if (typeof style === 'string' && style !== '') query.set('style', style);
-      const response = await fetch(`${API}/knowledge/explain?${query.toString()}`, {
-        headers: { Accept: 'application/json' },
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /**
-     * 已生成讲解清单（只读）：`GET /knowledge/explain` 不带 node 的形态。
-     *
-     * 面板「讲解」视图用它一屏列出所有缓存，避免逐节点点三档才发现生成过什么。
-     */
-    async function explainList() {
-      const response = await fetch(`${API}/knowledge/explain`, { headers: { Accept: 'application/json' } });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /**
-     * 就某一个知识点提问（内嵌聊天，2026-10-24）。
-     *
-     * 与「讲解」不同：要带整段对话历史，服务端不落盘。面板每次把当前线程整段发过去，
-     * 好处是无状态、刷新页面即清空，也不用担心两处写入打架。
-     */
-    async function chatNode(nodeId, messages) {
-      const response = await fetch(`${API}/knowledge/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
-        body: JSON.stringify({ node: nodeId, messages }),
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /**
-     * 学习记录（P3）：时间线 + 阅读位置 + 对话索引一次性取齐（只读）。
+     * 学习记录（P3）：时间线 + 阅读位置一次性取齐（只读）。
      *
      * 这些数据全部旁挂在 `学习台/学习记录/`，不进 /state、不进备份包，
-     * 也不作为任何模型调用的证据（批注/对话不回流，决策 E2）。
+     * 也不作为任何模型调用的证据（批注不回流，决策 E2）。
+     * 对话索引随「交互助手对话」一起下线（2026-11-18），响应里不再有 `chats`。
      */
     async function fetchStudyLog(courseId) {
       const query = new URLSearchParams();
@@ -2570,45 +2508,6 @@ window.__ModuleLoader__.load({
       const suffix = query.toString();
       const response = await fetch(`${API}/study-log${suffix === '' ? '' : `?${suffix}`}`, {
         headers: { Accept: 'application/json' },
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /** 读单条对话全文（续聊 / 回看用）。 */
-    async function fetchChatSession(courseId, chatId) {
-      const query = new URLSearchParams({ chat: String(chatId ?? '') });
-      if (typeof courseId === 'string' && courseId !== '') query.set('courseId', courseId);
-      const response = await fetch(`${API}/study-log?${query.toString()}`, {
-        headers: { Accept: 'application/json' },
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /**
-     * 交互助手对话（P3）：多轮、归档到 学习记录/对话/。
-     * context 只有用户显式点「让助手读当前阅读段落」时才带；服务端会重读磁盘、按 6000 字截断。
-     */
-    async function assistantChat(payload) {
-      const response = await fetch(`${API}/assistant/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json().catch(() => null);
-      if (result === null) return { ok: false, error: `http-${response.status}` };
-      return result;
-    }
-
-    /** 删单条对话（必须 confirm:true，面板上用 window.confirm 二次确认）。 */
-    async function deleteChatSession(courseId, chatId) {
-      const response = await fetch(`${API}/study-log/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
-        body: JSON.stringify({ courseId, id: chatId, confirm: true }),
       });
       const result = await response.json().catch(() => null);
       if (result === null) return { ok: false, error: `http-${response.status}` };
@@ -2626,53 +2525,6 @@ window.__ModuleLoader__.load({
       } catch {
         /* 阅读位置只是锦上添花，写不进不影响看正文 */
       }
-    }
-
-    /** 对话接口的错误说法：复用聊天那套人话，补几条落盘/上下文专有的。 */
-    function assistantChatErrorMessage(result) {
-      const error = String(result?.error ?? 'unknown');
-      const extra = {
-        'missing-course': '这条对话没绑定课程，刷新面板重开一次',
-        'bad-context': '当前阅读段落读不了（可能没登记、页号越界或太长），关掉注入再试',
-        'chat-write-failed': '对话生成好了，但记录写不进磁盘',
-        'chat-missing': '这条对话已经不在了，可能被删了',
-        'confirm-required': '删除需要确认',
-      };
-      if (extra[error] !== undefined) return extra[error];
-      return chatErrorMessage(result);
-    }
-
-    /** 聊天出错的说法：复用讲解那套人话，再补几条聊天专有的。 */
-    function chatErrorMessage(result) {
-      const error = String(result?.error ?? 'unknown');
-      const extra = {
-        'bad-messages': '消息格式不对，刷新面板再试',
-        'too-many-messages': '这一轮对话太长了（上限 20 条），点「重新开始」清一下',
-        'message-too-long': '单条消息太长了（上限 2000 字），拆短一点',
-        'empty-message': '消息不能是空的',
-        'last-must-be-user': '最后一条应该是你的提问',
-        'llm-empty-response': '模型这次没说话，再问一次',
-      };
-      if (extra[error] !== undefined) return extra[error];
-      return explainErrorMessage(result).split('讲解').join('聊天');
-    }
-
-    /** 讲解接口的错误说法：把错误码翻成「人话」，别把 `llm-xxx` 直接甩给用户。 */
-    function explainErrorMessage(result) {
-      const error = String(result?.error ?? 'unknown');
-      const messages = {
-        'llm-unavailable': '宿主没有挂模型，讲解通道不可用',
-        'llm-rate-limit': '模型排队中（429），等一两分钟再点',
-        'llm-timeout': '模型超时了，等一会儿再试',
-        'llm-server': '模型服务出错，稍后再试',
-        'llm-failed': '模型没有给出结果，再试一次',
-        'node-missing': '这个节点在 知识点网络.json 里找不到了，刷新一下页面',
-        'bad-style': '讲解档位不认识（只有 助教推导 / 考前速通 / 只给提示）',
-        'cache-write-failed': '讲解生成好了，但缓存写不进磁盘',
-      };
-      const base = messages[error] ?? `讲解失败：${error}`;
-      const detail = typeof result?.detail === 'string' && result.detail !== '' ? `（${result.detail.slice(0, 120)}）` : '';
-      return base + detail;
     }
 
     /**
@@ -2818,7 +2670,7 @@ window.__ModuleLoader__.load({
 @keyframes sa-spin{to{transform:rotate(360deg)}}
 @keyframes sa-indet{0%{transform:translateX(-110%)}100%{transform:translateX(260%)}}
 .sa-body>div{animation:sa-fade .26s cubic-bezier(.2,.8,.2,1)}
-/* 视图切换过渡（2026-10-24）：树 / 导图 / 图 / 列表 / 讲解之间切换时重放一次淡入，
+/* 视图切换过渡（2026-10-24）：树 / 导图 / 图 / 列表之间切换时重放一次淡入，
    比「整块瞬间换掉」更容易看出「我换了视图」。 */
 .sa-kp-view{animation:sa-fade .2s cubic-bezier(.2,.8,.2,1)}
 .sa-kp-children{animation:sa-rise .24s cubic-bezier(.2,.8,.2,1)}
@@ -2960,20 +2812,11 @@ window.__ModuleLoader__.load({
 .sa-annotation-content{flex:1;min-width:0;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
 .sa-annotation-del{flex:none}
 .sa-annotation-empty{color:var(--dsw-alias-label-secondary);padding:6px 0}
-/* 聊天气泡（2026-10-30）：原来 16px!important 不跟倍率。它不在 .sa-reading 里（父级字号不定），
-   所以不能写 1em，得自己算一遍基准 × 倍率；--sa-read-scale 从阅读区继承，取不到就是 1 = 16px。 */
-.sa-chat-message{font-size:calc(var(--dsh-content-font-size, 16px) * var(--sa-read-scale, 1))!important;line-height:1.8!important;padding:12px 16px!important;border-radius:max(var(--dsw-radius-md,8px),10px)!important;overflow-wrap:anywhere}
-/* 学习记录（P3，2026-10-30）：时间线行 + 多轮对话气泡 */
+/* 学习记录（P3，2026-10-30）：时间线行（对话气泡随交互助手下线，2026-11-18） */
 .sa-log-row{align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l1)}
 .sa-log-row:last-child{border-bottom:0}
 .sa-log-icon{flex:none;width:1.6em;text-align:center;font-size:16px;line-height:1.6}
 .sa-log-title{font-weight:600;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
-.sa-chat-log{display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto;padding:6px 2px;margin:4px 0}
-.sa-chat-msg{display:flex;flex-direction:column;gap:2px;padding:8px 12px;border-radius:max(var(--dsw-radius-md,8px),10px);max-width:92%;overflow-wrap:anywhere}
-.sa-chat-msg.user{align-self:flex-end;background:color-mix(in srgb,var(--dsw-alias-label-primary) 8%,transparent)}
-.sa-chat-msg.assistant{align-self:flex-start;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1)}
-.sa-chat-role{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}
-.sa-chat-text{white-space:pre-wrap;line-height:1.7;color:var(--dsw-alias-label-primary)}
 .sa-btn.disabled{opacity:.55;pointer-events:none}
 .sa-textarea{font-size:16px;padding:10px 12px;border-radius:max(var(--dsw-radius-md,8px),10px);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1)}
 .sa-card>.sa-dock:first-child>.sa-grow:first-child{font-size:18px;font-weight:700;line-height:1.5;color:var(--dsw-alias-label-primary);white-space:normal}
@@ -4851,16 +4694,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     const MASTERY_LABELS = ['未学', '学过', '熟练', '精通'];
 
     /**
-     * 讲解三档（键与标签必须与服务端 `EXPLAIN_STYLES` 一致；指令原文只在服务端）。
-     * 顺序就是任务单里的顺序：先讲透、再速通、最后只给提示。
-     */
-    const EXPLAIN_STYLE_OPTIONS = [
-      { key: 'assistant', label: '助教推导' },
-      { key: 'exam', label: '考前速通' },
-      { key: 'hint', label: '只给提示' },
-    ];
-
-    /**
      * 把 `知识点网络.json` 的 nodes 排成三列：课程 → 章 → 知识点。
      *
      * 为什么不用力导向：节点数在几十到几百之间，力导向每次刷新位置都会变、还会重叠，
@@ -5373,7 +5206,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     /**
      * 搜索命中分段（2026-10-22 深夜）：把 text 按 query 切成 [{text, hit}]。
      *
-     * 为什么单独做纯函数：树/列表/讲解三处都要高亮，而「按什么规则切」一旦各写一份，
+     * 为什么单独做纯函数：树/列表两处都要高亮，而「按什么规则切」一旦各写一份，
      * 就会出现「筛选命中了但视觉上没标出来」的不一致。大小写不敏感；query 去首尾空格；
      * 空词或无命中时返回**整段一个 hit:false**，调用方据此判断「要不要包 h()」。
      */
@@ -6042,8 +5875,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      * 知识点页签（2026-10-21 夜，第七个页签）：从「资料」页抽出来的独立大板块。
      *
      * 为什么独立：知识点是复习主线，塞在资料页第三视图里既看不见、也没法跟题目/资料联动。
-     * 抽出来后资料页只管「看原文、看题目」，这里只管「浏览树、标掌握度、看/生成讲解」。
-     * 这一批只搬家不改行为：图 / 列表 / 讲解三种视图与批量标记原样保留，数据与接口都不动。
+     * 抽出来后资料页只管「看原文、看题目」，这里只管「浏览树、标掌握度、读详解」。
+     * 这一批只搬家不改行为：图 / 列表两种视图与批量标记原样保留，数据与接口都不动。
      */
     // 页签界面状态（2026-10-22 凌晨）：切到别的页签再回来时，展开到哪、搜了什么、选中哪个节点
     // 不该丢——React 组件卸载后 useState 会重置。这份状态没有跨会话价值（也不该进 学习台/ 数据），
@@ -6156,7 +5989,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 
     const KP_UI_DEFAULTS = Object.freeze({ courseId: '', query: '', filter: 'all', view: 'mind', selected: null, openTree: [], mindOpen: null, masteryLevels: [], detailPath: null, treeCourseId: '', subjectTrees: {}, readScale: 1 });
     const KP_UI_FILTERS = ['all', 'unlearned', 'marked', 'due', 'unmounted', 'issues', 'noanalysis'];
-    const KP_UI_VIEWS = ['tree', 'mind', 'graph', 'list', 'explain'];
+    const KP_UI_VIEWS = ['tree', 'mind', 'graph', 'list'];
     let kpUiMemory = { ...KP_UI_DEFAULTS, openTree: [], mindOpen: null };
     // 服务端 `/mutate items` 一次最多 500 条（超了直接 400 `too-many-items`，不再静默截断）。
     // 面板这边先拦一道：命中太多时给一句人话，而不是让用户看到后端错误码。
@@ -6172,7 +6005,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           subjectTrees: Object.fromEntries(Object.keys(next.subjectTrees && typeof next.subjectTrees === 'object' && !Array.isArray(next.subjectTrees) ? next.subjectTrees : {}).slice(0,100).map(id => [id, subjectTreeState(next.subjectTrees, id)])),
           query: typeof next.query === 'string' ? next.query : '',
           filter: KP_UI_FILTERS.includes(next.filter) ? next.filter : 'all',
-          view: KP_UI_VIEWS.includes(next.view) ? next.view : 'mind',
+          // 旧会话可能存着已下线的 'explain'（2026-11-18 E 卡），落到「列表」而不是默认导图
+          view: next.view === 'explain' ? 'list' : (KP_UI_VIEWS.includes(next.view) ? next.view : 'mind'),
           selected: typeof next.selected === 'string' && next.selected !== '' ? next.selected : null,
           openTree: Array.isArray(next.openTree)
             ? next.openTree.filter((item) => typeof item === 'string' && item !== '').slice(0, 400)
@@ -8464,11 +8298,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const [noteDraft, setNoteDraft] = useState(null);
       // 批量改挂靠（2026-10-22 深夜）：把当前命中的节点一次挂到同一层
       const [batchMount, setBatchMount] = useState({ chapter: '', section: '', subsection: '' });
-      // 讲解：当前看的那一档 + 结果（结果带 cached 标记，重生成走 force）
-      const [explainStyle, setExplainStyle] = useState('assistant');
-      const [explainBusy, setExplainBusy] = useState(false);
-      const [explainError, setExplainError] = useState('');
-      const [explainData, setExplainData] = useState(null);
       // 复习可用性（2026-10-21）：搜索 / 筛选 / 树-图-列表切换 / 折叠的章
       const [kpQuery, setKpQuery] = useState(restoredUi.query);
       const [kpFilter, setKpFilter] = useState(restoredUi.filter);
@@ -8485,31 +8314,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const setMindOpen = value => updateSubjectTree({ mindOpen: value });
       // 证据交互（2026-10-21 夜）：展开的是哪一条（键 = 前缀#序号），空串全收
       const [openEvidence, setOpenEvidence] = useState('');
-      // 讲解清单（2026-10-21 夜）：切到「讲解」视图才拉接口；正文按需再取
-      const [explainListState, setExplainListState] = useState({ status: 'idle', items: [], error: '' });
-      const [explainOpen, setExplainOpen] = useState('');
-      const [explainBody, setExplainBody] = useState({ status: 'idle', data: null, error: '' });
-      const explainListAt = useRef(0);
-      // 批量生成一章的讲解（2026-10-21 夜第二段）：按章串行跑，进度写在按钮旁边
-      const [batchChapter, setBatchChapter] = useState('');
-      const [batchStyle, setBatchStyle] = useState('assistant');
-      const [batchState, setBatchState] = useState({ status: 'idle', done: 0, total: 0, skipped: 0, failed: [] });
-      // 内嵌聊天（2026-10-24）：线程留在内存、按节点隔离，关面板即清（服务端不落盘）
-      const [chatThread, setChatThread] = useState([]);
-      const [chatInput, setChatInput] = useState('');
-      const [chatBusy, setChatBusy] = useState(false);
-      const [chatError, setChatError] = useState('');
-      const [chatSources, setChatSources] = useState([]);
-      // 换节点就清空对话；用 ref 记住「现在选的是谁」，避免慢响应回来贴错节点
-      const selectedChatRef = useRef(selected);
-      selectedChatRef.current = selected;
-      useEffect(() => {
-        setChatThread([]);
-        setChatInput('');
-        setChatError('');
-        setChatSources([]);
-      }, [selected]);
-
       // 把界面状态记回模块内存（下次切回本页签时恢复）；只记显示状态，不记接口结果
       useEffect(() => {
         readKnowledgeUi({ courseId, query: kpQuery, filter: kpFilter, view: kpView, selected, openTree, mindOpen, masteryLevels: kpMastery, detailPath: openPath, treeCourseId, subjectTrees: subjectTreesRef.current, readScale });
@@ -8528,7 +8332,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const chooseTreeCourse = id => {
         setFocusReading(false); setFullBrowser(false); setBrowserCollapsed(false);
         setTreeCourseId(id); setCourseId(id); setSelected(null); setOpenPath(null); setDetail(null);
-        setChatBusy(false); setChatError(''); setChatSources([]); setChatThread([]);
         setKpQuery(''); setKpFilter('all'); setKpMastery([]); setMarkNote(''); setMarkError('');
       };
       const selectForReading = (id, options = {}) => {
@@ -8948,10 +8751,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         }
       };
 
-      /**
-       * 点某一档讲解：先问后端缓存（后端已有就直接回），没有再现场生成。
-       * `force` 只在「重新生成」按钮上给 true。
-       */
       // 分栏阅读只重置右侧正文，不让外层页面滚离目录。
       useEffect(() => {
         if (selected === null || selected === undefined || selected === '') return;
@@ -8966,59 +8765,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         target.scrollIntoView({ block: kpView === 'graph' ? 'start' : 'center', behavior: reduced ? 'auto' : 'smooth' });
       }, [selected, kpView, kpFilter, isTreeView]);
-
-      const openExplain = async (style, options = {}) => {
-        if (selected === null) return;
-        setExplainStyle(style);
-        setExplainBusy(true);
-        setExplainError('');
-        try {
-          const result = await explainNode(selected, style, options);
-          if (result.ok !== true) {
-            setExplainData(null);
-            setExplainError(explainErrorMessage(result));
-          } else {
-            setExplainData(result);
-          }
-        } catch (error) {
-          setExplainData(null);
-          setExplainError(String(error?.message ?? error));
-        } finally {
-          setExplainBusy(false);
-        }
-      };
-
-      /**
-       * 发一条消息给「就问这个知识点」的聊天框（2026-10-24）。
-       *
-       * 把整段线程一起发过去（服务端不存历史）；等待期间锁住输入框。
-       * 慢响应回来时如果学生已经换了节点，就把结果丢掉，别贴到别人身上。
-       */
-      const sendChat = async () => {
-        const nodeId = selected;
-        const text = chatInput.trim();
-        if (nodeId === null || text === '' || chatBusy) return;
-        const nextThread = [...chatThread, { role: 'user', content: text }];
-        setChatThread(nextThread);
-        setChatInput('');
-        setChatError('');
-        setChatBusy(true);
-        try {
-          const result = await chatNode(nodeId, nextThread);
-          if (selectedChatRef.current !== nodeId) return;
-          if (result.ok !== true) {
-            setChatError(chatErrorMessage(result));
-          } else {
-            setChatThread([...nextThread, { role: 'assistant', content: String(result.reply ?? '') }]);
-            setChatSources(Array.isArray(result.sources) ? result.sources.map((item) => String(item)) : []);
-          }
-        } catch (error) {
-          if (selectedChatRef.current !== nodeId) return;
-          setChatError(String(error?.message ?? error));
-        } finally {
-          if (selectedChatRef.current === nodeId) setChatBusy(false);
-        }
-      };
 
       /**
        * 树分支上的「＋」：把这一层的课程/章/节/小节塞进加节点表单。
@@ -9099,73 +8845,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           setMarkBusy(false);
         }
       };
-
-      /** 拉讲解清单：5 分钟内不重复请求，避免每次切视图都打接口。 */
-      const loadExplainList = async (force) => {
-        if (force !== true && Date.now() - explainListAt.current < 5 * 60 * 1000) return;
-        setExplainListState((prev) => ({ ...prev, status: 'loading', error: '' }));
-        const result = await explainList().catch(() => ({ ok: false, error: 'network' }));
-        if (result.ok !== true) {
-          setExplainListState((prev) => ({ ...prev, status: 'error', error: String(result.error ?? 'unknown') }));
-          return;
-        }
-        explainListAt.current = Date.now();
-        setExplainListState({ status: 'ready', items: Array.isArray(result.items) ? result.items : [], error: '' });
-      };
-
-      /** 展开/收起某一份讲解：正文按需取一次，收起不缓存、重开再取（缓存本来就是本地的）。 */
-      const toggleExplainBody = async (item) => {
-        const key = `${item.node}|${item.style}`;
-        if (explainOpen === key) {
-          setExplainOpen('');
-          return;
-        }
-        setExplainOpen(key);
-        setExplainBody({ status: 'loading', data: null, error: '' });
-        const result = await explainCached(item.node, item.style).catch(() => ({ ok: false, error: 'network' }));
-        if (result.ok !== true) {
-          setExplainBody({ status: 'error', data: null, error: String(result.error ?? 'unknown') });
-          return;
-        }
-        setExplainBody({ status: 'ready', data: result, error: '' });
-      };
-
-      /**
-       * 批量生成一章的讲解（2026-10-21 夜第二段）：串行排队，一次只烧一份。
-       *
-       * 不并发：宿主那边是一条模型通道，同时发 6 个只会互相排队、还容易撞 429；
-       * 串行还让进度条有真实意义（第 k 个正在生成）。已生成的档默认跳过——
-       * 要重生成请去单节点卡里点「重新生成」，避免手滑把 9 份好缓存全冲掉。
-       */
-      const runChapterBatch = async (group) => {
-        if (batchState.status === 'running') return;
-        const nodes = Array.isArray(group?.nodes) ? group.nodes : [];
-        const listed = await explainList().catch(() => ({ ok: false, error: 'network' }));
-        const known = listed.ok === true && Array.isArray(listed.items) ? listed.items : explainListState.items;
-        const generated = new Set(known.filter((item) => item.style === batchStyle).map((item) => item.node));
-        const targets = nodes.filter((node) => generated.has(node.id) !== true);
-        const skipped = nodes.length - targets.length;
-        if (targets.length === 0) {
-          setBatchState({ status: 'done', done: 0, total: 0, skipped, failed: [] });
-          return;
-        }
-        setBatchState({ status: 'running', done: 0, total: targets.length, skipped, failed: [] });
-        const failed = [];
-        for (const node of targets) {
-          const result = await explainNode(node.id, batchStyle, { force: false })
-            .catch(() => ({ ok: false, error: 'network' }));
-          if (result?.ok !== true) {
-            failed.push(`${node.name ?? node.id}（${explainErrorMessage(result).slice(0, 40)}）`);
-          }
-          setBatchState((prev) => ({ ...prev, done: prev.done + 1, failed: [...failed] }));
-        }
-        setBatchState({ status: 'done', done: targets.length, total: targets.length, skipped, failed });
-        await loadExplainList(true);
-      };
-
-      useEffect(() => {
-        if (kpView === 'explain') loadExplainList(false);
-      }, [kpView]);
 
       // 跨页签联动：从「资料 → 题目」点知识点跳过来时，选中那个节点并切到列表。
       // 从「今日」页点的「去复习」只带 filter，不选中具体节点。
@@ -9410,9 +9089,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       /**
        * 「详解」块（2026-10-23 夜，批 0）：内容来自 `资料分析.json`，离线预生成、点开即读。
        *
-       * 三条纪律：① 没分析过就写「未分析」，绝不拿三档讲解冒充详解；
+       * 三条纪律：① 没分析过就写「未分析」，不拿别的来源冒充详解；
        * ② 每块内容后面都尽量带出处（`sources`），点「看原文页」直接读那一页；
-       * ③ 讲解（三档）保持用户当初的认定原样不动，详解是**新增**的一层。
+       * ③ 详解只读 `资料分析.json`，不在面板上现场生成（生成走 `tools/analysis.mjs`）。
        */
       // 详解正文的渲染小工具（行内 Markdown / 块级切分）已提到工厂作用域：
       // 测试要直接调 analysisInline / analysisBlockNodes，写在组件内部是拿不到的。
@@ -9433,7 +9112,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('h3', { className: 'sa-section-title' }, '详解'),
             pill('未分析', 'soon')),
           h('div', { className: 'sa-muted', style: { fontSize: '0.875em', marginTop: 2 } },
-            '这个知识点还没有预生成详解（资料分析.json 里没有它的条目）。可以先用下面的「讲解」三档现场生成一份。'))
+            '这个知识点还没有预生成详解（资料分析.json 里没有它的条目）。详解由 `tools/analysis.mjs` 离线生成后再回来读。'))
         : (() => {
           // 详解正文的子节点（2026-11-17 C1 并入 B 卡修复③：接入 AnnotationLayer，虚拟 key 用 kp:<nodeId>）。
           // 先把整块内容组织成子节点数组，再整体交给 AnnotationLayer 渲染——
@@ -9705,117 +9384,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('div', { className: 'sa-muted' }, '证据'),
             ...evidenceRows(selectedNode.evidence, 'sel')),
         analysisBlock,
-        h('div', { style: { marginTop: 10 } },
-          h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
-            h('h3', { className: 'sa-section-title' }, '讲解'),
-            ...EXPLAIN_STYLE_OPTIONS.map((option) => h('button', {
-              key: option.key,
-              className: `sa-btn${explainStyle === option.key ? ' primary' : ''}`,
-              disabled: explainBusy,
-              onClick: () => openExplain(option.key),
-            }, option.label)),
-            h('span', { className: 'sa-spacer' }),
-            explainData !== null && explainData.node === selectedNode.id
-              ? h('button', {
-                className: 'sa-btn',
-                disabled: explainBusy,
-                onClick: () => openExplain(explainStyle, { force: true }),
-              }, '重新生成')
-              : null),
-          h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
-            '讲解只用这个节点的证据（题干 / 资料原文），结果存 学习台/讲解缓存/，同一档不会重复生成'),
-          explainBusy
-            ? h('div', { className: 'sa-muted', style: { marginTop: 4 } },
-              h('span', { className: 'sa-spinner' }), '生成中…（首次走模型，通常十几秒）')
-            : null,
-          explainError === '' ? null : h('div', { className: 'sa-error', style: { marginTop: 4 } }, explainError),
-          explainData !== null && explainData.node === selectedNode.id
-            ? h('div', null,
-              h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 4 } },
-                [explainData.styleLabel, explainData.cached === true ? '缓存' : '刚生成', explainData.chars === undefined ? '' : `${explainData.chars} 字`]
-                  .filter((part) => typeof part === 'string' && part !== '').join(' · ')
-                + (Array.isArray(explainData.evidence?.notes) && explainData.evidence.notes.length > 0 ? ` · 跳过 ${explainData.evidence.notes.length} 条证据` : '')),
-              h('pre', {
-              className: 'sa-reading-pre',
-                style: {
-                  margin: '4px 0 0',
-                  maxHeight: '38vh',
-                  overflow: 'auto',
-                  whiteSpace: 'pre-wrap',
-                  fontSize: 14,
-                  lineHeight: 1.55,
-                  background: 'var(--dsw-alias-bg-base)',
-                  border: '1px solid var(--dsw-alias-border-l1)',
-                  borderRadius: 'var(--dsw-radius-sm)',
-                  padding: 8,
-                },
-              }, explainData.text ?? ''))
-            : null),
-        // 内嵌聊天（2026-10-24）：专读这个知识点的题目与资料原文，多轮问答不落盘
-        h('div', { style: { marginTop: 10 } },
-          h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
-            h('h3', { className: 'sa-section-title' }, '就问这个知识点'),
-            h('span', { className: 'sa-muted', style: { fontSize: 14 } }, '只读它的题目与资料原文 · 对话不存档'),
-            h('span', { className: 'sa-spacer' }),
-            chatThread.length > 0
-              ? h('button', {
-                className: 'sa-btn',
-                disabled: chatBusy,
-                onClick: () => {
-                  setChatThread([]);
-                  setChatError('');
-                  setChatSources([]);
-                },
-              }, '重新开始')
-              : null),
-          chatThread.length === 0
-            ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
-              '没听懂就接着问，比如「这步为什么能这么跳」「和前面那个概念什么区别」。答案由模型生成，务必对着来源页核一遍。')
-            : h('div', { style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 } },
-              ...chatThread.map((message, index) => h('div', {
-                key: `chat-${index}`,
-                className: 'sa-chat-message',
-                style: {
-                  alignSelf: message.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '92%',
-                  padding: '6px 8px',
-                  borderRadius: 'var(--dsw-radius-sm)',
-                  fontSize: 14,
-                  lineHeight: 1.6,
-                  whiteSpace: 'pre-wrap',
-                  background: message.role === 'user' ? 'var(--dsw-alias-bg-layer-2)' : 'var(--dsw-alias-bg-base)',
-                  border: '1px solid var(--dsw-alias-border-l1)',
-                },
-              }, message.content))),
-          h('div', { className: 'sa-dock', style: { marginTop: 6, flexWrap: 'wrap', alignItems: 'flex-end' } },
-            h('textarea', {
-              className: 'sa-textarea',
-              style: { minHeight: 40, flex: '1 1 260px' },
-              placeholder: '问这个知识点的具体问题…（Enter 发送，Shift+Enter 换行）',
-              value: chatInput,
-              disabled: chatBusy,
-              onChange: (event) => setChatInput(event.target.value),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter' && event.shiftKey !== true) {
-                  event.preventDefault();
-                  sendChat();
-                }
-              },
-            }),
-            h('button', {
-              className: 'sa-btn primary',
-              disabled: chatBusy || chatInput.trim() === '',
-              onClick: sendChat,
-            }, chatBusy ? '想…' : '发送')),
-          chatBusy
-            ? h('div', { className: 'sa-muted', style: { marginTop: 4 } },
-              h('span', { className: 'sa-spinner' }), '正在读资料…（十几秒）')
-            : null,
-          chatError === '' ? null : h('div', { className: 'sa-error', style: { marginTop: 4 } }, chatError),
-          chatSources.length === 0
-            ? null
-            : h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 4 } },
-              `这次依据：${chatSources.slice(0, 4).join(' · ')}`)),
         markError === '' ? null : h('div', { className: 'sa-error', style: { marginTop: 6 } }, markError));
 
       const addNodeCard = h('div', { className: 'sa-card' },
@@ -9934,7 +9502,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             ['tree', '目录树', '逐级缩进、连接线和字重区分课程、章、节与知识点'],
             ['graph', '图', '三列层级图，一屏看完整门课'],
             ['list', '列表', '平铺成列表，一章一块、可以折叠'],
-            ['explain', '讲解', '已经生成好的讲解，按课程 / 章分组'],
           ].map(([key, label, title]) => h('button', {
             key,
             className: `sa-btn${kpView === key ? ' primary' : ''}`,
@@ -10075,7 +9642,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       }, label));
 
       /**
-       * 命中加粗（2026-10-22 深夜）：树/列表/讲解共用，切法由纯函数 splitByQuery 决定。
+       * 命中加粗（2026-10-22 深夜）：树/列表共用，切法由纯函数 splitByQuery 决定。
        * 没有命中时直接回字符串——别为了统一而给每个名字包一层 <b>，DOM 会白白翻倍。
        */
       const renderMatched = (text, query) => {
@@ -10138,71 +9705,10 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         style: { flexGrow: stats.counts[level], opacity },
       })));
 
-      /**
-       * 一章的批量讲解面板：先告诉「还要生成几份」，串行跑并就地显示进度。
-       *
-       * 默认跳过已生成的档（否则点一次就把全章缓存重烧一遍，token 与时间都是浪费），
-       * 重生成走单节点卡里的「重新生成」，那条路径才会显式带 force。
-       */
-      const batchPanel = (group) => {
-        const nodes = Array.isArray(group.nodes) ? group.nodes : [];
-        const generated = new Set(explainListState.items
-          .filter((item) => item.style === batchStyle)
-          .map((item) => item.node));
-        const pending = nodes.filter((node) => generated.has(node.id) !== true).length;
-        const running = batchState.status === 'running';
-        const failed = Array.isArray(batchState.failed) ? batchState.failed : [];
-        const note = batchState.status === 'done'
-          ? `完成：成功 ${Math.max(0, batchState.total - failed.length)} 份${failed.length > 0 ? `，失败 ${failed.length} 份` : ''}。`
-          : running ? `进度 ${batchState.done}/${batchState.total}…` : '';
-        return h('div', { style: {
-          marginTop: 6,
-          padding: '6px 8px',
-          background: 'var(--dsw-alias-bg-layer-2)',
-          borderRadius: 'var(--dsw-radius-sm)',
-        } },
-        h('div', { className: 'sa-row', style: { flexWrap: 'wrap' } },
-          h('span', { className: 'sa-muted', style: { fontSize: 14 } }, '档位'),
-          ...EXPLAIN_STYLE_OPTIONS.map((option) => h('button', {
-            key: option.key,
-            className: `sa-btn${batchStyle === option.key ? ' primary' : ''}`,
-            style: { padding: '0 6px', fontSize: 14 },
-            disabled: running,
-            onClick: (event) => {
-              event.stopPropagation();
-              setBatchStyle(option.key);
-            },
-          }, option.label)),
-          h('span', { className: 'sa-spacer' }),
-          h('button', {
-            className: 'sa-btn primary',
-            style: { padding: '0 8px', fontSize: 14 },
-            disabled: running || pending === 0,
-            onClick: (event) => {
-              event.stopPropagation();
-              runChapterBatch(group);
-            },
-          }, running
-            ? h('span', null, h('span', { className: 'sa-spinner' }), `生成中 ${batchState.done}/${batchState.total}`)
-            : pending === 0 ? '这一章都已生成' : `生成缺的 ${pending} 份`)),
-        running
-          ? h('div', { className: 'sa-progress' },
-            h('i', { style: { width: `${batchState.total > 0 ? Math.round((batchState.done / batchState.total) * 100) : 0}%` } }))
-          : null,
-        h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 4 } },
-          '串行生成（一次一份，避免撞限流），只补还没生成的档；要重生成请点单个节点。',
-          batchState.skipped > 0 ? ` 本次跳过已有 ${batchState.skipped} 份。` : ''),
-        note === '' ? null : h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } }, note),
-        failed.length > 0
-          ? h('div', { className: 'sa-error', style: { fontSize: 14, marginTop: 2 } }, failed.join('；').slice(0, 240))
-          : null);
-      };
-
       /** 列表里的一章：点标题折叠；折叠只影响显示，不影响批量与统计。 */
       const knowledgeChapter = (group) => {
         const collapsed = isChapterCollapsed(group.key);
         const stats = chapterMasteryStats(group.nodes);
-        const batchOpen = batchChapter === group.key;
         return h('div', { key: group.key, style: { marginBottom: 10 } },
           h('div', {
             className: 'sa-row',
@@ -10216,20 +9722,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           h('span', { className: 'sa-grow' }, `${collapsed ? '▸' : '▾'} `, renderMatched(group.chapter, kpQuery)),
           h('span', { className: 'sa-muted', style: { fontSize: 14 } },
             `${group.courseLabel} · ${group.nodes.length} 个 · 到熟练 ${stats.mastered}`),
-          h('button', {
-            className: `sa-btn${batchOpen ? ' primary' : ''}`,
-            title: '批量生成这一章的讲解（只补还没生成的档）',
-            style: { padding: '0 6px', fontSize: 14 },
-            onClick: (event) => {
-              event.stopPropagation();
-              setBatchChapter(batchOpen ? '' : group.key);
-              // 换一章就清掉上一章的进度，否则「完成 3/3」会挂在新章头下面误导人
-              if (batchOpen !== true) setBatchState({ status: 'idle', done: 0, total: 0, skipped: 0, failed: [] });
-              loadExplainList(false);
-            },
-          }, batchOpen ? '收起' : '讲解')),
-          masteryBar(stats),
-          batchOpen ? batchPanel(group) : null,
+          masteryBar(stats)),
           collapsed ? null : group.nodes.map(knowledgeRow));
       };
 
@@ -10436,116 +9929,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         kpFiltered.length === 0
           ? h('div', { className: 'sa-muted', style: { marginTop: 6 } }, '当前搜索/筛选没有命中节点。')
           : h('div', { className: 'sa-kg-wrap', style: { marginTop: 8 } }, ...chapterGroups.map(knowledgeChapter)));
-
-      /**
-       * 讲解视图（2026-10-21 夜）：一屏列出所有已生成的讲解。
-       *
-       * 以前只能「选中节点 → 逐档点」，生成过什么全靠记忆；这里把 9 份缓存摊开，
-       * 搜索框与工具条共用，正文点开才取（清单只回元信息）。
-       */
-      const explainKeyword = kpQuery.trim().toLowerCase();
-      const explainItems = explainListState.items.filter((item) => explainKeyword === ''
-        || `${item.name} ${item.styleLabel} ${item.style}`.toLowerCase().includes(explainKeyword));
-      // 按「课程 › 章」分组：讲解越攒越多，平铺一列看不出哪几章已经铺满、哪几章还空着
-      const explainGroups = (() => {
-        const byNodeId = new Map(netRows.map((node) => [node.id, node]));
-        const groups = new Map();
-        for (const item of explainItems) {
-          const nodeRow = byNodeId.get(item.node);
-          const courseLabel = nodeRow === undefined || nodeRow === null ? '（节点已删）' : (courseName(nodeRow.courseId) || '未分课程');
-          const chapterLabel = nodeRow === undefined || nodeRow === null ? '' : String(nodeRow.chapter ?? '');
-          const key = `${courseLabel}|${chapterLabel}`;
-          if (!groups.has(key)) groups.set(key, { key, courseLabel, chapterLabel, items: [] });
-          groups.get(key).items.push(item);
-        }
-        return [...groups.values()];
-      })();
-      const explainCovered = new Set(explainListState.items.map((item) => item.node));
-      // 三种状态（2026-10-24 夜）：详解（资料分析.json）和旧「讲解缓存」是两套东西，
-      // 只有摆在一起才知道某个点是「压根没生成」还是「只是还没有详解」。
-      const explainDetailCount = netRows.filter((node) => analysisPoints[String(node?.id ?? '')] !== undefined).length;
-      const explainOnlyCache = netRows.filter((node) => analysisPoints[String(node?.id ?? '')] === undefined
-        && explainCovered.has(node.id)).length;
-      const explainNeither = Math.max(0, netRows.length - explainDetailCount - explainOnlyCache);
-      const explainCard = h('div', { className: 'sa-card' },
-        h('div', { className: 'sa-dock', style: { flexWrap: 'wrap' } },
-          h('span', { className: 'sa-grow' },
-            explainListState.status === 'loading'
-              ? '讲解清单读取中…'
-              : `已生成 ${explainListState.items.length} 份 · 覆盖 ${explainCovered.size} 个节点`
-                + (netRows.length === 0 ? '' : `（知识网络 ${netRows.length} 个节点，还差 ${Math.max(0, netRows.length - explainCovered.size)} 个没生成）`)),
-          netRows.length === 0
-            ? null
-            : h('span', { className: 'sa-muted', style: { fontSize: 14 } },
-              `有详解 ${explainDetailCount} · 只有旧讲解 ${explainOnlyCache} · 都没有 ${explainNeither}`),
-          h('span', { className: 'sa-muted', style: { fontSize: 14 } }, '搜索框对名称/档位生效'),
-          h('button', {
-            className: 'sa-btn',
-            disabled: explainListState.status === 'loading',
-            onClick: () => loadExplainList(true),
-          }, explainListState.status === 'loading' ? '读取中…' : '刷新')),
-        explainListState.error === ''
-          ? null
-          : h('div', { className: 'sa-error', style: { marginTop: 4 } }, `清单读取失败：${explainListState.error}`),
-        explainListState.status === 'ready' && explainItems.length === 0
-          ? h('div', { className: 'sa-muted', style: { marginTop: 6 } },
-            explainListState.items.length === 0
-              ? '还没有生成过讲解：在「树 / 图 / 列表」里选中一个知识点，点「助教推导 / 考前速通 / 只给提示」生成第一份。'
-              : '当前搜索没有命中已生成的讲解。')
-          : null,
-        ...explainGroups.flatMap((group) => [
-          h('div', {
-            key: `group:${group.key}`,
-            className: 'sa-row',
-            style: { marginTop: 8, borderBottom: '1px solid var(--dsw-alias-border-l1)', paddingBottom: 2 },
-          },
-          h('span', { className: 'sa-grow', style: { fontSize: 14 } },
-            [group.courseLabel, group.chapterLabel].filter((part) => part !== '').join(' · ')),
-          h('span', { className: 'sa-muted', style: { fontSize: 14 } }, `${group.items.length} 份`)),
-          ...group.items.map((item) => {
-          const key = `${item.node}|${item.style}`;
-          const expanded = explainOpen === key;
-          return h('div', { key, style: { padding: '3px 0' } },
-            h('div', { className: 'sa-row' },
-              h('button', {
-                className: 'sa-btn',
-                title: expanded ? '收起正文' : '展开正文',
-                style: { textAlign: 'left', flexShrink: 1, minWidth: 0 },
-                onClick: () => toggleExplainBody(item),
-              }, `${expanded ? '▾' : '▸'} `, renderMatched(item.name === '' ? item.node : item.name, kpQuery)),
-              h('span', { className: 'sa-muted', style: { fontSize: 14 } }, item.styleLabel),
-              h('span', { className: 'sa-muted', style: { fontSize: 14, minWidth: 52, textAlign: 'right' } }, `${item.chars} 字`),
-              h('span', { className: 'sa-muted', style: { fontSize: 14, minWidth: 128 } }, item.generatedAt === '' ? '时间未知' : item.generatedAt),
-              item.stale === true ? pill('节点已删', 'soon') : null,
-              analysisPoints[String(item.node ?? '')] === undefined ? null : pill('有详解', 'soon'),
-              h('span', { className: 'sa-spacer' }),
-              h('button', {
-                className: 'sa-btn',
-                title: '回到列表并选中这个节点',
-                style: { padding: '0 6px', fontSize: 14 },
-                onClick: () => {
-                  setSelected(item.node);
-                  setKpView('list');
-                },
-              }, '跳到节点')),
-            expanded
-              ? (explainBody.status === 'loading'
-                ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } }, '读取正文…')
-                : (explainBody.status === 'error'
-                  ? h('div', { className: 'sa-error', style: { marginTop: 2 } }, `正文读取失败：${explainBody.error}`)
-                  : h('pre', {
-              className: 'sa-reading-pre',
-                    style: {
-                      margin: '4px 0 0',
-                      maxHeight: '38vh',
-                      overflow: 'auto',
-                      whiteSpace: 'pre-wrap',
-                      fontSize: 14,
-                    },
-                  }, String(explainBody.data?.text ?? ''))))
-              : null);
-          }),
-        ]));
 
       /**
        * 批量卡：只在命中 ≥2 个时出现。
@@ -11087,7 +10470,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('div',{className:'sa-study-footer'},
               h('span',{className:'sa-muted'},'Esc 退出'),
               h('button',{type:'button',className:'sa-btn',onClick:exitFocusReading},'退出学习模式'))) : null,
-          // 顺序（2026-10-29 用户定）：讲义正文在上、知识点讲解在下。
+          // 顺序（2026-10-29 用户定）：讲义正文在上、知识点详情在下。
           // 讲义是「点进来的那一份」，先读它；详情卡（标题/掌握度/详解…）跟在后头当背景资料。
           // 点知识点时 detailCard 会被收掉（见 selectForReading），所以这里是「一份内容」而不是两张卡叠着。
           lectureHintCard,
@@ -11100,39 +10483,31 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return h('div', { className: 'sa-knowledge-page' },
         kpToolbar,
         isTreeView ? treeWorkspace : h('div', null,
-          h('div', { key: kpView, className: 'sa-kp-view' }, kpView === 'graph' ? graphCard : kpView === 'list' ? knowledgeListCard : explainCard),
+          h('div', { key: kpView, className: 'sa-kp-view' }, kpView === 'graph' ? graphCard : knowledgeListCard),
           // 与树视图同一顺序：讲义正文在前，详情卡在后
           lectureHintCard, detailCard, nodeCard),
-        kpView === 'explain' ? null : dueCard,
-        kpView === 'explain' ? null : batchCard,
+        dueCard,
+        batchCard,
         addNodeCard, jobCard);
     }
 
     // ---------------------------------------------------------------------
-    // 学习记录（P3，2026-10-30）：时间线 + 归档对话 + 交互助手
+    // 学习记录（P3，2026-10-30）：时间线
     // ---------------------------------------------------------------------
     /**
-     * 「学习记录」页签：把「读过 / 批注过 / 标了什么知识点」按时间摊开，并给一个多轮对话面板。
+     * 「学习记录」页签：把「读过 / 批注过 / 标了什么知识点」按时间摊开成时间线。
      *
-     * 边界（决策 E1/E2、契约 §5.6）：
+     * 边界（决策 E1）：
      * - 时间线只用 阅读位置.json / 批注.json / 知识点网络.json 里已有的事实，**不埋点、不统计时长**；
-     * - 对话与批注**不当证据回流**：聊天只喂「当前知识点证据 +（用户显式勾选的）当前阅读段落」；
-     * - 注入阅读段落默认关闭，只有点上面的按钮才带 context，且服务端重读磁盘、6000 字截断。
+     * - 交互助手对话面板已于 2026-11-18（E2 卡）下线，这里只剩头卡 + 时间线；
+     *   磁盘上 `学习记录/对话/` 的旧文件保留只读，不再有入口。
      */
     function RecordsTab({ docs = {}, refresh }) {
       const courses = objectList(docs.courses?.courses);
-      const nodes = objectList(docs.knowledgeNetwork?.nodes);
       const [courseId, setCourseId] = useState('');
       const [log, setLog] = useState(null);
       const [status, setStatus] = useState('loading');
       const [error, setError] = useState('');
-      const [session, setSession] = useState(null); // {id,title,courseId,scope,messages}
-      const [draft, setDraft] = useState('');
-      const [inject, setInject] = useState(false);
-      const [busy, setBusy] = useState(false);
-      const [newNodeId, setNewNodeId] = useState('');
-
-      const courseName = (id) => courses.find((c) => c.id === id)?.name ?? (id || '未匹配课程');
 
       const loadLog = async (cid) => {
         setStatus('loading');
@@ -11140,7 +10515,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const result = await fetchStudyLog(cid);
         if (result.ok !== true) {
           setStatus('error');
-          setError(assistantChatErrorMessage(result));
+          setError(`读取失败（${result.error ?? 'unknown'}）`);
           return;
         }
         setLog(result);
@@ -11149,73 +10524,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       useEffect(() => {
         loadLog(courseId);
       }, [courseId]);
-
-      const openChat = async (entry) => {
-        setError('');
-        const result = await fetchChatSession(entry.courseId ?? courseId, entry.id);
-        if (result.ok !== true) {
-          setError(assistantChatErrorMessage(result));
-          return;
-        }
-        setSession(result.chat);
-        setInject(false);
-      };
-
-      const startNew = () => {
-        const node = newNodeId === '' ? null : nodes.find((n) => n.id === newNodeId);
-        const scope = node === undefined || node === null
-          ? { type: 'free' }
-          : { type: 'node', nodeId: node.id, courseId: String(node.courseId ?? '') };
-        setSession({
-          id: null,
-          title: node === null || node === undefined ? '临时对话' : String(node.name ?? '对话'),
-          courseId: (node?.courseId) || courseId || (courses[0]?.id ?? ''),
-          scope,
-          messages: [],
-        });
-        setInject(false);
-        setDraft('');
-      };
-
-      const send = async () => {
-        if (session === null || busy) return;
-        const text = draft.trim();
-        if (text === '') return;
-        const history = objectList(session.messages).map((m) => ({ role: m.role, content: String(m.content ?? '') }));
-        const payload = {
-          courseId: session.courseId || courseId || (courses[0]?.id ?? ''),
-          scope: session.scope,
-          name: session.title,
-          messages: [...history, { role: 'user', content: text }],
-        };
-        if (session.id) payload.chatId = session.id;
-        if (inject && log?.readingPosition) {
-          payload.context = { type: 'material', path: log.readingPosition.path, page: log.readingPosition.page };
-        }
-        setBusy(true);
-        setError('');
-        const result = await assistantChat(payload);
-        setBusy(false);
-        if (result.ok !== true) {
-          setError(assistantChatErrorMessage(result));
-          return;
-        }
-        setDraft('');
-        const reloaded = await fetchChatSession(result.chat?.courseId ?? payload.courseId, result.chat?.id ?? session.id);
-        if (reloaded.ok === true) setSession(reloaded.chat);
-        loadLog(courseId);
-      };
-
-      const removeChat = async (entry) => {
-        if (!window.confirm(`删除这条对话「${entry.title || '未命名'}」？删除后无法恢复。`)) return;
-        const result = await deleteChatSession(entry.courseId ?? courseId, entry.id);
-        if (result.ok !== true) {
-          setError(assistantChatErrorMessage(result));
-          return;
-        }
-        if (session !== null && session.id === entry.id) setSession(null);
-        loadLog(courseId);
-      };
 
       const head = h('div', { className: 'sa-card' },
         h('h3', null, '学习记录'),
@@ -11254,87 +10562,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('div', { className: 'sa-muted', style: { fontSize: 12 } }, formatStamp(ev.at)),
             h('div', { className: 'sa-muted', style: { fontSize: 11 }, title: '数据来源' }, `来源：${ev.basis ?? '—'}`)))));
 
-      // ── 归档对话列表 + 新建 ──
-      const chatEntries = status === 'ready' ? objectList(log?.chats) : [];
-      const chatSection = h('div', { className: 'sa-card' },
-        h('h3', null, '对话'),
-        chatEntries.length === 0
-          ? h('div', { className: 'sa-muted' }, status === 'ready' ? '还没有归档对话。选一个知识点或直接开一个自由对话。' : '读取中…')
-          : null,
-        ...chatEntries.map((entry) => h('div', { key: entry.id, className: 'sa-row' },
-          h('button', {
-            className: 'sa-btn sa-grow',
-            style: { textAlign: 'left' },
-            title: `${courseName(entry.courseId)} · ${entry.messageCount ?? 0} 条`,
-            onClick: () => openChat(entry),
-          },
-          `${entry.title || '未命名'}　`,
-          h('span', { className: 'sa-muted', style: { fontSize: 12 } },
-            `${courseName(entry.courseId)} · ${entry.messageCount ?? 0} 条 · ${formatStamp(entry.updatedAt)}`)),
-          h('button', { className: 'sa-btn', onClick: () => removeChat(entry) }, '删除'))),
-        h('div', { className: 'sa-dock', style: { marginTop: 8 } },
-          h('select', {
-            className: 'sa-input',
-            value: newNodeId,
-            onChange: (event) => setNewNodeId(event.target.value),
-          }, h('option', { value: '' }, '不绑定知识点（自由对话）'),
-          ...nodes.map((node) => h('option', { key: node.id, value: node.id }, `${node.name}（${courseName(node.courseId)}）`))),
-          h('button', { className: 'sa-btn primary', onClick: startNew }, '新对话')));
-
-      // ── 对话面板（多轮）──
-      const readingPosition = log?.readingPosition ?? null;
-      const canInject = readingPosition !== null && typeof readingPosition === 'object' && typeof readingPosition.path === 'string';
-      const sessionPanel = session === null ? null : h('div', { className: 'sa-card' },
-        h('div', { className: 'sa-dock' },
-          h('span', { className: 'sa-grow' }, h('strong', null, session.title || '对话')),
-          h('span', { className: 'sa-muted', style: { fontSize: 12 } }, courseName(session.courseId)),
-          h('button', { className: 'sa-btn', onClick: () => setSession(null) }, '返回')),
-        h('div', { className: 'sa-chat-log' },
-          objectList(session.messages).length === 0
-            ? h('div', { className: 'sa-muted' }, '有什么想问的？直接输入。')
-            : objectList(session.messages).map((message, index) => h('div', {
-              key: index,
-              className: `sa-chat-msg ${message.role === 'user' ? 'user' : 'assistant'}`,
-            },
-            h('div', { className: 'sa-chat-role' }, message.role === 'user' ? '我' : '助手'),
-            h('div', { className: 'sa-chat-text' }, String(message.content ?? '')),
-            Array.isArray(message.sources) && message.sources.length > 0
-              ? h('div', { className: 'sa-muted', style: { fontSize: 11 } }, `依据：${message.sources.join('、')}`)
-              : null,
-            message.context !== null && typeof message.context === 'object'
-              ? h('div', { className: 'sa-muted', style: { fontSize: 11 } },
-                `含当前阅读段落${message.context.truncated === true ? `（只读了前 ${message.context.chars} 字）` : ''}`)
-              : null))),
-        h('div', { className: 'sa-dock', style: { marginTop: 6, alignItems: 'center' } },
-          canInject
-            ? h('button', {
-              className: `sa-btn${inject ? ' primary' : ''}`,
-              title: '把当前阅读的这份资料这一页发给模型作参考（默认不发）',
-              onClick: () => setInject((value) => !value),
-            }, inject ? '✓ 让助手读当前阅读段落' : '让助手读当前阅读段落')
-            : h('span', { className: 'sa-muted', style: { fontSize: 12 } }, '还没有阅读位置——去资料页翻一页，就能让助手读它了。'),
-          canInject
-            ? h('span', { className: 'sa-muted', style: { fontSize: 12 } },
-              `${readingPosition.path} 第 ${readingPosition.page ?? '—'} 页（上限约 6000 字，超出只读前 N 字）`)
-            : null),
-        h('div', { className: 'sa-dock', style: { marginTop: 6, alignItems: 'flex-end' } },
-          h('textarea', {
-            className: 'sa-input sa-grow',
-            rows: 2,
-            value: draft,
-            placeholder: '输入你的问题…（Ctrl/⌘+Enter 发送）',
-            onChange: (event) => setDraft(event.target.value),
-            onKeyDown: (event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') send();
-            },
-          }),
-          h('button', { className: `sa-btn primary${busy ? ' disabled' : ''}`, disabled: busy, onClick: send }, busy ? '思考中…' : '发送')),
-        session.id
-          ? h('div', { className: 'sa-dock', style: { marginTop: 4 } },
-            h('button', { className: 'sa-btn', onClick: () => removeChat({ id: session.id, title: session.title, courseId: session.courseId }) }, '删除这条对话'))
-          : null);
-
-      return h('div', null, head, errorBanner, sessionPanel, timelineSection, chatSection);
+      return h('div', null, head, errorBanner, timelineSection);
     }
 
     function SettingsTab({ docs, refresh, busy, run, setBusy }) {
@@ -11361,29 +10589,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       }, []);
 
       // 数据备份 / 生成记录（2026-10-21 夜）
-      // 三源：作业.json 的 records[].model、讲解缓存的元信息、知识点网络的更新时间。
+      // 两源：作业.json 的 records[].model、知识点网络的更新时间。
       const [backupBusy, setBackupBusy] = useState(false);
       const [backupNote, setBackupNote] = useState('');
-      const [records, setRecords] = useState({ status: 'loading', explain: [], error: '' });
-
-      useEffect(() => {
-        let alive = true;
-        explainList()
-          .then((result) => {
-            if (!alive) return;
-            if (result?.ok === true) {
-              setRecords({ status: 'ready', explain: Array.isArray(result.items) ? result.items : [], error: '' });
-            } else {
-              setRecords({ status: 'error', explain: [], error: String(result?.error ?? 'unknown') });
-            }
-          })
-          .catch(() => {
-            if (alive) setRecords({ status: 'error', explain: [], error: 'unreachable' });
-          });
-        return () => {
-          alive = false;
-        };
-      }, []);
 
       const downloadBackup = async () => {
         setBackupBusy(true);
@@ -11557,23 +10765,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                     ? `${record.model.model}${record.model.at ? ` · ${String(record.model.at).slice(0, 16).replace('T', ' ')}` : ''}`
                     : '未记录模型（人工/取字批次）'),
               )),
-              h('div', { className: 'sa-row' },
-                h('span', { className: 'sa-grow' }, '知识点讲解（讲解缓存/）'),
-                h('span', { className: records.status === 'error' ? 'sa-error' : 'sa-muted' },
-                  records.status === 'loading'
-                    ? '读取中…'
-                    : records.status === 'error'
-                      ? `读不到（${records.error}）`
-                      : `${records.explain.length} 份 · 带模型名 ${records.explain.filter((item) => item.model && item.model !== '宿主默认模型（未回传）').length} 份`),
-              ),
-              ...records.explain.slice(0, 6).map((item) => h('div', { className: 'sa-row', key: `${item.node}-${item.style}` },
-                h('span', { className: 'sa-grow' }, `${item.name ?? item.node} · ${item.styleLabel ?? item.style}`),
-                h('span', { className: 'sa-muted', style: { fontSize: 14 } },
-                  `${item.chars ?? 0} 字 · ${item.model && item.model !== '宿主默认模型（未回传）' ? item.model : '模型未回传'} · ${item.generatedAt ? String(item.generatedAt).slice(0, 16).replace('T', ' ') : '时间未知'}`),
-              )),
-              records.status === 'ready' && records.explain.length > 6
-                ? h('div', { className: 'sa-muted', style: { fontSize: 14 } }, `…还有 ${records.explain.length - 6} 份，去「资料 → 知识点 → 讲解」看全部`)
-                : null,
               h('div', { className: 'sa-row' },
                 h('span', { className: 'sa-grow' }, '知识网络（知识点网络.json）'),
                 h('span', { className: 'sa-muted' }, `${nodes} 个节点 · 更新于 ${network?.updatedAt ? String(network.updatedAt).slice(0, 16).replace('T', ' ') : '未知'}`),
@@ -12224,7 +11415,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         knowledgeTreeBranchKeys,
         // 大纲树（2026-10-21 深夜批5）：教材目录骨架 + 节点按 section/subsection 挂靠
         buildOutlineTree,
-        // 搜索命中高亮（2026-10-22 深夜）：树/列表/讲解共用同一套切法
+        // 搜索命中高亮（2026-10-22 深夜）：树/列表共用同一套切法
         splitByQuery,
         // 思维导图（2026-10-23 夜，A 块）：布局纯函数 + 掌握度的符号/颜色编码
         buildMindMap,
@@ -12237,15 +11428,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         subjectTreeState,
         patchSubjectTree,
         MASTERY_STYLE,
-        // 讲解通道（2026-10-21 凌晨）：档位键必须与服务端一致，错误码要翻成人话
-        EXPLAIN_STYLE_OPTIONS,
-        explainNode,
-        explainCached,
-        explainList,
-        explainErrorMessage,
-        // 内嵌聊天（2026-10-24）：多轮问答的请求助手与错误翻译
-        chatNode,
-        chatErrorMessage,
         // 数据备份（2026-10-21 夜）：导出/恢复两个请求助手，测试直接验 URL 与请求头
         exportBackup,
         restoreBackup,

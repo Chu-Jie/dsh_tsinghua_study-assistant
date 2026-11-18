@@ -246,8 +246,6 @@ export function apply(ctx, rawConfig = {}) {
     speech,
     summarizer,
     handoff,
-    // 讲解通道复用同一个 `complete()`：宿主内模型调用，不另建一份
-    complete,
     studentName: config.studentName,
     studentNameVariants: config.studentNameVariants,
     studentId: config.studentId,

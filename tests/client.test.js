@@ -833,7 +833,6 @@ test('client.js：资料页把索引/题目/知识点都渲染出来，空数据
   assert.ok(clientSource.includes('一次最多改 '), '命中的节点超限时要说人话，而不是把错误码甩给用户');
 
   assert.ok(knowledge.includes('列表'), '要能在图和列表之间切换');
-  assert.ok(knowledge.includes('讲解'), '要能切到「讲解」视图看已生成的讲解');
   // 思维导图（2026-10-23 夜，A 块）：真导图视图 + 掌握度的符号/颜色图例
   assert.ok(knowledge.includes('导图'), '工具条要有「导图」视图（真思维导图）');
   assert.ok(knowledge.includes('掌握度：'), '工具条要给掌握度的图例');
@@ -897,25 +896,9 @@ test('client.js：资料页把索引/题目/知识点都渲染出来，空数据
   assert.ok(clientSource.includes('保存备注'), '备注要有保存按钮');
   assert.ok(clientSource.includes('node?.note,'), '备注要进搜索（自己写的易错点最想搜到）');
   assert.ok(!knowledgeNode.includes('undefined'), `节点卡不该渲染出 undefined：${knowledgeNode.slice(0, 300)}`);
-  // 内嵌聊天（2026-10-24）：就这个知识点提问，答案只用它的证据、不落盘
-  assert.ok(knowledgeNode.includes('就问这个知识点'), '节点卡要有「就问这个知识点」的聊天框');
-  assert.ok(knowledgeNode.includes('对话不存档'), '聊天要写明不存档（服务端确实不写盘）');
-  assert.ok(knowledgeNode.includes('发送'), '聊天要有发送按钮');
-  assert.ok(clientSource.includes('async function chatNode(nodeId, messages)'), '聊天请求要走 chatNode');
-  assert.ok(clientSource.includes('${API}/knowledge/chat'), '聊天请求打到 POST /knowledge/chat');
-  assert.ok(clientSource.includes('const sendChat = async () =>'), '节点卡要有发送逻辑');
-  assert.ok(clientSource.includes('请回答学生最后这一问。') === false, 'prompt 拼装留在服务端，客户端不掺和');
-  assert.ok(typeof internals.chatNode === 'function', 'chatNode 要导出给测试');
-  assert.ok(typeof internals.chatErrorMessage === 'function', 'chatErrorMessage 要导出给测试');
-  // 讲解视图（2026-10-22 深夜）：按「课程 › 章」分组 + 覆盖缺口
-  const knowledgeExplain = renderToStaticMarkup({
-    __el: true, type: internals.knowledgeTab, props: { docs, initialView: 'explain' }, children: [],
-  });
-  assert.ok(knowledgeExplain.includes('覆盖 0 个节点'), '讲解视图抬头要报覆盖了多少节点');
-  assert.ok(knowledgeExplain.includes('还差 2 个没生成'), '讲解视图要提示还有多少节点没生成过');
-  // 三态（2026-10-24 夜）：详解 / 只有旧讲解 / 都没有，三种要一次看全
-  assert.ok(knowledgeExplain.includes('有详解 ') && knowledgeExplain.includes('只有旧讲解 '), '抬头要分开报「有详解 / 只有旧讲解」');
-  assert.ok(knowledgeExplain.includes('都没有 '), '抬头要报「都没有」的个数');
+  // 2026-11-18 E 卡：节点卡的「就问这个知识点」问答框与三档讲解已下线；
+  // E2 卡把交互助手对话一起删了，错误翻译链随之下线，这里只留反向钉子。
+  assert.ok(!knowledgeNode.includes('就问这个知识点'), '节点卡不该再有内嵌问答框');
   assert.ok(!knowledge.includes('undefined'), `知识网络不该渲染出 undefined：${knowledge.slice(0, 300)}`);
   // 坏数据（2026-10-23 凌晨）：courses.courses 里混 null 时也不能整页白屏。
   // 真实成因：别处的脚本写坏 JSON 时数组里会留下 null，而课程名查找直接读 item.id。
@@ -1658,10 +1641,10 @@ test('client.js：织网与导出画布走两条专用 POST，成功时把服务
   assert.ok(source.includes('已导出到 '), '成功要显示导出目录与计数');
   assert.ok(source.includes('学习台/知识画布'), '按钮旁要写明画布落点');
   // 织网/导出是写盘操作，必须带安全请求头（和其它 POST 一致）
-  // 位置变了：知识点搬家后 runKnowledgeJob 与 emptyText 不再相邻，用「后面紧跟 loadExplainList」当右边界
+  // 右边界取「跨页签联动」那段注释（E 卡删掉 loadExplainList 之后，原先的右边界没了）
   const jobStart = source.indexOf('const runKnowledgeJob = async (kind)');
-  const jobEnd = source.indexOf('const loadExplainList');
-  assert.ok(jobStart >= 0 && jobEnd > jobStart, 'runKnowledgeJob 与 loadExplainList 的相对位置变了，测试要跟着改');
+  const jobEnd = source.indexOf('// 跨页签联动：从「资料 → 题目」点知识点跳过来时');
+  assert.ok(jobStart >= 0 && jobEnd > jobStart, 'runKnowledgeJob 与「跨页签联动」注释的相对位置变了，测试要跟着改');
   const jobBlock = source.slice(jobStart, jobEnd);
   assert.ok(jobBlock.includes('[REQUEST_HEADER]'), '写盘请求必须带 X-Study-Request 头');
 });
@@ -2142,51 +2125,6 @@ test('作业流：详情面板的两个分支（平台有原文 / 拉不到原�
   assert.ok(source.includes('新对话'), '应说明会新开一条对话');
 });
 
-test('client.js：讲解三档走一条专用 POST，档位键与服务端一致，错误码翻成人话', { skip: isPhase1 ? '第 1 阶段空骨架，无资料页' : false }, () => {
-  const { half } = loadClient();
-  const internals = half.DESCRIPTORS.internals;
-  const clientSource = fs.readFileSync(path.join(HERE, '..', 'client.full.js'), 'utf8');
-  const serverSource = fs.readFileSync(path.join(HERE, '..', 'lib', 'knowledge-explain.js'), 'utf8');
-
-  // 三档键必须与宿主 EXPLAIN_STYLES 完全一致（顺序也一致：先讲透、再速通、最后提示）
-  assert.equal(
-    JSON.stringify(internals.EXPLAIN_STYLE_OPTIONS.map((item) => item.key)),
-    JSON.stringify(['assistant', 'exam', 'hint']),
-    '三档键必须与 lib/knowledge-explain.js 对齐',
-  );
-  assert.equal(JSON.stringify(internals.EXPLAIN_STYLE_OPTIONS.map((item) => item.label)), JSON.stringify(['助教推导', '考前速通', '只给提示']));
-  for (const key of ['assistant', 'exam', 'hint']) {
-    assert.ok(serverSource.includes(`key: '${key}'`), `服务端应有 ${key} 这一档`);
-  }
-
-  // 客户端只发档位键，不拼指令原文（指令留在服务端，改口径不用发客户端）
-  assert.ok(/function explainNode\(nodeId, style, options = \{\}\)/.test(clientSource), '应有 explainNode 包装');
-  assert.ok(clientSource.includes('/knowledge/explain`'), '应调用 /knowledge/explain');
-  assert.ok(/\[REQUEST_HEADER\]: '1'/.test(clientSource), 'POST 必须带自定义请求头，否则宿主 403');
-  assert.ok(!clientSource.includes('针对「'), '指令原文不该出现在客户端');
-
-  // 错误码翻人话：429 不该直接把 llm-rate-limit 甩给用户
-  assert.equal(typeof internals.explainErrorMessage, 'function', 'client 必须把错误码翻译交给测试');
-  assert.ok(internals.explainErrorMessage({ error: 'llm-rate-limit' }).includes('429'));
-  assert.ok(internals.explainErrorMessage({ error: 'llm-unavailable' }).includes('没有挂模型'));
-  assert.ok(internals.explainErrorMessage({ error: 'llm-timeout' }).includes('超时'));
-  assert.ok(internals.explainErrorMessage({ error: 'bad-style' }).includes('档位'));
-  const withDetail = internals.explainErrorMessage({ error: 'llm-rate-limit', detail: '429 too many requests' });
-  assert.ok(withDetail.includes('429 too many requests'), '上游原文要带上，否则用户没法判断是哪种 429');
-
-  // 面板上三个按钮 + 重新生成：不给「重新生成」就只能等缓存过期
-  for (const label of ['助教推导', '考前速通', '只给提示', '重新生成']) {
-    assert.ok(clientSource.includes(`'${label}'`), `面板应有「${label}」`);
-  }
-  assert.ok(clientSource.includes('讲解缓存'), '要说明结果落在 学习台/讲解缓存/');
-
-  // 批量生成一章（2026-10-21 夜第三段）：串行、只补缺的、进度可见
-  assert.ok(clientSource.includes('生成缺的'), '章头批量按钮要写明「生成缺的 N 份」');
-  assert.ok(clientSource.includes('串行生成'), '要说明是串行跑，避免用户以为卡住');
-  assert.ok(/const runChapterBatch = async \(group\) =>/.test(clientSource), '批量入口应是 runChapterBatch');
-  assert.ok(clientSource.includes('这一章都已生成'), '整章都生成过时要给明确结论，而不是禁用按钮让人猜');
-});
-
 test('client.js：设置页有数据备份与生成记录，打印只印当前页签', { skip: isPhase1 ? '第 1 阶段空骨架，无设置页' : false }, () => {
   const { half } = loadClient();
   const internals = half.DESCRIPTORS.internals;
@@ -2230,8 +2168,9 @@ test('client.js：设置页有数据备份与生成记录，打印只印当前�
   assert.ok(settings.includes('作业分题'), '第一源：作业.json 的分题记录');
   assert.ok(settings.includes('DeepSeek-V4.1-Flash-1017'), '有模型记录的条目要显示模型名');
   assert.ok(settings.includes('未记录模型'), '没有模型记录的条目要明说「未记录模型」，不能留空');
-  assert.ok(settings.includes('知识点讲解'), '第二源：讲解缓存');
-  assert.ok(settings.includes('知识网络'), '第三源：知识点网络的更新时间');
+  // 2026-11-18 E 卡：讲解缓存那一行随入口一起下线（数据文件仍留在 学习台/讲解缓存/）
+  assert.ok(!settings.includes('知识点讲解'), '讲解已下线，生成记录里不该再报它');
+  assert.ok(settings.includes('知识网络'), '第二源：知识点网络的更新时间');
   assert.ok(settings.includes('2 个节点'), '要显示节点数');
   // 第四源（2026-10-24）：教材/PPT/作业的分析批次要能看到「跑了哪批、出了多少点、什么模型、什么时候」
   assert.ok(settings.includes('资料分析（资料分析.json）'), '第四源：分析流水线的批次记录');
@@ -3210,9 +3149,8 @@ test('lecture links: 专注阅读垫不透明纸底，字号跟随 DSH 内容字
   assert.ok(/margin: '16px 0 4px', fontSize: '1\.0625em', fontWeight: 700/.test(css),'3 级标题（知识块）要带左侧色条');
   assert.ok(!/fontSize: '1\.0625em', fontWeight: 600/.test(css),'标题不许再退回 600 粗的微弱写法');
  assert.ok(/fontSize: '1\.0625em', lineHeight: 1\.7/.test(css),'跨行公式字号要写成 em');
- // ③ 聊天气泡 16px!important → 基准 × 倍率（它不在 .sa-reading 里，只能自己算）
- assert.ok(!/\.sa-chat-message\{font-size:16px!important/.test(css),'聊天气泡不能再写死 16px');
- assert.ok(/\.sa-chat-message\{font-size:calc\(var\(--dsh-content-font-size, 16px\) \* var\(--sa-read-scale, 1\)\)!important/.test(css),'聊天气泡要跟着倍率');
+ // ③ 聊天气泡已随交互助手对话下线（2026-11-18 E2），`.sa-chat-*` 这套样式也删了：
+ assert.ok(!/\.sa-chat-/.test(css),'聊天气泡样式应随功能一起下线');
  // 界面记忆里存倍率时要夹区间并对齐步长
  lib.resetKnowledgeUi();
  lib.readKnowledgeUi({readScale:3});
