@@ -188,6 +188,69 @@ test('三种类型 note/highlight/insert 共用同一套锚点数据', async () 
   }
 });
 
+test('style 行内格式：create 落库、list 回读、update 改色/清除都能往返', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    const created = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations',
+      action: 'create',
+      item: {
+        file: LESSON_REL, type: 'highlight', content: '带样式的批注',
+        quote: QUOTE, start: span.start, end: span.end,
+        style: { color: 'red', highlight: 'yellow', underline: 'blue', bold: true, italic: false },
+      },
+    });
+    assert.equal(created.status, 200);
+    const createdBody = await created.json();
+    assert.equal(createdBody.ok, true);
+    assert.deepEqual(createdBody.item.style, { color: 'red', highlight: 'yellow', underline: 'blue', bold: true, italic: false });
+    const id = createdBody.item.id;
+
+    const listed = await listNotes(server, LESSON_REL);
+    assert.deepEqual(listed.notes[0].style, { color: 'red', highlight: 'yellow', underline: 'blue', bold: true, italic: false }, 'list 要带回 style');
+
+    // update 只改 color（不重算锚点）
+    const updated = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'update', id, item: { style: { color: 'green', bold: false } },
+    });
+    assert.equal(updated.status, 200);
+    const afterUpdate = await listNotes(server, LESSON_REL);
+    assert.deepEqual(afterUpdate.notes[0].style, { color: 'green', bold: false }, 'update 用新 style 整体替换');
+    assert.equal(afterUpdate.notes[0].anchor.start, span.start, '改样式不应动锚点');
+
+    // update 传 style:null → 清除样式
+    await postJson(`${server.baseUrl}/mutate`, { doc: 'annotations', action: 'update', id, item: { style: null } });
+    const afterClear = await listNotes(server, LESSON_REL);
+    assert.equal(afterClear.notes[0].style, undefined, 'style:null 要清除 style 字段');
+  } finally {
+    await server.close();
+  }
+});
+
+test('style 行内格式：非法值在服务端兜底剥离（不 400），不影响批注落盘', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    const created = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations',
+      action: 'create',
+      item: {
+        file: LESSON_REL, type: 'highlight', content: '脏 style',
+        quote: QUOTE, start: span.start, end: span.end,
+        style: { color: 'purple', highlight: 'yellow', border: '2px' },
+      },
+    });
+    // 注：create 走 buildAnnotationFromInput，脏值被剥离，只保留 highlight:yellow
+    assert.equal(created.status, 200);
+    const body = await created.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.item.style, { highlight: 'yellow' }, '只保留白名单内的合法维度');
+  } finally {
+    await server.close();
+  }
+});
+
 test('改文重定位：偏移不可信但 quote 仍在原文（重复片段）→ 服务端纠正，落到最近的真实位置', async () => {
   const server = await startServer();
   try {
@@ -252,8 +315,57 @@ test('白名单：未登记文件 → file-not-indexed；登记但无文字层 �
   }
 });
 
-test('导出：/annotations/export 可只读导出并支持 file 过滤', async () => {
+test('知识点虚拟文件 kp:<nodeId>：正文由客户端 kpText 提供，锚点自洽才收；缺 kpText 拒收', async () => {
   const server = await startServer();
+  try {
+    // 知识点详情正文不在 资料索引.json 里，服务端用请求带来的 kpText 做锚点校验。
+    const KP_BODY = '这是知识点正文的一段话。后面还有别的内容。';
+    const KP_FILE = 'kp:k_2179afdba8';
+    const span = { start: KP_BODY.indexOf('一段话'), end: KP_BODY.indexOf('一段话') + 3 };
+
+    const created = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations',
+      action: 'create',
+      item: {
+        file: KP_FILE, type: 'highlight', content: '一段话',
+        quote: '一段话', start: span.start, end: span.end, exact: true,
+        style: { highlight: 'blue' }, kpText: KP_BODY,
+      },
+    });
+    assert.equal(created.status, 200);
+    const body = await created.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.item.file, KP_FILE);
+    assert.equal(body.item.anchor.quote, '一段话');
+    assert.deepEqual(body.item.style, { highlight: 'blue' });
+
+    // 回读：list 能拿到这条 kp 批注
+    const listed = await listNotes(server, KP_FILE);
+    assert.equal(listed.count, 1);
+
+    // 缺 kpText → 400 missing-kp-text（不能白拿客户端不存在的正文）
+    const noText = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations',
+      action: 'create',
+      item: { file: KP_FILE, type: 'note', content: 'x', quote: '一段话', start: span.start, end: span.end },
+    });
+    assert.equal(noText.status, 400);
+    assert.equal((await noText.json()).error, 'missing-kp-text');
+
+    // kpText 里根本没有该 quote → 400 anchor-not-found
+    const wrongText = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations',
+      action: 'create',
+      item: { file: KP_FILE, type: 'note', content: 'x', quote: '原文里没有这句', start: 0, end: 6, kpText: KP_BODY },
+    });
+    assert.equal(wrongText.status, 400);
+    assert.equal((await wrongText.json()).error, 'anchor-not-found');
+  } finally {
+    await server.close();
+  }
+});
+
+test('导出：/annotations/export 可只读导出并支持 file 过滤', async () => {  const server = await startServer();
   try {
     const span = quoteSpan(QUOTE, 0);
     await postJson(`${server.baseUrl}/mutate`, {
@@ -272,9 +384,113 @@ test('导出：/annotations/export 可只读导出并支持 file 过滤', async 
     const empty = await (await fetch(`${server.baseUrl}/annotations/export?file=${encodeURIComponent('别的/文件.md')}`)).json();
     assert.equal(empty.count, 0);
 
-    const badFormat = await fetch(`${server.baseUrl}/annotations/export?format=md`);
+    const badFormat = await fetch(`${server.baseUrl}/annotations/export?format=xml`);
     assert.equal(badFormat.status, 400);
     assert.equal((await badFormat.json()).error, 'unsupported-format');
+  } finally {
+    await server.close();
+  }
+});
+
+test('导出：format=md 产出按文件分组、带 [标签] 与原文片段的干净 Markdown', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    // 建五条：重点 / 疑问 / 待复习 / 已学会 / 无标记（普通）
+    for (const markKind of ['key', 'question', 'review', 'learned', undefined]) {
+      const item = { file: LESSON_REL, type: 'highlight', content: `批注-${markKind ?? '普通'}`, quote: QUOTE, start: span.start, end: span.end };
+      if (markKind !== undefined) item.markKind = markKind;
+      const res = await postJson(`${server.baseUrl}/mutate`, { doc: 'annotations', action: 'create', item });
+      assert.equal(res.status, 200, `create markKind=${markKind}`);
+    }
+    const mdResp = await fetch(`${server.baseUrl}/annotations/export?format=md`);
+    assert.equal(mdResp.status, 200);
+    const md = await mdResp.json();
+    assert.equal(md.ok, true);
+    assert.equal(md.format, 'md');
+    assert.equal(md.count, 5);
+    assert.equal(md.file, null);
+    assert.equal(typeof md.markdown, 'string');
+    assert.match(md.markdown, /^# 高光与批注材料（导出：全部）/);
+    // 分组标题用人读名：普通资料去扩展名（数据结构/讲义/第1章）
+    const LESSON_DISPLAY = LESSON_REL.replace(/\.[a-zA-Z0-9]+$/, '');
+    assert.match(md.markdown, new RegExp(`## ${LESSON_DISPLAY.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.match(md.markdown, /- \[重点\] 批注-key —— 原文：「/);
+    assert.match(md.markdown, /- \[疑问\] 批注-question —— 原文：「/);
+    assert.match(md.markdown, /- \[待复习\] 批注-review —— 原文：「/);
+    assert.match(md.markdown, /- \[已学会\] 批注-learned —— 原文：「/);
+    assert.match(md.markdown, /- \(普通\) 批注-普通 —— 原文：「/);
+    // 每条下方有一行时间/状态（新增信息维度）
+    assert.match(md.markdown, /^ {2}> 标记于 \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 重点$/m);
+    assert.match(md.markdown, /^ {2}> 标记于 \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 已学会$/m);
+    assert.match(md.markdown, /^ {2}> 标记于 \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 普通$/m);
+    // 原文片段取自 quote（前 40 字，此处 quote 未超长，应完整出现）
+    assert.match(md.markdown, new RegExp(`原文：「${QUOTE}」`));
+    // json 导出仍原样工作，且 notes 自然带上 markKind
+    const json = await (await fetch(`${server.baseUrl}/annotations/export?format=json`)).json();
+    assert.equal(json.format, 'json');
+    assert.equal(json.count, 5);
+    const kinds = json.notes.map((n) => n.markKind).filter((k) => k !== undefined).sort();
+    assert.deepEqual(kinds, ['key', 'learned', 'question', 'review']);
+  } finally {
+    await server.close();
+  }
+});
+
+test('导出 format=md 支持 file 过滤且标题标注该文件名', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'create',
+      item: { file: LESSON_REL, type: 'note', content: '甲', quote: QUOTE, start: span.start, end: span.end, markKind: 'key' },
+    });
+    const md = await (await fetch(`${server.baseUrl}/annotations/export?format=md&file=${encodeURIComponent(LESSON_REL)}`)).json();
+    assert.equal(md.count, 1);
+    const LESSON_DISPLAY2 = LESSON_REL.replace(/\.[a-zA-Z0-9]+$/, '');
+    assert.match(md.markdown, new RegExp(`^# 高光与批注材料（导出：${LESSON_DISPLAY2.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}）`));
+    const empty = await (await fetch(`${server.baseUrl}/annotations/export?format=md&file=${encodeURIComponent('别的/文件.md')}`)).json();
+    assert.equal(empty.count, 0);
+    assert.match(empty.markdown, /（暂无批注）/);
+  } finally {
+    await server.close();
+  }
+});
+
+test('markKind 往返：create 合法值落库、非法值静默丢弃；update 可改/可清除（null）', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    const base = { file: LESSON_REL, type: 'highlight', content: 'c', quote: QUOTE, start: span.start, end: span.end };
+
+    // create：合法值落库
+    const created = await (await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'create', item: { ...base, markKind: 'key' },
+    })).json();
+    assert.equal(created.item.markKind, 'key');
+    const id = created.item.id;
+
+    // create：非法值静默丢弃（不 400、不带 markKind）
+    const dirty = await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'create', item: { ...base, markKind: '重点' },
+    });
+    assert.equal(dirty.status, 200);
+    const dirtyBody = await dirty.json();
+    assert.equal(dirtyBody.item.markKind, undefined);
+
+    // update：改成 question
+    await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'update', id, item: { markKind: 'question' },
+    });
+    let notes = (await listNotes(server)).notes;
+    assert.equal(notes.find((n) => n.id === id).markKind, 'question');
+
+    // update：null 清除
+    await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'update', id, item: { markKind: null },
+    });
+    notes = (await listNotes(server)).notes;
+    assert.equal(notes.find((n) => n.id === id).markKind, undefined);
   } finally {
     await server.close();
   }
@@ -356,6 +572,51 @@ test('备份：export 含 annotations 且带 sha256，restore 能写回', async 
     const after = await listNotes(server, LESSON_REL);
     assert.equal(after.count, 1, '恢复后批注回到导出时刻');
     assert.equal(after.notes[0].content, '备份前的批注');
+  } finally {
+    await server.close();
+  }
+});
+
+test('自动落盘：每次写批注后 _工具/AI材料/ 自动生成该讲义 md + _全部.md（覆盖式）', async () => {
+  const server = await startServer();
+  try {
+    const span = quoteSpan(QUOTE, 0);
+    await postJson(`${server.baseUrl}/mutate`, {
+      doc: 'annotations', action: 'create',
+      item: { file: LESSON_REL, type: 'note', content: '自动保存一条', quote: QUOTE, start: span.start, end: span.end, markKind: 'key' },
+    });
+    const outDir = path.join(server.root, '_工具', 'AI材料');
+    // 该讲义一份（去扩展名后作文件名）+ 总目录
+    const lessonDisk = '数据结构_讲义_第1章.md';
+    const lessonPath = path.join(outDir, lessonDisk);
+    const allPath = path.join(outDir, '_全部.md');
+    const lessonMd = await fs.readFile(lessonPath, 'utf8');
+    assert.match(lessonMd, /^# 高光与批注材料/, '自动落盘文件要有标题');
+    assert.match(lessonMd, /- \[重点\] 自动保存一条/);
+    assert.match(lessonMd, /  > 标记于 \d{4}-\d{2}-\d{2} \d{2}:\d{2} · 重点/);
+    const allMd = await fs.readFile(allPath, 'utf8');
+    assert.match(allMd, /## 数据结构\/讲义\/第1章/, '总目录按人读篇名分组');
+
+    // 信息接口能报出目录与文件
+    const info = await (await fetch(`${server.baseUrl}/annotations/material`)).json();
+    assert.equal(info.ok, true);
+    assert.equal(info.dir, outDir);
+    assert.ok(info.files.includes(lessonDisk), 'info 要列出该讲义 md');
+    assert.ok(info.files.includes('_全部.md'), 'info 要列出总目录');
+
+    // 再改一条：文件被覆盖更新（仍是 1 条批注、但内容变了）
+    const id = (await listNotes(server, LESSON_REL)).notes[0].id;
+    // 等 60 秒太浪费；createdAt 与 update 的 updatedAt 若落在同一分钟，格式化后会相等、不附「改于」。
+    // 所以这里断言「内容已更新」即可，时间行只要还是「标记于 …」就说明时间维度在。
+    await postJson(`${server.baseUrl}/mutate`, { doc: 'annotations', action: 'update', id, item: { content: '改过的内容' } });
+    const lessonMd2 = await fs.readFile(lessonPath, 'utf8');
+    assert.match(lessonMd2, /改过的内容/, '更新后自动落盘文件应反映新内容');
+    assert.match(lessonMd2, /  > 标记于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, '时间行仍在（改于仅跨分钟才附）');
+
+    // 全删：总目录变「暂无批注」
+    await postJson(`${server.baseUrl}/mutate`, { doc: 'annotations', action: 'delete', id });
+    const allMd2 = await fs.readFile(allPath, 'utf8');
+    assert.match(allMd2, /（暂无批注）/, '删空后总目录提示暂无');
   } finally {
     await server.close();
   }

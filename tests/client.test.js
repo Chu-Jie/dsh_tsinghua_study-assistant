@@ -3877,8 +3877,265 @@ test('批注交互（F2）：正文拖选 → 右上角浮出气泡 → 失焦�
   assert.ok(!f.some((n) => String(n.props?.className ?? '').includes('sa-annotation-save')), '保存按钮已去掉');
 });
 
-test('批注交互（F2）：点正文标记就地改 / 删，update 与 delete 都带 id', async () => {
+test('行内格式（D 卡）：选区气泡里点高光色块 → create 一条带 style 的 highlight 批注', async () => {
   const mutateCalls = [];
+  const text = '第一段：数据结构研究数据的组织方式。\n第二段：算法研究求解步骤。\n';
+  const quoted = '算法研究求解步骤。';
+  const start = text.indexOf(quoted);
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1, item: { id: 'n_new' } }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 0, notes: [] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  probe.window.getSelection = () => ({
+    toString: () => quoted,
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: null, startOffset: 0, commonAncestorContainer: null,
+      getBoundingClientRect: () => ({ top: 200, left: 120, width: 90, height: 18, right: 210, bottom: 218 }),
+    }),
+  });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'c/第03章.md', text })); };
+  let f = render();
+  f.find((n) => String(n.props?.className ?? '') === 'sa-reading').props.onMouseUp();
+  f = render();
+  // 菜单里必须有高光/字色/下划线色块
+  const swatches = f.filter((n) => String(n.props?.className ?? '').includes('sa-annotation-swatch'));
+  assert.ok(swatches.length >= 8, `选区气泡要列出色块（至少 5 高光 + 3 下划线），实际 ${swatches.length}`);
+  const yellow = swatches.find((n) => n.props?.['data-kind'] === 'highlight' && n.props?.['data-value'] === 'yellow');
+  assert.ok(yellow, '要有黄色高光块');
+  yellow.props.onClick();
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  // 2026-11-18 十三轮：菜单态点色块只累积预览（不落库），点「完成」才 create
+  assert.equal(mutateCalls.filter((call) => call.action === 'create').length, 0, '十三轮：点色块只预览、不立即 create');
+  f = render();
+  const applyBtn = f.find((n) => n.props?.['data-action'] === 'apply-inline');
+  assert.ok(applyBtn, '菜单里要有「完成」按钮');
+  applyBtn.props.onClick();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const creates = mutateCalls.filter((call) => call.action === 'create');
+  assert.equal(creates.length, 1, '点完成即落一条 create');
+  assert.equal(creates[0].item.type, 'highlight');
+  assert.deepEqual(creates[0].item.style, { highlight: 'yellow' }, '要带上所选高光色');
+  assert.equal(creates[0].item.content, '高亮1', '十三轮：内容用「高亮N」，不再用选中原文');
+  assert.equal(creates[0].item.quote, quoted);
+  assert.equal(creates[0].item.start, start);
+});
+
+test('行内格式（D 卡）：点 B 按钮 → create 一条 bold 的 highlight，style.bold=true', async () => {
+  const mutateCalls = [];
+  const text = '第一段：逻辑代数基础很重要。\n';
+  const quoted = '逻辑代数基础';
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1, item: { id: 'n_b' } }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 0, notes: [] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  probe.window.getSelection = () => ({
+    toString: () => quoted,
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: null, startOffset: 0, commonAncestorContainer: null,
+      getBoundingClientRect: () => ({ top: 100, left: 100, width: 60, height: 18, right: 160, bottom: 118 }),
+    }),
+  });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'd/第04章.md', text })); };
+  let f = render();
+  f.find((n) => String(n.props?.className ?? '') === 'sa-reading').props.onMouseUp();
+  f = render();
+  const boldBtn = f.find((n) => n.props?.['data-flag'] === 'bold');
+  assert.ok(boldBtn, '菜单里要有加粗按钮');
+  boldBtn.props.onClick();
+  for (let i = 0; i < 20; i += 1) await Promise.resolve();
+  f = render();
+  const applyBtn = f.find((n) => n.props?.['data-action'] === 'apply-inline');
+  assert.ok(applyBtn, '菜单里要有「完成」按钮');
+  applyBtn.props.onClick();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const creates = mutateCalls.filter((call) => call.action === 'create');
+  assert.equal(creates.length, 1);
+  assert.equal(creates[0].item.style.bold, true);
+  assert.equal(creates[0].item.exact, true, '7 字短选要走 exact 精确锚点');
+});
+
+test('行内格式（D 卡第二轮）：高亮按钮一键淡黄、不弹输入框', async () => {
+  const mutateCalls = [];
+  const text = '第一段：本征半导体导电能力弱。\n';
+  const quoted = '本征半导体';
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1, item: { id: 'n_h' } }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 0, notes: [] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  probe.window.getSelection = () => ({
+    toString: () => quoted,
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: null, startOffset: 0, commonAncestorContainer: null,
+      getBoundingClientRect: () => ({ top: 100, left: 100, width: 60, height: 18, right: 160, bottom: 118 }),
+    }),
+  });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'e/§1.md', text })); };
+  let f = render();
+  f.find((n) => String(n.props?.className ?? '') === 'sa-reading').props.onMouseUp();
+  f = render();
+  const hlBtn = f.find((n) => n.props?.['data-type'] === 'highlight' && String(n.props?.className ?? '').includes('sa-annotation-bubble-entry'));
+  assert.ok(hlBtn, '菜单里要有「高亮」按钮');
+  hlBtn.props.onClick();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  // 点「高亮」不该进 compose 输入框
+  f = render();
+  const composeInput = f.find((n) => n.props?.['data-mode'] === 'compose');
+  assert.equal(composeInput, undefined, '点高亮不该弹输入框（compose）');
+  const creates = mutateCalls.filter((call) => call.action === 'create');
+  assert.equal(creates.length, 1, '点高亮即落一条 create');
+  assert.equal(creates[0].item.type, 'highlight');
+  assert.deepEqual(creates[0].item.style, { highlight: 'yellow' }, '一键默认淡黄');
+  // 2026-11-18 用户定：高亮不再把选中原文当内容，直接命名「高亮N」（每份讲义从 1 数）
+  assert.equal(creates[0].item.content, '高亮1');
+});
+
+test('行内格式（D 卡第二轮）：批注按钮弹 compose（带色块），留空也允许存成纯色高光', async () => {
+  const mutateCalls = [];
+  const text = '第一段：PN 结具有单向导电性。\n';
+  const quoted = 'PN 结';
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      mutateCalls.push(JSON.parse(init.body));
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1, item: { id: 'n_note' } }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 0, notes: [] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  probe.window.getSelection = () => ({
+    toString: () => quoted,
+    rangeCount: 1,
+    getRangeAt: () => ({
+      startContainer: null, startOffset: 0, commonAncestorContainer: null,
+      getBoundingClientRect: () => ({ top: 100, left: 100, width: 40, height: 18, right: 140, bottom: 118 }),
+    }),
+  });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'f/§2.md', text })); };
+  let f = render();
+  f.find((n) => String(n.props?.className ?? '') === 'sa-reading').props.onMouseUp();
+  f = render();
+  const noteBtn = f.find((n) => n.props?.['data-type'] === 'note' && String(n.props?.className ?? '').includes('sa-annotation-bubble-entry'));
+  assert.ok(noteBtn, '菜单里要有「批注」按钮');
+  noteBtn.props.onClick();
+  f = render();
+  const compose = f.find((n) => n.props?.['data-mode'] === 'compose');
+  assert.ok(compose, '点批注要弹 compose 输入框');
+  const colorSw = f.find((n) => n.props?.['data-compose-color'] === 'blue');
+  assert.ok(colorSw, '批注输入框带色块');
+  colorSw.props.onClick(); // 选蓝
+  f = render();
+  // 直接从气泡提交（draft 留空）
+  const commitBtn = f.find((n) => n.props?.['data-action'] === 'commit');
+  assert.ok(commitBtn, 'compose 有完成按钮');
+  commitBtn.props.onClick();
+  for (let i = 0; i < 40; i += 1) await Promise.resolve();
+  const creates = mutateCalls.filter((call) => call.action === 'create');
+  assert.equal(creates.length, 1, '留空也能存');
+  assert.equal(creates[0].item.type, 'note');
+  assert.equal(creates[0].item.content, quoted, '留空时用选中原文当内容');
+  assert.deepEqual(creates[0].item.style, { highlight: 'blue' }, '选的颜色带进 style');
+});
+
+test('高亮命名（2026-11-18）：nextHighlightLabel 每份讲义各自从 1 数，只认「高亮N」，不误数自定义批注', () => {
+  const probe = statefulClient({ fetch: async () => ({ json: async () => ({ ok: true, count: 0, notes: [] }) }) });
+  const { nextHighlightLabel } = probe.half.DESCRIPTORS.internals;
+  assert.equal(typeof nextHighlightLabel, 'function');
+  assert.equal(nextHighlightLabel([]), '高亮1');
+  assert.equal(nextHighlightLabel(undefined), '高亮1');
+  assert.equal(nextHighlightLabel([{ content: '高亮1' }]), '高亮2');
+  assert.equal(nextHighlightLabel([{ content: '高亮1' }, { content: '高亮2' }, { content: '高亮3' }]), '高亮4');
+  // 取最大 +1（中间被删不重号，避免重名）
+  assert.equal(nextHighlightLabel([{ content: '高亮1' }, { content: '高亮5' }]), '高亮6');
+  // 用户手写、含「高亮」但不是纯「高亮N」的名字不参与计数
+  assert.equal(nextHighlightLabel([{ content: '高亮这一句要背' }, { content: '注意高亮2' }]), '高亮1');
+  // 非 highlight 类型、非对象脏数据忽略
+  assert.equal(nextHighlightLabel([null, 'x', { content: '高亮7' }]), '高亮8');
+});
+
+test('左栏整合（2026-11-18）：dockPanel 模式不渲染浮动气泡、把状态+动作上报给外层', async () => {
+  // 说明：这批测试用的是浅渲染 probe，fakeReact 的 useEffect 是空实现，effect 里上报逻辑跑不到。
+  // 所以这里做「源码守卫」：确认 dockPanel 分支、上报 effect、动作清单、kp 正文的接线都在，
+  // 以及不 dockPanel 时浮动气泡照旧（资料页不受影响）。真正的运行时行为由用户在 DSH 里验收。
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // 1) 签名带 dockPanel / onDockChange
+  assert.match(source, /function AnnotationLayer\(\{ file = '', text = '', mode = 'preview', nodes = null, onNotesChange = null, dockPanel = false, onDockChange = null \}/, 'AnnotationLayer 要接 dockPanel/onDockChange');
+  // 2) dockPanel 时不画浮动气泡
+  assert.match(source, /dockPanel \? null : renderBubble\(\)/, 'dockPanel 模式不得渲染浮动气泡');
+  // 3) 上报 effect 把状态+完整动作清单回传
+  assert.match(source, /if \(typeof onDockChange !== 'function'\) return;/, '上报 effect 守卫');
+  for (const key of ['quickHighlight:', 'compose:', 'inlineStyle:', 'viewStyle:', 'setDraft:', 'setStyle:', 'commit:', 'cancel:', 'removeNote:']) {
+    assert.ok(source.includes(key), `actions 里要有 ${key.replace(':', '')}`);
+  }
+  // 4) kp 正文的 AnnotationLayer 传 dockPanel:true + onDockChange
+  assert.match(source, /dockPanel: true, onDockChange: reportDockChange/, 'kp 正文要接线进左栏面板');
+  // 5) KnowledgeTab 有 reportDockChange 与 dockState
+  assert.match(source, /const reportDockChange = useCallback/, 'KnowledgeTab 要有 reportDockChange');
+  // 6) 左栏渲染面板容器
+  assert.match(source, /'data-slot':'annotation-dock'/, '左栏要有行内格式面板容器');
+  // 7) 高亮不再自动填选中原文：applyQuickHighlight 里用 nextHighlightLabel
+  assert.match(source, /const content = nextHighlightLabel\(notes\);/, '高亮内容要用 高亮N 命名，不再填原文');
+});
+
+
+test('行内格式（D 卡第二轮）：高亮标记挂角标小按钮，点它打开该条的编辑气泡（含改色/删除）', async () => {
+  const text = '第一段：二极管导通压降约 0.7V。\n';
+  const quoted = '导通压降';
+  const start = text.indexOf(quoted);
+  const note = { id: 'n1', type: 'note', content: '注意这个 0.7V', anchor: { quote: quoted, start, end: start + quoted.length, prefix: '', suffix: '' }, style: { highlight: 'green' } };
+  const fetchStub = async (url, init = {}) => {
+    if ((init && init.method) === 'POST') {
+      return { json: async () => ({ ok: true, key: 'annotations', hash: 'h1', count: 1, item: { id: 'n1' } }) };
+    }
+    return { json: async () => ({ ok: true, key: 'annotations', count: 1, notes: [note] }) };
+  };
+  const probe = statefulClient({ fetch: fetchStub });
+  const lib = probe.half.DESCRIPTORS.internals;
+  await lib.annotationsFor('g/§3.md', { force: true });
+  const render = () => { probe.begin(); return probe.flat(lib.annotationLayer({ file: 'g/§3.md', text })); };
+  let f = render();
+  const badge = f.find((n) => n.props?.['data-annotation-badge'] === 'n1');
+  assert.ok(badge, '已放置的高亮/批注要挂一个角标按钮');
+  badge.props.onClick({ stopPropagation() {} });
+  f = render();
+  const view = f.find((n) => n.props?.['data-mode'] === 'view' && n.props?.['data-annotation-id'] === 'n1');
+  assert.ok(view, '点角标要打开该条的编辑气泡（view）');
+  const delBtn = f.find((n) => n.props?.['data-action'] === 'delete');
+  assert.ok(delBtn, '编辑气泡里有删除按钮');
+  const recolor = f.find((n) => n.props?.['data-view-color'] === 'pink');
+  assert.ok(recolor, '编辑气泡里有改色色块');
+});
+
+test('行内格式（D 卡第二轮修复「点按钮没反应」）：气泡不再因 selectionchange 被拆，改用体外按下才关', () => {
+  // 真实根因：鼠标按下气泡按钮会先清掉正文选区 → 旧版 selectionchange 监听把气泡拆了 → click 到不了。
+  // 修法：删掉 selectionchange 关气泡，改成「气泡外部 mousedown 才关」（气泡带 data-annotation-guard）。
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(!/addEventListener\('selectionchange'/.test(src),
+    '不能再靠 selectionchange 关气泡（点按钮会先清选区，把气泡拆了）');
+  assert.ok(/addEventListener\('mousedown', onDown, true\)/.test(src),
+    '要用捕获阶段 mousedown 监听判断点是否在气泡外');
+  assert.ok(src.includes("target.closest('[data-annotation-guard]')"),
+    '气泡容器要带 data-annotation-guard，体外按下判定靠它');
+});
+
+test('批注交互（F2）：点正文标记就地改 / 删，update 与 delete 都带 id', async () => {  const mutateCalls = [];
   const text = '第一段：数据结构研究数据的组织方式。\n第二段：算法研究求解步骤。\n';
   const quoted = '算法研究求解步骤。';
   const start = text.indexOf(quoted);
@@ -3986,6 +4243,37 @@ test('批注交互（F2）：同句多命中按选区在渲染文本里的序号
   assert.equal(lost.state, 'lost');
   assert.equal(lost.start, null);
   assert.equal(lib.resolveAnnotationAnchor({ body, renderedText: body, quote: '   ', renderedStart: 0 }), null, '空白选区不弹气泡');
+});
+
+test('行内格式（D 卡）：<8 字短选锚点带 exact=true，≥8 字不带', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  const body = '逻辑代数是数字电路的基础。';
+  const shortQuote = '逻辑';
+  const s = lib.resolveAnnotationAnchor({ body, renderedText: body, quote: shortQuote, renderedStart: body.indexOf(shortQuote) });
+  assert.equal(s.exact, true, '2 字短选要标 exact，服务端不扩段');
+  assert.equal(s.quote, shortQuote);
+  const longQuote = '逻辑代数是数字电路的基础。';
+  const l = lib.resolveAnnotationAnchor({ body, renderedText: body, quote: longQuote, renderedStart: 0 });
+  assert.equal(l.exact, false, '≥8 字走旧语义，不带 exact');
+});
+
+test('行内格式（D 卡）：公式/表格区域判定——祖先命中即不支持', () => {
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationUnsupportedRegion, 'function', '区域判定要导出');
+  const mk = (tag, className) => ({ nodeType: 1, tagName: tag, className: className ?? '', parentNode: null });
+  assert.equal(lib.annotationUnsupportedRegion(mk('SPAN')), false, '普通 span 支持');
+  const katex = mk('SPAN', 'katex');
+  assert.equal(lib.annotationUnsupportedRegion(katex), true, 'katex 公式容器不支持');
+  const td = mk('TD');
+  assert.equal(lib.annotationUnsupportedRegion(td), true, '表格单元格不支持');
+  const math = mk('MATH');
+  assert.equal(lib.annotationUnsupportedRegion(math), true, 'math 元素不支持');
+  // 深层祖先命中也能判出来
+  const textNode = { nodeType: 3, nodeValue: 'x', parentNode: mk('TD') };
+  assert.equal(lib.annotationUnsupportedRegion(textNode), true, '文本节点的 td 祖先要判出来');
+  assert.equal(lib.annotationUnsupportedRegion(null), false);
 });
 
 test('批注交互（F2）：气泡定位贴选区右上角，上方放不下翻下方、右侧越界往左收', () => {
@@ -4098,3 +4386,253 @@ test('批注交互（F2）：气泡/插入段落样式齐备、字号用 em 不�
   assert.ok(!/#[0-9a-fA-F]{3,6}/.test(block), '气泡样式不得写死颜色');
   assert.ok(!/font-size:\s*\d+px/.test(block), '气泡字号不许写裸 px（正文跟着 --sa-read-scale 缩放，批注要一起变）');
 });
+
+test('marks 插槽（D 卡）：高光索引横条接线齐全，空态给提示',()=>{
+  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
+  const source=fs.readFileSync(CLIENT_FILE,'utf8');
+  // 1) AnnotationLayer 通过 onNotesChange 上报，KnowledgeTab 接收
+  assert.ok(source.includes('onNotesChange'), 'AnnotationLayer 要有 onNotesChange 上报口');
+  assert.ok(/onNotesChange\(fileKey, notes\)/.test(source), 'AnnotationLayer 要把 fileKey+notes 报给外层');
+  assert.ok(source.includes('reportReadingNotes'), 'KnowledgeTab 要有 reportReadingNotes 接收器');
+  assert.ok(source.includes('readingMarks'), 'KnowledgeTab 要存 readingMarks 快照');
+  // 2) marksSlotContent 渲染 sa-marks-list / sa-marks-chip，并调 scrollToMark
+  assert.ok(source.includes('marksSlotContent'), 'marks 插槽要有 marksSlotContent 渲染');
+  assert.ok(source.includes('sa-marks-list'), '索引横条要有 .sa-marks-list 容器');
+  assert.ok(source.includes('sa-marks-chip'), '每条标记要有 .sa-marks-chip');
+  assert.ok(source.includes("'marks'"), 'data-slot="marks" 契约不能变');
+  assert.ok(/scrollToMark/.test(source), '点色片要能调 scrollToMark 滚动定位');
+  // 3) 空态文案
+  assert.ok(source.includes('高光索引（暂无）'), '无标记时给「高光索引（暂无）」提示');
+
+  // 4) 行为：进入学习模式后 marks 插槽渲染的是占位提示（当前阅读面无标记时）
+  const docs={courses:{courses:[{id:'a',name:'A'}]},
+   knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
+   knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]}]}]},
+   knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,title:'A',styles:[{key:'C',label:'问题驱动式',file:'a/第01章-C.md'}]}]}]}};
+  const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
+  lib.resetKnowledgeUi();lib.readKnowledgeUi({selected:'a1',treeCourseId:'a',courseId:'a'});
+  const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
+  let f=render();
+  f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读')).props.onClick();f=render();
+  const page={scrollTop:0,scrollLeft:0,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.props?.className==='sa-reader-pane').props.ref.current={closest:()=>page,getBoundingClientRect:()=>({top:0})};
+  f.find(n=>n.type==='button'&&text(n)==='进入学习模式').props.onClick({currentTarget:{}});f=render();
+  const slot=f.find(n=>n.props?.className==='sa-study-slot sa-study-marks');
+  assert.ok(slot, '学习模式要有 marks 插槽');
+  assert.equal(slot.props['data-slot'],'marks','插槽 data-slot 必须是 marks（三插槽契约）');
+  assert.ok(f.some(n=>n.props?.className==='sa-study-slot-hint'&&text(n)==='高光索引（暂无）'),'无标记时插槽显示占位提示');
+});
+
+test('kp: 虚拟文件的行内格式必须随请求带 kpText（服务端锚点校验用，回归防丢）', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // annotationCreateItem 支持 kpText 入参
+  assert.ok(/function annotationCreateItem\(\{[^)]*kpText/.test(src), 'annotationCreateItem 签名要含 kpText');
+  // 只有 kp: 开头才带 kpText，且带的是 renderedText
+  const carriers = src.match(/kpText:\s*fileKey\.startsWith\('kp:'\)\s*\?\s*renderedText\s*:\s*undefined/g) || [];
+  assert.ok(carriers.length >= 3, `create 调用点（含撤销重建）都要带 kpText，实际 ${carriers.length} 处`);
+  // item 上真正落到 kpText 字段
+  assert.ok(src.includes("item.kpText = kpText"), 'kp: 文件要把 kpText 落到 item 上');
+});
+
+test('行内格式第九轮（2026-11-18）：索引条显示批注内容不显示原文 / 再编辑可改字色下划线粗斜 / 点击跳转并闪', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // q2：索引条 label 优先 content（高亮N），为空才回落原文；不能先 anchor.quote
+  assert.ok(/const label = String\(note\.content \?\? ''\)\.trim\(\) \|\| String\(note\?\.anchor\?\.quote \?\? ''\)/.test(src),
+    '索引条要优先显示批注内容（高亮N），内容为空才回落原文');
+  assert.ok(!/const quote = String\(note\?\.anchor\?\.quote \?\? note\.content/.test(src),
+    '索引条不能再先取 anchor.quote（否则命名的「高亮N」被原文盖掉）');
+  // q1：view 面板有 字色/下划线/粗斜 控件，且走 viewInline（toggle+replace 提交）
+  assert.ok(src.includes('data-view-color-text'), '再编辑面板要有字色色块');
+  assert.ok(src.includes('data-view-underline'), '再编辑面板要有下划线色块');
+  assert.ok(src.includes("'data-view-flag': 'bold'"), '再编辑面板要有加粗');
+  assert.ok(src.includes("'data-view-flag': 'italic'"), '再编辑面板要有斜体');
+  assert.ok(src.includes('viewInline: (patch) =>'), '要有 viewInline 动作（toggle 合并后提交）');
+  assert.ok(src.includes('viewInlineApply'), '要有 viewInlineApply 帮手（toggle 合并）');
+  assert.ok(/submitViewStyle\(cur, next, \{ replace: true, keepOpen: true \}\)/.test(src), 'viewInline 要用 replace 模式提交且 keepOpen（取消维度时真删 key + 支持连续编辑）');
+  // submitViewStyle 的 replace 分支：空 style → null（全清）
+  assert.ok(/else if \(replace\) finalStyle = Object\.keys\(style\)\.length === 0 \? null : \{ \.\.\.style \}/.test(src), 'replace 模式空 style 要写 null');
+  // q3：滚动到 marks 时找真正的滚动祖先并加 is-flash（十一轮改为 findScroller，不再盲用 pane）
+  assert.ok(/const findScroller = \(el\) =>/.test(src), '跳转要先找真正的滚动容器（findScroller）');
+  assert.ok(/scroller\.scrollTo\(\{ top: nextTop, behavior: 'smooth' \}\)/.test(src), '跳转要显式滚到目标容器');
+  assert.ok(/data-annotation-mark-id/.test(src), 'mark 元素要带 data-annotation-mark-id 供跳转精确定位');
+  assert.ok(src.includes('.sa-annotation-mark.is-flash'), '要有 is-flash 闪烁样式');
+});
+
+test('行内格式第十轮（2026-11-18）：高亮不再叠「假下划线」/ 加粗斜体另起一行', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // q2「点高亮文字自带下划线」：那条线其实是 .sa-annotation-found 的 inset box-shadow。
+  // 有自带底色的标记（选了色的高亮/纯色批注）要加 sa-annotation-filled，且 CSS 里 filled 去掉阴影。
+  assert.ok(/hasOwnFill \? ' sa-annotation-filled' : ''/.test(src), '有自带底色的 mark 要带 sa-annotation-filled 类');
+  assert.ok(/\.sa-annotation-mark\.sa-annotation-filled\{box-shadow:none\}/.test(src), 'filled 标记要去掉 found 的 inset 阴影（那条被误认为下划线）');
+  // q4「加粗斜体应在下划线颜色下方、不并列」：B/I 放进独立的 sa-dock-row 行
+  assert.ok(/'sa-dock-row'/.test(src), '要有 sa-dock-row 行容器');
+  assert.ok(/\.sa-dock-row\b/.test(src), '要有 .sa-dock-row 样式');
+  // 加粗斜体不再和下划线色块同处一个 sa-dock-swatches（用简单结构断言：B 按钮前出现 sa-dock-row）
+  assert.ok(/sa-dock-row[\s\S]{0,500}data-view-flag': 'bold'/.test(src), 'B 按钮应包在 sa-dock-row 里（下划线色块之后另起一行）');
+});
+
+test('行内格式第十一轮（2026-11-18）：公式高亮可见 / 点索引条准确滚动 / 连续编辑直到点完成', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // 1) 公式子树高亮：不能只跳游标什么都不画，要包成 sa-annotation-formula-hit（带底色）才看得见
+  assert.ok(src.includes('sa-annotation-formula-hit'), '公式子树要被包进 sa-annotation-formula-hit');
+  assert.ok(/const covering = textMarks\.find\(\(mark\) => mark\.start < to && mark\.end > from\)/.test(src), '公式子树要检查是否有 mark 命中其渲染区间');
+  // 四修：高亮收窄——外层保留 .sa-formula 块级 div，内层 span.sa-annotation-formula-hit 用 display:inline-block 只框公式本身
+  assert.ok(/const innerHitStyle = \{[\s\S]*?display: 'inline-block'/.test(src), '公式高亮壳要用 display:inline-block 收窄到只框公式本身');
+  assert.ok(/const hitProps = \{[\s\S]*?className: 'sa-annotation-formula-hit'/.test(src), '内层高亮壳要挂 sa-annotation-formula-hit 类');
+  // 2) 滚动：找真正可滚祖先（findScroller），目标中心对齐
+  assert.ok(/const scroller = findScroller\(target\) \?\?/.test(src), '滚动要用 findScroller 兜底');
+  // 3) 连续编辑：submitViewStyle 支持 keepOpen，完成后才关；viewDone 显式收尾
+  assert.ok(/const keepOpen = options !== null && options !== undefined && options\.keepOpen === true/.test(src), 'submitViewStyle 要支持 keepOpen');
+  assert.ok(/if \(keepOpen\) \{/.test(src), 'keepOpen 时保存后不关面板');
+  assert.ok(src.includes('viewDone: () => closeBubble()'), '要有 viewDone 显式收尾');
+});
+
+test('行内格式第十三轮（2026-11-18）：编辑态点高光色不退出 + 首次选中可连续叠加到「完成」', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // 2) 编辑态（view）点高光色块也走 viewInline（keepOpen），不再 viewStyle 一点就关
+  assert.ok(!/title: `改成\$\{[\s\S]{0,80}\}色`,\s*style: \{ backgroundColor: annotationStyleToCss\(\{ highlight: v \}\)[\s\S]{0,120}onClick: \(\) => actions\.viewStyle\(\{ highlight: v \}\)/.test(src),
+    '编辑态高光色块不能再走 viewStyle（会退出编辑）');
+  assert.ok(/onClick: \(\) => actions\.viewInline\(\{ highlight: v \}\)/.test(src), '编辑态高光色块要走 viewInline（keepOpen）');
+  // 1) 菜单态点色块只累积 pendingStyle（queueInlineStyle），点「完成」才 commitInlineStyle
+  assert.ok(src.includes('queueInlineStyle: (patch) => queueInlineStyle(patch)'), 'actions 要暴露 queueInlineStyle');
+  assert.ok(src.includes('commitInlineStyle: () => commitInlineStyle()'), 'actions 要暴露 commitInlineStyle');
+  assert.ok(/function queueInlineStyle\(patch\)/.test(src), '要有 queueInlineStyle（只改 pendingStyle 预览）');
+  assert.ok(/pendingStyle/.test(src), '菜单态要累积到 pendingStyle');
+  assert.ok(/'data-action': 'apply-inline'/.test(src), '菜单态要有「完成」按钮（data-action=apply-inline）');
+});
+
+test('E1 Step3：annotationCreateItem 带 markKind + 面板类型按钮 + view 态 update 不关面板', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // 1) 签名与白名单/中文展示映射
+  assert.ok(/function annotationCreateItem\(\{[^)]*markKind/.test(src), 'annotationCreateItem 签名要含 markKind');
+  assert.ok(src.includes("const ANNOTATION_MARK_KINDS = ['key', 'question', 'review', 'learned'];"), '要有 markKind 白名单');
+  assert.ok(src.includes("const ANNOTATION_MARK_LABELS = { key: '重点', question: '疑问', review: '待复习', learned: '已学会' };"), '要有中文展示映射');
+  assert.ok(src.includes("if (ANNOTATION_MARK_KINDS.includes(markKind)) item.markKind = markKind;"), '只把合法英文键落到 item');
+  // 2) 类型按钮渲染帮手 + data-mark-kind（view/compose 两处面板共用）
+  assert.ok(/function markKindButtons\(/.test(src), '要有共用的类型按钮渲染帮手');
+  assert.ok(src.includes("'data-mark-kind':"), '类型按钮要带 data-mark-kind');
+  assert.ok(/markKindButtons\(bubble\.markKind/.test(src), '浮动气泡的 view/compose 要渲染类型按钮');
+  assert.ok(/markKindButtons\(b\.markKind/.test(src), '左侧栏 dock 的 view/compose 要渲染类型按钮');
+  // 3) view 态走 update（submitMarkKind，不关面板）；compose 先记本地（setMarkKind）随完成落库
+  assert.ok(/async function submitMarkKind\(/.test(src), 'view 态要有 submitMarkKind');
+  assert.ok(/mutate\('annotations', 'update', \{ id, item: \{ markKind: value \} \}\)/.test(src), 'view 态 markKind 走 update');
+  assert.ok(src.includes("viewMarkKind: (kind) => submitMarkKind(bubble, kind)"), 'actions 要暴露 viewMarkKind');
+  assert.ok(src.includes('setMarkKind: (kind) =>'), 'actions 要暴露 setMarkKind（compose 本地态）');
+  assert.ok(src.includes("setStatus(value === null ? '已设为普通'"), '点「普通」要清除 markKind（传 null）');
+  // 4) create 调用点带 markKind；历史记录 + 撤销恢复
+  assert.ok(/anchor, style, markKind: current\.markKind/.test(src), 'compose 完成要把 markKind 带进 create item');
+  assert.ok(/anchor: action\.anchor, markKind: action\.markKind/.test(src), 'undo 要从历史恢复 markKind');
+  assert.ok(/pushHistory\(\{ kind: 'create', id: createdId, markKind: item\.markKind \}\)/.test(src), 'create 历史要记 markKind');
+  // 旧数据兼容：无 markKind 的按钮/气泡不报错（选中态用 ?? null 归一）
+  assert.ok(/\(current \?\? null\) === item\.key/.test(src), '选中态要把 undefined 归一成 null（普通）');
+
+  // 5) 功能：annotationCreateItem 纯函数行为（零依赖，直接调 internals）
+  const { half } = loadClient();
+  const fn = half.DESCRIPTORS.internals.annotationCreateItem;
+  assert.equal(typeof fn, 'function', 'annotationCreateItem 要导出给测试');
+  const base = { file: '数电/讲义/a.md', type: 'note', content: '重点公式', anchor: { quote: 'Y=AB', start: 0, end: 4 } };
+  assert.equal(fn({ ...base }).markKind, undefined, '缺省 markKind 不落字段（旧行为不变）');
+  assert.equal(fn({ ...base, markKind: 'key' }).markKind, 'key', '合法 key 原样落字段');
+  assert.equal(fn({ ...base, markKind: 'question' }).markKind, 'question', '合法 question 原样落字段');
+  assert.equal(fn({ ...base, markKind: 'review' }).markKind, 'review', '合法 review 原样落字段');
+  assert.equal(fn({ ...base, markKind: 'learned' }).markKind, 'learned', '合法 learned 原样落字段');
+  assert.equal(fn({ ...base, markKind: '注意' }).markKind, undefined, '中文/非法值静默丢');
+  assert.equal(fn({ ...base, markKind: null }).markKind, undefined, 'null 不落字段（=普通）');
+  assert.equal(fn({ ...base, markKind: 'key', style: { highlight: 'yellow' } }).style.highlight, 'yellow', 'markKind 与 style 共存');
+});
+
+test('E1 Step4：marks 徽标 + AI 材料导出区（范围/两格式/失败退化）', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  // 1) 徽标：annotationMarkBadge + chip 上 data-mark-kind + sa-marks-badge
+  assert.ok(/function annotationMarkBadge\(/.test(src), '要有徽标映射纯函数');
+  assert.ok(src.includes("'data-mark-kind': note.markKind === undefined || note.markKind === null ? 'normal' : String(note.markKind)"), 'chip 要带 data-mark-kind（缺省归一 normal）');
+  assert.ok(src.includes("h('span', { className: 'sa-marks-badge', 'data-mark-kind': String(note.markKind) }"), '有标记时 chip 内要加徽标 span');
+  assert.ok(src.includes('const markBadge = annotationMarkBadge(note.markKind);'), 'chip 渲染要取徽标');
+  // 2) 导出区：data-slot=ai-export + 范围切换 + 两格式入口
+  assert.ok(src.includes("'data-slot':'ai-export'"), 'focus header 要有 AI 导出区');
+  assert.ok(src.includes("'data-export-scope':'file'") && src.includes("'data-export-scope':'all'"), '要有当前文件/全部两档范围');
+  assert.ok(src.includes("'data-export-format':'md'") && src.includes("'data-export-format':'json'"), '要有 md/json 两个格式入口');
+  assert.ok(src.includes('aiExportScope === \'file\' ? readingMarks.file : \'\''), '当前文件档要按 readingMarks.file 过滤');
+  // 3) 失败退化：downloadTextFile 返 false → <pre> 展示 + 复制
+  assert.ok(/function downloadTextFile\(/.test(src), '要有文本下载帮手');
+  assert.ok(src.includes("typeof URL.createObjectURL !== 'function') return false"), '下载不可用要返回 false 退化信号');
+  assert.ok(src.includes('setAiExportPreview({ format, text })'), '下载失败要把内容塞进预览态');
+  assert.ok(src.includes("h('pre',{className:'sa-ai-export-pre'},aiExportPreview.text)"), '预览态要渲染 <pre> 展示');
+  assert.ok(src.includes('navigator?.clipboard?.writeText'), '预览态要有复制到剪贴板');
+  assert.ok(src.includes('/annotations/export?'), '导出要走 /annotations/export GET');
+  // 3b) 自动落盘信息（2026-11-18 用户要求「不用手点就拿到最新」）
+  assert.ok(src.includes('/annotations/material'), '要有自动材料信息接口调用');
+  assert.ok(src.includes('loadAiMaterialInfo'), '要有加载自动材料信息的方法');
+  assert.ok(src.includes('已自动保存'), '要有「已自动保存」提示');
+  assert.ok(src.includes("className:'sa-ai-export-auto'"), '要有自动保存状态行');
+  // 4) 纯函数导出给测试
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.annotationMarkBadge, 'function', 'annotationMarkBadge 要导出');
+  assert.equal(typeof lib.aiExportQuery, 'function', 'aiExportQuery 要导出');
+  assert.equal(typeof lib.aiExportText, 'function', 'aiExportText 要导出');
+  // 5) 功能：徽标映射
+  assert.equal(lib.annotationMarkBadge('key'), '重点');
+  assert.equal(lib.annotationMarkBadge('question'), '疑问');
+  assert.equal(lib.annotationMarkBadge('review'), '待复习');
+  assert.equal(lib.annotationMarkBadge('learned'), '已学会');
+  assert.equal(lib.annotationMarkBadge(undefined), null, '无标记不给徽标');
+  assert.equal(lib.annotationMarkBadge('注意'), null, '非法值不给徽标');
+  // 6) 功能：查询串（format 白名单 + file 非空才带）
+  const qAll = new URLSearchParams(lib.aiExportQuery('md', ''));
+  assert.equal(qAll.get('format'), 'md');
+  assert.equal(qAll.get('file'), null, '空 file 不带（=全部）');
+  const qJson = new URLSearchParams(lib.aiExportQuery('json', ''));
+  assert.equal(qJson.get('format'), 'json');
+  const qBad = new URLSearchParams(lib.aiExportQuery('xml', ''));
+  assert.equal(qBad.get('format'), 'md', '非 json 一律兜底 md');
+  const qFile = new URLSearchParams(lib.aiExportQuery('md', '数电/a.md'));
+  assert.equal(qFile.get('file'), '数电/a.md', '非空 file 原样带（URL 编码可解）');
+  // 7) 功能：文本转换
+  assert.equal(lib.aiExportText('md', { markdown: '# 材料' }), '# 材料');
+  assert.equal(lib.aiExportText('md', {}), '');
+  assert.equal(lib.aiExportText('json', { notes: [{ id: 1 }] }), JSON.stringify([{ id: 1 }], null, 2));
+});
+
+test('E1 bug 修：跨段落选区（quote 带 \\n）能折平锚定，选中可编辑、整段可高亮', () => {
+  const src = fs.readFileSync(CLIENT_FILE, 'utf8');
+  assert.ok(/function resolveSelectionAnchor\(/.test(src), '要有选区折平锚点帮手');
+  assert.ok(src.includes("raw.replace(/[\\r\\n]+/g, '')"), '折平只去换行、保留空格');
+  assert.ok(src.includes('resolveSelectionAnchor(body, renderedText, quote, renderedStart)'), '快照要走折平锚点');
+
+  const { half } = loadClient();
+  const lib = half.DESCRIPTORS.internals;
+  assert.equal(typeof lib.resolveSelectionAnchor, 'function', 'resolveSelectionAnchor 要导出');
+
+  // 真实场景：两段正文拼接成 body（无换行），浏览器选区在块间插了 \n
+  const p1 = '电荷不是一种看不见的流体，它实实在在挂在粒子上，还只能一份一份地出现。';
+  const p2 = '你看，摩擦过的塑料尺子能吸纸屑，冬天脱毛衣会被电一下，这些现象背后都是同一个东西在捣乱——电荷。';
+  const body = p1 + p2;
+  const quoteAcross = p1 + '\n' + p2; // Selection.toString() 的跨段落结果
+
+  // 原样锚定失败（lost），折平后成功（found）且 offset 正确
+  const original = lib.resolveAnnotationAnchor({ body, renderedText: body, quote: quoteAcross });
+  assert.equal(original.state, 'lost', '带换行原样锚定应失败');
+  const fixed = lib.resolveSelectionAnchor(body, body, quoteAcross, -1);
+  assert.equal(fixed.anchor.state, 'found', '折平后要锚定成功');
+  assert.equal(fixed.quote, quoteAcross.replace(/[\r\n]+/g, ''), 'quote 是正文真实连续子串');
+  assert.equal(fixed.anchor.start, 0);
+  assert.equal(fixed.anchor.end, body.length);
+  assert.equal(body.slice(fixed.anchor.start, fixed.anchor.end), fixed.quote, '锚点原文片段与 quote 一致');
+
+  // 单段（无换行）场景不受影响：原样成功就直接用，不折平
+  const single = lib.resolveSelectionAnchor(body, body, p2, -1);
+  assert.equal(single.anchor.state, 'found');
+  assert.equal(single.quote, p2, '无换行时 quote 原样返回');
+
+  // 折平后仍找不到（选了插入段落）→ 如实 lost，不硬套别处
+  const gone = lib.resolveSelectionAnchor(body, body, '完全不存在的句子\n也不存在', -1);
+  assert.equal(gone.anchor.state, 'lost', '折平也找不到就保持 lost');
+
+  // 空格不能被折平误合并（避免把 "a b" 锚到 "ab"）
+  const spaceBody = 'ab cd';
+  const withSpace = lib.resolveSelectionAnchor(spaceBody, spaceBody, 'ab\ncd', -1);
+  assert.equal(withSpace.anchor.state, 'lost', '去掉换行后 "abcd" 不在正文里，不能误命中 "ab cd"');
+});
+
+

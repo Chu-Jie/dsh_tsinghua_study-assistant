@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
+
     // ---------------------------------------------------------------------
     // 常量与文案
     // ---------------------------------------------------------------------
@@ -933,6 +934,121 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 行内格式调色板（2026-11-17 D 卡）：语义键 → 实际 CSS 值。
+     *
+     * 数据里只存语义键（见 lib/core.js ANNOTATION_STYLE_*），换主题不改数据。
+     * 每档都给出「浅色主题下可读」的实色，高光用半透明底叠加正文背景。
+     */
+    const ANNOTATION_STYLE_PALETTE = {
+      color: { red: '#c0392b', blue: '#2c6fd1', green: '#1e8449', black: '#1f2328', gray: '#8a8f98' },
+      highlight: {
+        yellow: 'rgba(255,214,64,.45)', green: 'rgba(99,211,132,.45)', blue: 'rgba(94,164,255,.42)',
+        pink: 'rgba(255,133,192,.42)', orange: 'rgba(255,164,64,.42)',
+      },
+      underline: { red: '#c0392b', blue: '#2c6fd1', gray: '#8a8f98' },
+    };
+
+    /**
+     * AI 材料标记类型（2026-11-18 E1）：英文键存数据，中文只做展示层文案。
+     * 与 lib/core.js 的 ANNOTATION_MARK_KINDS 白名单一一对应；缺省（无此字段）=普通。
+     */
+    const ANNOTATION_MARK_KINDS = ['key', 'question', 'review', 'learned'];
+    const ANNOTATION_MARK_LABELS = { key: '重点', question: '疑问', review: '待复习', learned: '已学会' };
+
+    /**
+     * 类型按钮行（2026-11-18 E1）：普通 / 重点 / 疑问 / 待复习。
+     * onPick(kind) —— kind=null 表示「普通」（清除 markKind），其余是白名单键。
+     * data-mark-kind 供样式与测试定位；keepOpen 由调用方处理（view 态走 update 不关面板）。
+     */
+    function markKindButtons(current, onPick, rowClass, btnClass, disabled, labelClass) {
+      const items = [{ key: null, label: '普通' }, ...ANNOTATION_MARK_KINDS.map((k) => ({ key: k, label: ANNOTATION_MARK_LABELS[k] }))];
+      return h('div', { className: rowClass, 'data-role': 'annotation-mark-kind' },
+        h('span', { className: labelClass ?? 'sa-annotation-style-label' }, '类型'),
+        ...items.map((item) => {
+          const selected = (current ?? null) === item.key;
+          return h('button', {
+            key: `mk-${item.key ?? 'normal'}`,
+            type: 'button',
+            className: `${btnClass}${selected ? ' is-selected' : ''}`,
+            'data-mark-kind': item.key ?? 'normal',
+            'aria-pressed': selected ? 'true' : 'false',
+            disabled: disabled === true,
+            title: item.key === null ? '普通（无类型标记）' : `标记为${item.label}`,
+            onClick: () => onPick(item.key),
+          }, item.label);
+        }));
+    }
+
+    /**
+     * AI 材料标记徽标文案（2026-11-18 E1，纯函数）：英文键 → 中文标签；未知/空 → null。
+     * 索引条 chip 用它给「疑问/重点/待复习」加一眼可见的前缀。
+     */
+    function annotationMarkBadge(markKind) {
+      return Object.prototype.hasOwnProperty.call(ANNOTATION_MARK_LABELS, markKind) ? ANNOTATION_MARK_LABELS[markKind] : null;
+    }
+
+    /**
+     * 导出 AI 材料的查询串（2026-11-18 E1，纯函数）：format 固定白名单，file 非空才带上。
+     * 与 lib/api.js 的 canonicalAnnotationFile 过滤口径一致（空 file = 全部）。
+     */
+    function aiExportQuery(format, file) {
+      const query = new URLSearchParams({ format: format === 'json' ? 'json' : 'md' });
+      if (file !== '' && file !== null && file !== undefined) query.set('file', String(file));
+      return query.toString();
+    }
+
+    /** 导出结果 → 下载/展示文本（纯函数）：md 用服务端正文，json 用带缩进的整包。 */
+    function aiExportText(format, result) {
+      if (format === 'json') return JSON.stringify(result?.notes ?? [], null, 2);
+      return String(result?.markdown ?? '');
+    }
+
+    /**
+     * 纯文本另存为文件（2026-11-18 E1）：Blob + createObjectURL + <a download>，与 downloadBackup 同款。
+     * 返回 false 表示当前环境不给下载（DSH 内嵌 webview 常见），调用方据此退化为 <pre> + 复制。
+     */
+    function downloadTextFile(text, filename, mime) {
+      try {
+        if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false;
+        const blob = new Blob([text], { type: mime });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * `style` 对象 → React 内联 style 对象（纯函数）。
+     * 只认白名单键，非法/缺省一律忽略；返回 `null` 表示无任何可落样式。
+     * 注意 `bold`/`italic` 走 fontWeight/fontStyle，其余走颜色。
+     */
+    function annotationStyleToCss(style) {
+      if (style === null || typeof style !== 'object' || Array.isArray(style)) return null;
+      const css = {};
+      if (typeof style.color === 'string' && ANNOTATION_STYLE_PALETTE.color[style.color]) {
+        css.color = ANNOTATION_STYLE_PALETTE.color[style.color];
+      }
+      if (typeof style.highlight === 'string' && ANNOTATION_STYLE_PALETTE.highlight[style.highlight]) {
+        css.backgroundColor = ANNOTATION_STYLE_PALETTE.highlight[style.highlight];
+      }
+      const decorations = [];
+      if (typeof style.underline === 'string' && ANNOTATION_STYLE_PALETTE.underline[style.underline]) {
+        decorations.push('underline');
+        css.textDecorationColor = ANNOTATION_STYLE_PALETTE.underline[style.underline];
+      }
+      if (decorations.length > 0) css.textDecorationLine = decorations.join(' ');
+      if (style.bold === true) css.fontWeight = 700;
+      if (style.italic === true) css.fontStyle = 'italic';
+      return Object.keys(css).length === 0 ? null : css;
+    }
+
+    /**
      * 批注渲染计划（纯函数，2026-10-30 B1）。
      *
      * 输入「某文件的批注数组 + 当前完整原文」，输出每条批注该以什么状态显示、高亮到哪里。
@@ -957,7 +1073,7 @@ window.__ModuleLoader__.load({
         const anchor = note.anchor !== null && typeof note.anchor === 'object' ? note.anchor : {};
         const quote = typeof anchor.quote === 'string' ? anchor.quote : '';
         const oldStart = Number.isInteger(anchor.start) && anchor.start >= 0 ? anchor.start : 0;
-        const base = { id: note.id, type: note.type, content: note.content, quote };
+        const base = { id: note.id, type: note.type, content: note.content, quote, style: note.style };
         if (quote === '' || source === '') {
           plan.push({ ...base, state: 'lost', start: null, end: null });
           continue;
@@ -1041,6 +1157,9 @@ window.__ModuleLoader__.load({
       const rendered = String(renderedText ?? '');
       const needle = String(quote ?? '');
       if (needle.trim() === '') return null;
+      // 行内格式（2026-11-17 D 卡）：<8 字短选按精确选区出锚点（服务端会据此不扩段），
+      // exact 标志随 anchor 一路带到提交参数，保证 2–3 字短词只给这几个字上色，不扩到整段。
+      const exact = needle.length < 8;
       const decorate = (start, state) => ({
         state,
         start,
@@ -1048,6 +1167,7 @@ window.__ModuleLoader__.load({
         quote: needle,
         prefix: source.slice(Math.max(0, start - 24), start),
         suffix: source.slice(start + needle.length, start + needle.length + 24),
+        exact,
       });
       const hits = annotationQuoteHits(source, needle);
       if (hits.length === 0) {
@@ -1152,7 +1272,7 @@ window.__ModuleLoader__.load({
         if (renderedHits.length === 0) continue;
         const ordinal = annotationQuoteHits(source, quote).filter((at) => at < item.start).length;
         const at = ordinal < renderedHits.length ? renderedHits[ordinal] : renderedHits[renderedHits.length - 1];
-        out.push({ id: item.id, type: item.type, content: item.content, state: item.state, start: at, end: at + quote.length });
+        out.push({ id: item.id, type: item.type, content: item.content, state: item.state, start: at, end: at + quote.length, style: item.style });
       }
       return out;
     }
@@ -1178,15 +1298,40 @@ window.__ModuleLoader__.load({
       // `found` 但映射不到的批注也要留在正文里（只是不包 mark），否则「已写盘却看不见」。
       if (kept.length === 0) return list.slice();
       const onMarkClick = typeof options.onMarkClick === 'function' ? options.onMarkClick : null;
-      const markNode = (mark, text) => h('mark', {
-        key: `sa-ann-${String(mark.id ?? '')}-${mark.start}`,
-        className: `sa-annotation-mark sa-annotation-${mark.state}${mark.type === 'highlight' ? ' is-highlight' : ''}`,
-        'data-annotation-id': String(mark.id ?? ''),
-        'data-state': mark.state,
-        'data-type': String(mark.type ?? ''),
-        title: mark.content ? `批注：${mark.content}` : (mark.state === 'fuzzy' ? '批注（位置可能已变，待确认）' : '批注'),
-        onClick: onMarkClick === null ? undefined : (event) => onMarkClick(mark, event),
-      }, text);
+      const markNode = (mark, text) => {
+        const css = annotationStyleToCss(mark.style);
+        // 有显式 highlight 色时，用内联底色盖过 .is-highlight 的默认淡色；否则按类型沿用默认外观
+        const hasOwnFill = css !== null && css.backgroundColor !== undefined;
+        const openEditor = onMarkClick === null ? undefined : (event) => onMarkClick(mark, event);
+        const markEl = h('mark', {
+          key: `sa-ann-${String(mark.id ?? '')}-${mark.start}`,
+          className: `sa-annotation-mark sa-annotation-${mark.state}${(mark.type === 'highlight' || mark.type === 'note') && !hasOwnFill ? ' is-highlight' : ''}${hasOwnFill ? ' sa-annotation-filled' : ''}`,
+          'data-annotation-id': String(mark.id ?? ''),
+          'data-annotation-mark-id': String(mark.id ?? ''),
+          'data-state': mark.state,
+          'data-type': String(mark.type ?? ''),
+          title: mark.content ? `批注：${mark.content}` : (mark.state === 'fuzzy' ? '批注（位置可能已变，待确认）' : '批注'),
+          onClick: openEditor,
+          style: css === null ? undefined : css,
+        }, text);
+        // 行内格式（2026-11-17 D 卡第二轮反馈）：高亮/批注文字第一个字的左上角挂一个小角标按钮，
+        // 点它就地改色/删除（openEditor 打开的就是该条标记的编辑气泡）。lost 定位不到的标记不挂。
+        if (openEditor === undefined || mark.state === 'lost') return markEl;
+        const badge = h('button', {
+          key: `sa-ann-badge-${String(mark.id ?? '')}-${mark.start}`,
+          className: 'sa-annotation-badge',
+          type: 'button',
+          'data-annotation-badge': String(mark.id ?? ''),
+          title: '编辑这条高亮/批注（改色或删除）',
+          onMouseDown: (event) => { try { event.stopPropagation(); if (typeof event.preventDefault === 'function') event.preventDefault(); } catch (error) { /* 拦不住不影响 */ } },
+          onClick: (event) => { try { event.stopPropagation(); } catch (error) { /* ignore */ } openEditor(event); },
+        }, '⚙');
+        return h('span', {
+          key: `sa-ann-wrap-${String(mark.id ?? '')}-${mark.start}`,
+          className: 'sa-annotation-hit',
+          'data-annotation-id': String(mark.id ?? ''),
+        }, markEl, badge);
+      };
       // insert 类型不改原文（只在自己那段位置后面长出一块），所以不参与正文切段
       const textMarks = kept.filter((mark) => mark.type !== 'insert');
       const splitText = (text, from) => {
@@ -1214,16 +1359,119 @@ window.__ModuleLoader__.load({
       const out = [];
       const inserts = [];
       let cursor = 0;
+      // 2026-11-18 紧急修（公式区高亮删除后正文重复/公式错乱）：
+      // 行内/块级公式是 KaTeX 渲染出来的多层 span，其「渲染文本」与「视觉排布」并不一一对应
+      // （上标会重复出现一次基准文本，见用户截图 `e=1.602×10` 出现两遍）。旧实现会钻进这些 span
+      // 里按字符偏移切段，切出来的偏移必然错位；一旦高亮覆盖公式、再删掉它，React 重渲染时就
+      // 把一段正文拼成了两遍。这里把「公式子树」当成**不可切分的最小单元**：整块原样返回，
+      // 只把游标按它的渲染文本长度前进，绝不往公式内部塞 `<mark>`。
+      const isFormulaSubtree = (node) => {
+        if (node === null || typeof node !== 'object') return false;
+        const props = node.props !== null && typeof node.props === 'object' ? node.props : null;
+        const cls = props !== null ? String(props.className ?? '') : '';
+        if (cls.split(/\s+/).some((name) => name.indexOf('katex') !== -1 || name.indexOf('sa-formula') !== -1)) return true;
+        // 行内公式统一用 MATH_INLINE_STYLE 包裹（见 mixedTextNodes :7161）。优先按 style 对象同一性认；
+        // 但同一性太脆（别的路径可能用等值的新对象），再按「衬线斜体 + 含 sup/sub」的特征兜底识别。
+        const st = props !== null ? props.style : null;
+        if (st === MATH_INLINE_STYLE) return true;
+        if (st !== null && typeof st === 'object' && st.fontStyle === 'italic' && /Georgia/i.test(String(st.fontFamily ?? ''))) return true;
+        return false;
+      };
       const walk = (node) => {
+        if (isFormulaSubtree(node)) {
+          // 2026-11-18 二修：公式子树整块不可切（避免上标被拆坏），但也不能「高亮了却看不见」。
+          // 这里的做法：若某条高亮/批注的渲染区间与这棵公式子树有交集，就把**整棵公式子树**
+          // 用一层带底色的 <span class="sa-annotation-formula-hit"> 包起来（外加角标按钮），
+          // 既能把高亮视觉落在公式块上，又绝不改动公式内部结构。
+          const from = cursor;
+          const len = annotationRenderedText([node]).length;
+          cursor += len;
+          const to = cursor;
+          const covering = textMarks.find((mark) => mark.start < to && mark.end > from);
+          if (covering === undefined) return [node];
+          const css = annotationStyleToCss(covering.style) ?? {};
+          // 公式块高亮：默认给一层淡黄底（和普通高亮一致），有显式高亮色则用其 background
+          const bg = css.backgroundColor !== undefined ? css.backgroundColor : 'color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent)';
+          const style = {
+            backgroundColor: bg,
+            borderRadius: 'var(--dsw-radius-sm)',
+            boxShadow: 'none',
+            color: css.color,
+            textDecorationLine: css.textDecorationLine,
+            textDecorationColor: css.textDecorationColor,
+            fontWeight: css.fontWeight,
+            fontStyle: css.fontStyle,
+          };
+          const openEditor2 = onMarkClick === null ? undefined : (event) => onMarkClick(covering, event);
+          // 2026-11-18 四修（用户 m02300：公式高亮波及一整行、太宽）：`.sa-formula` 是块级 div（占满整行宽），
+          // 把高亮底色/描边直接加在它身上必然横贯整行。这里改成**只把高亮套在公式内容外面的一层
+          // inline-block 里**（宽度随内容收缩 = 只框住公式本身），外层 .sa-formula 的块级布局/居中/内边距不变。
+          // 之前两版（包 display:inline-block 的 span 替换整块 → 靠左；并 style 到块级 div → 整行）都有副作用，故用本方案。
+          const isBlockFormula = String((node.props && node.props.className) || '').split(/\s+/).some((n) => n === 'sa-formula');
+          const baseProps = node.props !== null && typeof node.props === 'object' ? node.props : {};
+          const baseStyle = baseProps.style !== null && typeof baseProps.style === 'object' ? baseProps.style : {};
+          const hlBg = css.backgroundColor !== undefined
+            ? css.backgroundColor
+            : (isBlockFormula ? 'color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent)' : 'color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent)');
+          // 内层高亮壳：inline-block 让宽度收缩到公式内容本身；环形描边 + 半透明叠加色表达高亮。
+          const innerHitStyle = {
+            display: 'inline-block',
+            backgroundColor: hlBg,
+            borderRadius: 'var(--dsw-radius-sm)',
+            boxShadow: 'inset 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 55%, transparent)',
+            padding: isBlockFormula ? '2px 6px' : '0 1px',
+            color: css.color !== undefined ? css.color : undefined,
+            fontWeight: css.fontWeight !== undefined ? css.fontWeight : undefined,
+            fontStyle: css.fontStyle !== undefined ? css.fontStyle : undefined,
+            textDecorationLine: css.textDecorationLine,
+            textDecorationColor: css.textDecorationColor,
+            position: 'relative',
+            cursor: 'pointer',
+          };
+          const hitProps = {
+            'data-annotation-id': String(covering.id ?? ''),
+            'data-annotation-mark-id': String(covering.id ?? ''),
+            'data-state': covering.state,
+            'data-type': String(covering.type ?? ''),
+            title: covering.content ? `批注：${covering.content}` : (baseProps.title ?? '批注'),
+            className: 'sa-annotation-formula-hit',
+            style: innerHitStyle,
+            onClick: openEditor2,
+          };
+          const baseChildren = baseProps.children;
+          const kids = (baseChildren === undefined || baseChildren === null)
+            ? []
+            : (Array.isArray(baseChildren) ? baseChildren : [baseChildren]);
+          if (openEditor2 === undefined) {
+            return [h(node.type, baseProps, h('span', { key: `sa-ann-formula-hit-${from}`, ...hitProps }, ...kids))];
+          }
+          const badge = h('button', {
+            key: `sa-ann-formula-badge-${String(covering.id ?? '')}-${from}`,
+            className: 'sa-annotation-badge',
+            type: 'button',
+            'data-annotation-badge': String(covering.id ?? ''),
+            title: '编辑这条高亮/批注（改色或删除）',
+            onMouseDown: (event) => { try { event.stopPropagation(); if (typeof event.preventDefault === 'function') event.preventDefault(); } catch (error) { /* 拦不住不影响 */ } },
+            onClick: (event) => { try { event.stopPropagation(); } catch (error) { /* ignore */ } openEditor2(event); },
+          }, '⚙');
+          // 外层还是原来的 .sa-formula 块级 div（不改 display/背景/内边距/居中），高亮只在里面那层 inline-block 壳上。
+          return [h(node.type, baseProps, h('span', { key: `sa-ann-formula-hit-${from}`, ...hitProps }, ...kids, badge))];
+        }
         if (typeof node === 'string') { const from = cursor; cursor += node.length; return splitText(node, from); }
         if (typeof node === 'number') { cursor += String(node).length; return [node]; }
         if (Array.isArray(node)) return node.map(walk).flat(Infinity);
         if (node !== null && typeof node === 'object') {
-          // 2026-11-12：真 React 的 children 在 `props.children` 上；旧替身挂在元素对象上。
-          // 两边都认，否则真 React 下一个 `<mark>` 都包不出来（单测绿、界面空）。
-          if (Array.isArray(node.children)) return [{ ...node, children: node.children.map(walk).flat(Infinity) }];
+          // 2026-11-18 真 React 崩溃修复（面板渲染失败 / React #137 args[]=img）：
+          // 旧实现无脑给每个元素重设 children，连 `<img>` 这种自闭合标签也被塞进
+          // `children:[undefined]`，真 React 直接抛「img is a self-closing tag and must neither
+          // have children」。只有当原元素本身确有 children 时才递归重建，否则原样返回。
+          const hasLegacyChildren = Array.isArray(node.children) && node.children.length > 0;
+          if (hasLegacyChildren) return [{ ...node, children: node.children.map(walk).flat(Infinity) }];
           if (node.props !== null && typeof node.props === 'object') {
-            return [{ ...node, props: { ...node.props, children: walk(node.props.children) } }];
+            const kids = node.props.children;
+            const hasKids = kids !== undefined && kids !== null && !(Array.isArray(kids) && kids.length === 0);
+            if (!hasKids) return [node]; // 无 children 的元素（img/input/br 等自闭合）保持原样
+            return [{ ...node, props: { ...node.props, children: walk(kids) } }];
           }
         }
         return [node];
@@ -1251,12 +1499,12 @@ window.__ModuleLoader__.load({
     }
 
     /** create 的提交参数（2026-10-31 F2，纯函数）：一条批注落盘时到底发什么，测试直接断言它。 */
-    function annotationCreateItem({ file = '', type = 'note', content = '', anchor = {} } = {}) {
+    function annotationCreateItem({ file = '', type = 'note', content = '', anchor = {}, style = undefined, kpText = undefined, markKind = undefined } = {}) {
       const source = anchor !== null && typeof anchor === 'object' ? anchor : {};
       const quote = String(source.quote ?? '');
       const start = Number.isInteger(source.start) ? source.start : -1;
       const end = Number.isInteger(source.end) ? source.end : (start >= 0 ? start + quote.length : -1);
-      return {
+      const item = {
         file: String(file ?? ''),
         type,
         content: String(content ?? ''),
@@ -1266,6 +1514,18 @@ window.__ModuleLoader__.load({
         prefix: String(source.prefix ?? ''),
         suffix: String(source.suffix ?? ''),
       };
+      // 行内格式：短选精确锚点标志（服务端据此不扩段），仅 true 时带出
+      if (source.exact === true) item.exact = true;
+      // 知识点虚拟文件（kp:<nodeId>）的正文不在磁盘上，随请求附上客户端渲染出的正文，
+      // 由服务端对它做 resolveAnchorFromText 的自洽校验（只有这样才锚得上）。
+      if (String(file ?? '').startsWith('kp:') && typeof kpText === 'string' && kpText !== '') item.kpText = kpText;
+      // 行内格式：只传合法语义键组成的 style 对象（undefined 时不带，旧行为不变）
+      if (style !== null && typeof style === 'object' && !Array.isArray(style) && Object.keys(style).length > 0) {
+        item.style = { ...style };
+      }
+      // AI 材料标记类型（E1）：只把合法英文键带到服务端，缺省/普通不写（旧行为不变）
+      if (ANNOTATION_MARK_KINDS.includes(markKind)) item.markKind = markKind;
+      return item;
     }
 
     /** 选区起点在渲染文本里的偏移（2026-10-31 F2）：按文本节点累计长度，拿不到返回 -1。 */
@@ -1296,6 +1556,59 @@ window.__ModuleLoader__.load({
       } catch (error) {
         return -1;
       }
+    }
+
+    /**
+     * 公式 / 表格区域判定（2026-11-17 D 卡，纯函数把 DOM 遍历换成纯「探测函数」便于单测）。
+     *
+     * 为什么公式与表格不支持行内标注：渲染文本经 `annotationRenderedText` 拼出来的串与
+     * markdown 原文对不上（KaTeX 分式取文本会变形、表格单元格分隔在 DOM 里是独立盒子），
+     * 强行按偏移着色必然标偏。这里只做「向上找祖先看有没有公式/表格容器」——
+     * 命中就返回 true，调用方据此不弹工具条、给轻提示。
+     *
+     * @param {object} node DOM 节点（一般是 range.commonAncestorContainer）
+     * @returns {boolean}
+     */
+    function annotationUnsupportedRegion(node) {
+      try {
+        let current = node;
+        let guard = 0;
+        while (current !== null && current !== undefined && guard < 200) {
+          guard += 1;
+          if (typeof current.nodeType === 'number' && current.nodeType === 1) {
+            const tag = String(current.tagName ?? '').toUpperCase();
+            if (tag === 'MATH' || tag === 'TABLE' || tag === 'THEAD' || tag === 'TBODY' || tag === 'TR' || tag === 'TD' || tag === 'TH') return true;
+            const cls = String(current.className ?? '');
+            if (cls.indexOf('katex') !== -1 || cls.indexOf('sa-formula') !== -1) return true;
+          }
+          current = current.parentNode;
+        }
+        return false;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    /**
+     * 选区锚点解析（2026-11-18 修 user m01508「跨段落选中后左侧不弹编辑/不高亮」）：
+     * `window.getSelection().toString()` 在跨块级元素时会**插入 `\n`**，而批注正文
+     * `annotationRenderedText` 是把各段字符串直接拼起来的（段间没有换行）——直接拿带 `\n`
+     * 的 quote 去锚定必然 0 命中 → state='lost' → 不弹气泡、也落不了高亮。
+     * 策略：先用原样 quote 锚；失败且 quote 含换行时，把换行折平再锚一次（折平后的 quote
+     * 是正文里真实存在的连续子串，锚点偏移/原文片段都正确）。折平只动 `\r`/`\n`，不动空格，
+     * 避免把「a b」和「ab」混成一个锚点。纯函数，测试直接验。
+     *
+     * @returns {{anchor:object, quote:string}} anchor 可能是 lost（调用方据此不弹气泡）
+     */
+    function resolveSelectionAnchor(body, renderedText, quote, renderedStart) {
+      const raw = String(quote ?? '');
+      const original = resolveAnnotationAnchor({ body, renderedText, quote: raw, renderedStart });
+      if (original !== null && original.state !== 'lost') return { anchor: original, quote: raw };
+      const flat = raw.replace(/[\r\n]+/g, '');
+      if (flat === raw || flat.trim() === '') return { anchor: original, quote: raw };
+      const flattened = resolveAnnotationAnchor({ body, renderedText, quote: flat, renderedStart });
+      if (flattened !== null && flattened.state !== 'lost') return { anchor: flattened, quote: flat };
+      return { anchor: original, quote: raw };
     }
 
     /**
@@ -1332,11 +1645,13 @@ window.__ModuleLoader__.load({
           const inside = rootEl !== null && rootEl !== undefined && range !== null && range !== undefined
             && typeof rootEl.contains === 'function' && range.commonAncestorContainer !== null
             && range.commonAncestorContainer !== undefined && rootEl.contains(range.commonAncestorContainer);
+          // 行内格式（2026-11-17 D 卡）：公式 / 表格区域不支持细划选，命中就不弹工具条（不崩、不误标）
+          if (inside && annotationUnsupportedRegion(range.commonAncestorContainer)) return null;
           if (inside) renderedStart = annotationRenderedOffsetOfRange(rootEl, range);
         }
-        const anchor = resolveAnnotationAnchor({ body, renderedText, quote, renderedStart });
-        if (anchor === null || anchor.state === 'lost') return null;
-        return { quote, anchor, rect };
+        const resolved = resolveSelectionAnchor(body, renderedText, quote, renderedStart);
+        if (resolved.anchor === null || resolved.anchor.state === 'lost') return null;
+        return { quote: resolved.quote, anchor: resolved.anchor, rect };
       } catch (error) {
         return null;
       }
@@ -1413,6 +1728,25 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 「高亮N」自动命名（2026-11-18 用户定）：每份讲义各自从 1 数。
+     * 取本文件已存在的「高亮<数字>」里最大的 N 再加 1；没有则从 1 起。
+     * 只认纯「高亮+数字」名字，用户自己写的批注（如「高亮这一句」）不会被误数进去。
+     */
+    function nextHighlightLabel(notes) {
+      const list = Array.isArray(notes) ? notes : [];
+      let max = 0;
+      for (const note of list) {
+        if (note === null || typeof note !== 'object') continue;
+        const matched = /^高亮(\d+)$/.exec(String(note.content ?? '').trim());
+        if (matched !== null) {
+          const n = Number(matched[1]);
+          if (Number.isFinite(n) && n > max) max = n;
+        }
+      }
+      return `高亮${max + 1}`;
+    }
+
+    /**
      * 批注交互层（2026-10-31 F2 改版）：Word 式浮动气泡。
      *
      * 用户定的三条口径（2026-10-31 拍板）：
@@ -1427,7 +1761,7 @@ window.__ModuleLoader__.load({
      *
      * 正文仍然只读：批注内容只进 `学习台/批注.json`，不改原文一个字。
      */
-    function AnnotationLayer({ file = '', text = '', mode = 'preview', nodes = null } = {}) {
+    function AnnotationLayer({ file = '', text = '', mode = 'preview', nodes = null, onNotesChange = null, dockPanel = false, onDockChange = null } = {}) {
       const body = String(text ?? '');
       const fileKey = String(file ?? '');
       const [notes, setNotes] = useState(() => peekAnnotations(fileKey)?.notes ?? []);
@@ -1438,6 +1772,8 @@ window.__ModuleLoader__.load({
       const rootRef = useRef(null);
       // 同一个气泡「失焦 + 点完成」会连着提交两次；用 ref 记住上一次提交过的气泡，别重复写盘
       const submittedRef = useRef('');
+      // 2026-11-17 D 卡第二轮：气泡内按下（按钮/色块）时置 true，让这一轮 selectionchange 别把气泡拆了。
+      const suppressBubbleCloseRef = useRef(false);
       useEffect(() => {
         if (fileKey === '') return undefined;
         let alive = true;
@@ -1446,18 +1782,33 @@ window.__ModuleLoader__.load({
         });
         return () => { alive = false; };
       }, [fileKey]);
-      // 选区被取消（点空白处、按 Esc）→ 气泡跟着收起；没这一步气泡会一直挂在屏上
+      // 行内格式（2026-11-17 D 卡）：把当前文件的批注列表同步给外层（学习模式的 marks 插槽要列出来）。
+      // 单独一个 effect 报告，避免把 onNotesChange 塞进上面的加载 effect 依赖里反复触发。
+      useEffect(() => {
+        if (typeof onNotesChange === 'function') onNotesChange(fileKey, notes);
+      }, [fileKey, notes, onNotesChange]);
+      // 气泡的关闭策略（2026-11-17 D 卡第二轮重写，彻底去掉「点按钮被拆气泡」）：
+      //   旧版靠 selectionchange —— 选区一空就 setBubble(null)。可是鼠标按下气泡按钮会先清掉正文选区，
+      //   于是 selectonchange 把气泡拆了、click 到不了，表现为「点什么都没反应、连选项框都不消失」。
+      //   现改为：唯一关闭途径是 ① 显式 ×/Esc ② 动作完成后代码自己 closeBubble()
+      //   ③ 在气泡外部按下鼠标（下方 mousedown 监听，判断 e.target 不在 [data-annotation-guard] 内才关）。
+      //   不再监听 selectionchange，就不可能因为选区变化被误拆。
       useEffect(() => {
         try {
           if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined;
-          const onChange = () => {
+          const onDown = (event) => {
             try {
-              const sel = typeof window !== 'undefined' && typeof window.getSelection === 'function' ? window.getSelection() : null;
-              if (sel === null || String(sel.toString() || '').trim() === '') setBubble(null);
-            } catch (error) { /* 选区拿不到就当没变化 */ }
+              const target = event !== null && event !== undefined ? event.target : null;
+              if (target !== null && target !== undefined && typeof target.closest === 'function'
+                && target.closest('[data-annotation-guard]') !== null) { return; } // 点在气泡/面板里 → 不关
+              // 点在正文选区上（要重新划选）也不急着关——由 mouseup 的 openSelectionBubble 重开
+              if (target !== null && target !== undefined && typeof target.closest === 'function'
+                && target.closest('.sa-reading, .sa-reading-pre, .sa-annotation-layer') !== null) return;
+              setBubble(null);
+            } catch (error) { /* 判断不了就不关 */ }
           };
-          document.addEventListener('selectionchange', onChange);
-          return () => { if (typeof document.removeEventListener === 'function') document.removeEventListener('selectionchange', onChange); };
+          document.addEventListener('mousedown', onDown, true);
+          return () => { if (typeof document.removeEventListener === 'function') document.removeEventListener('mousedown', onDown, true); };
         } catch (error) {
           return undefined;
         }
@@ -1467,6 +1818,48 @@ window.__ModuleLoader__.load({
       const previewNodes = Array.isArray(nodes) && nodes.length > 0 ? nodes : materialPreviewNodes(body, 'mat-ann');
       const renderedText = annotationRenderedText(previewNodes);
       const marks = annotationMarkOffsets(body, renderedText, plan);
+      // 2026-11-18 用户定：学习模式把「选中后的选项」整合进左侧栏，不再弹浮动气泡。
+      // dockPanel=true 时不渲染 renderBubble()，而是把当前气泡状态 + 动作回传给外层（KnowledgeTab 的竖条）。
+      // 动作闭包都定义在本组件里（函数声明会提升），外层只负责渲染按钮、调用这些函数，逻辑单点不重复。
+      useEffect(() => {
+        if (typeof onDockChange !== 'function') return;
+        onDockChange(fileKey, {
+          bubble,
+          saving,
+          status,
+          size: bubble === null || bubble === undefined ? { width: 0, height: 0 } : (bubble.mode === 'menu' ? { width: 190, height: 200 } : (bubble.type === 'insert' ? { width: 190, height: 150 } : { width: 190, height: 120 })),
+          actions: {
+            quickHighlight: applyQuickHighlight,
+            compose: (type) => startCompose(type),
+            inlineStyle: (patch) => applyInlineStyle(patch),
+            // 2026-11-18 十三轮：菜单态点色块只改预览（累积 pendingStyle），点「完成」才落库
+            queueInlineStyle: (patch) => queueInlineStyle(patch),
+            commitInlineStyle: () => commitInlineStyle(),
+            viewStyle: (style) => submitViewStyle(bubble, style),
+            // 2026-11-18（q1）：再编辑已有标记时也要能改 字色/下划线/粗/斜 —— 以当前 style 为底做 toggle 合并再提交。
+            viewInline: (patch) => {
+              viewInlineApply(bubble, patch);
+            },
+            // 2026-11-18 十一轮：点「完成」显式收尾（连续编辑期间面板常驻，只有它/删除/× 会关）
+            // 2026-11-18 E1：类型标记（普通/重点/疑问/待复习）。view 走 update 不关面板；compose 先记在本地，随「完成」落库。
+            viewMarkKind: (kind) => submitMarkKind(bubble, kind),
+            setMarkKind: (kind) => setBubble((prev) => (prev === null || prev === undefined ? prev : { ...prev, markKind: (kind === null || kind === undefined) ? undefined : kind })),
+            viewDone: () => closeBubble(),
+            // 2026-11-18 十三轮：「无色」——去掉 highlight 维度、其余(字色/下划线/粗斜)保留，连续编辑不关面板
+            viewClear: () => {
+              const base = bubble !== null && bubble !== undefined && bubble.style !== null && typeof bubble.style === 'object' ? { ...bubble.style } : {};
+              delete base.highlight;
+              submitViewStyle(bubble, Object.keys(base).length === 0 ? {} : base, { replace: true, keepOpen: true });
+            },
+            setDraft: (value) => setBubble((prev) => (prev === null || prev === undefined ? prev : { ...prev, draft: value })),
+            setStyle: (style) => setBubble((prev) => (prev === null || prev === undefined ? prev : { ...prev, style: { ...(prev.style ?? {}), ...style } })),
+            commit: () => submitBubble(bubble),
+            cancel: () => closeBubble(),
+            removeNote: (id) => removeNote(id),
+          },
+        });
+      }, [fileKey, bubble, saving, status, onDockChange]);
+
       // 2026-11-12：把 marks 传进去 —— `found` 但正文里没落成 `<mark>` 的批注不能静默消失。
       const pending = annotationPendingList(plan, marks);
       const placedIds = new Set(marks.map((item) => String(item.id ?? '')));
@@ -1487,7 +1880,7 @@ window.__ModuleLoader__.load({
       /** 正文里拖选 → 弹出「批注 / 高亮 / 插入段落」气泡。 */
       function openSelectionBubble() {
         const snapshot = annotationSelectionSnapshot(rootRef.current, body, renderedText);
-        if (snapshot === null) return;
+        if (snapshot === null) { return; }
         rememberBubbleKey({ mode: 'menu', anchor: snapshot.anchor, rect: snapshot.rect });
       }
       function surfaceKeyUp(event) {
@@ -1502,6 +1895,128 @@ window.__ModuleLoader__.load({
           return;
         }
         rememberBubbleKey({ mode: 'compose', anchor: current.anchor, rect: current.rect, type, draft: '' });
+      }
+      // 行内格式（2026-11-17 D 卡第二轮）：选区内点按钮/色块直接把格式落成一条
+      // type='note'（有文字批注时）或 type='highlight'（纯色/线/粗斜）的标记。
+      // 与旧版差异：不再 setBubble(null) 后再等 selectionchange；这里显式关气泡即可。
+      // 2026-11-18 十三轮（用户 m02352「第一次选中时只能点一次」）：菜单（首次选中）态下，点色块/B/I
+      // 不再「点了就建一条并关面板」，而是只累积到 bubble.pendingStyle（同值再点取消），用户可把
+      // 高光+字色+下划线+粗/斜 叠加好后点「完成」一次性落库。见 commitInlineStyle。
+      function queueInlineStyle(patch) {
+        setBubble((prev) => {
+          if (prev === null || prev === undefined) return prev;
+          const next = { ...(prev.pendingStyle ?? {}) };
+          for (const key of Object.keys(patch)) {
+            const value = patch[key];
+            if (key === 'bold' || key === 'italic') {
+              if (next[key] === value) delete next[key]; else next[key] = value;
+            } else if (next[key] === value) {
+              delete next[key];
+            } else {
+              next[key] = value;
+            }
+          }
+          return { ...prev, pendingStyle: next };
+        });
+      }
+      // 菜单态「完成」：把累积的 pendingStyle 落成一条批注（内容用高亮N，不把选中原文当批注），落库后关面板。
+      async function commitInlineStyle() {
+        const current = bubble;
+        if (current === null || current === undefined || current.anchor === undefined) {
+          setStatus('先在正文里选中一段文字');
+          return;
+        }
+        const anchor = current.anchor;
+        if (String(anchor.quote ?? '').trim() === '') { setStatus('选中的文字为空，无法标注'); return; }
+        const style = { ...(current.pendingStyle ?? {}) };
+        const content = nextHighlightLabel(notes);
+        const item = annotationCreateItem({ file: fileKey, type: 'highlight', content, anchor, style: Object.keys(style).length === 0 ? undefined : style, kpText: fileKey.startsWith('kp:') ? renderedText : undefined });
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          const result = await mutate('annotations', 'create', { item });
+          const createdId = result !== null && result !== undefined && result.item !== null && result.item !== undefined
+            ? String(result.item.id ?? '')
+            : '';
+          pushHistory({ kind: 'create', id: createdId, markKind: item.markKind });
+          closeBubble();
+          setStatus('已加行内格式（已保存）');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
+      }
+      async function applyInlineStyle(patch, baseType) {
+        const current = bubble;
+        if (current === null || current === undefined || current.anchor === undefined) {
+          setStatus('先在正文里选中一段文字');
+          return;
+        }
+        const anchor = current.anchor;
+        const prev = current.pendingStyle ?? {};
+        const next = { ...prev };
+        for (const key of Object.keys(patch)) {
+          const value = patch[key];
+          // 与当前同值 → 视为取消该维度（toggle）
+          if (key === 'bold' || key === 'italic') {
+            if (next[key] === value) delete next[key]; else next[key] = value;
+          } else if (next[key] === value) {
+            delete next[key];
+          } else {
+            next[key] = value;
+          }
+        }
+        const content = String(current.draft ?? '').trim() || String(anchor.quote ?? '').trim();
+        if (content === '') { setStatus('选中的文字为空，无法标注'); return; }
+        const type = baseType ?? (content !== String(anchor.quote ?? '').trim() ? 'note' : 'highlight');
+        const item = annotationCreateItem({ file: fileKey, type, content, anchor, style: next, kpText: fileKey.startsWith('kp:') ? renderedText : undefined });
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          const result = await mutate('annotations', 'create', { item });
+          const createdId = result !== null && result !== undefined && result.item !== null && result.item !== undefined
+            ? String(result.item.id ?? '')
+            : '';
+          pushHistory({ kind: 'create', id: createdId, markKind: item.markKind });
+          closeBubble();
+          setStatus('已加行内格式（已保存）');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
+      }
+      // 「高亮」按钮：一键默认淡黄，不弹输入框（用户 2026-11-17 拍板）
+      // 2026-11-18 用户定：不再把选中原文当批注内容，直接命名「高亮N」（每份讲义各自从 1 数）。
+      async function applyQuickHighlight() {
+        const current = bubble;
+        if (current === null || current === undefined || current.anchor === undefined) {
+          setStatus('先在正文里选中一段文字');
+          return;
+        }
+        const anchor = current.anchor;
+        if (String(anchor.quote ?? '').trim() === '') { setStatus('选中的文字为空，无法标注'); return; }
+        const content = nextHighlightLabel(notes);
+        const item = annotationCreateItem({ file: fileKey, type: 'highlight', content, anchor, style: { highlight: 'yellow' }, kpText: fileKey.startsWith('kp:') ? renderedText : undefined });
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          const result = await mutate('annotations', 'create', { item });
+          const createdId = result !== null && result !== undefined && result.item !== null && result.item !== undefined
+            ? String(result.item.id ?? '')
+            : '';
+          pushHistory({ kind: 'create', id: createdId, markKind: item.markKind });
+          closeBubble();
+          setStatus('已加高亮（淡黄）');
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
       }
       /** 点已有标记 → 就地查看/编辑/删除。 */
       function openNoteBubble(mark, event) {
@@ -1539,6 +2054,8 @@ window.__ModuleLoader__.load({
           type: note === null ? mark.type : note.type,
           content,
           draft: content,
+          style: note !== null && note.style !== undefined ? note.style : (mark.style !== undefined ? mark.style : undefined),
+          markKind: note !== null && note.markKind !== undefined ? note.markKind : (mark.markKind !== undefined ? mark.markKind : undefined),
           state: String(mark.state ?? 'found'),
           rect,
         });
@@ -1558,9 +2075,11 @@ window.__ModuleLoader__.load({
         const anchor = current.anchor ?? {};
         const type = current.type ?? 'note';
         const raw = String(current.draft ?? '');
-        const content = type === 'highlight' && raw.trim() === '' ? String(anchor.quote ?? '') : raw.trim();
-        if (content === '') { setStatus('批注内容不能为空'); return; }
-        const item = annotationCreateItem({ file: fileKey, type, content, anchor });
+        // 2026-11-17 D 卡第二轮：高亮/批注都允许留空 —— 留空时用选中原文当锚点文字（纯色高光/纯色批注）。
+        const content = raw.trim() !== '' ? raw.trim() : String(anchor.quote ?? '');
+        if (content === '') { setStatus('选中的文字为空，无法标注'); return; }
+        const style = (current.style !== null && typeof current.style === 'object') ? current.style : undefined;
+        const item = annotationCreateItem({ file: fileKey, type, content, anchor, style, markKind: current.markKind, kpText: fileKey.startsWith('kp:') ? renderedText : undefined });
         setSaving(true);
         setStatus('正在保存…');
         try {
@@ -1568,7 +2087,7 @@ window.__ModuleLoader__.load({
           const createdId = result !== null && result !== undefined && result.item !== null && result.item !== undefined
             ? String(result.item.id ?? '')
             : '';
-          pushHistory({ kind: 'create', id: createdId });
+          pushHistory({ kind: 'create', id: createdId, markKind: item.markKind });
           setBubble(null);
           setStatus(type === 'insert' ? '已插入一段（已保存）' : (type === 'highlight' ? '已加高亮（已保存）' : '已加批注（已保存）'));
           await refreshNotes();
@@ -1580,9 +2099,89 @@ window.__ModuleLoader__.load({
           setSaving(false);
         }
       }
-      async function submitUpdate(current) {
-        const content = String(current.draft ?? '').trim();
-        if (content === '') { setStatus('批注内容不能为空'); return; }
+      // 点角标改已有标记的颜色（2026-11-17 D 卡第二轮）：style=null 表示清掉颜色，内容不动。
+      // 2026-11-18（q1）：options.replace=true 时 style 视为「完整的最终 style」，不再与旧 style 合并
+      //   （用于字色/下划线/粗斜的 toggle —— 取消某维度时要真删掉，不能靠合并留下旧值）。
+      // 2026-11-18 十一轮（m02078「每次编辑只能点一次」）：改成**连续编辑**——
+      //   options.keepOpen=true 时保存成功后不关面板，而是把最新 style 写回 bubble（并把 bubble.style 更新为
+      //   已落库的最终样式），这样用户能接着点下一个色块 / B / I，直到点「完成」或删除或 ×。
+      async function submitViewStyle(current, style, options) {
+        if (current === null || current === undefined) return;
+        const id = String(current.id ?? '');
+        if (id === '') return;
+        const replace = options !== null && options !== undefined && options.replace === true;
+        const keepOpen = options !== null && options !== undefined && options.keepOpen === true;
+        // 计算实际要落库的最终 style（replace 时用传入的完整 style，否则与旧 style 合并）
+        let finalStyle;
+        if (style === null) finalStyle = null;
+        else if (replace) finalStyle = Object.keys(style).length === 0 ? null : { ...style };
+        else finalStyle = { ...(current.style ?? {}), ...style };
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          const item = { content: String(current.content ?? current.draft ?? '') };
+          item.style = finalStyle;
+          await mutate('annotations', 'update', { id, item });
+          pushHistory({ kind: 'update', id, before: String(current.content ?? '') });
+          if (keepOpen) {
+            // 连续编辑：面板留着，bubble.style 换成刚落库的最终样式，供下一次 toggle 以此为底
+            submittedRef.current = '';
+            setBubble((prev) => (prev === null || prev === undefined ? prev : { ...prev, style: finalStyle === null ? undefined : { ...finalStyle } }));
+            setStatus('已改颜色');
+          } else {
+            closeBubble();
+            setStatus('已改颜色');
+          }
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
+      }
+      // AI 材料标记类型（E1）：view 态点「普通/重点/疑问/待复习」→ 更新 note.markKind，不关面板。
+      // markKind=null 走服务端清除；合法键写入；label 只做展示。
+      async function submitMarkKind(current, markKind) {
+        if (current === null || current === undefined) return;
+        const id = String(current.id ?? '');
+        if (id === '') return;
+        const value = ANNOTATION_MARK_KINDS.includes(markKind) ? markKind : null;
+        setSaving(true);
+        setStatus('正在保存…');
+        try {
+          await mutate('annotations', 'update', { id, item: { markKind: value } });
+          pushHistory({ kind: 'update', id, before: String(current.content ?? '') });
+          submittedRef.current = '';
+          setBubble((prev) => (prev === null || prev === undefined ? prev : { ...prev, markKind: value === null ? undefined : value }));
+          setStatus(value === null ? '已设为普通' : `已标记为${ANNOTATION_MARK_LABELS[value]}`);
+          await refreshNotes();
+        } catch (error) {
+          setStatus(`保存失败：${error.message ?? error}`);
+        } finally {
+          setSaving(false);
+        }
+      }
+      // 以当前 bubble.style 为底做 toggle（同值删、粗斜取反），得到完整最终 style 后连续保存。
+      function viewInlineApply(cur, patch) {
+        if (cur === null || cur === undefined) return;
+        const base = cur.style !== null && typeof cur.style === 'object' ? { ...cur.style } : {};
+        const next = { ...base };
+        for (const k of Object.keys(patch)) {
+          const v = patch[k];
+          if (k === 'bold' || k === 'italic') {
+            if (next[k] === v) delete next[k]; else next[k] = v;
+          } else if (next[k] === v) {
+            delete next[k];
+          } else {
+            next[k] = v;
+          }
+        }
+        submitViewStyle(cur, next, { replace: true, keepOpen: true });
+      }
+      async function submitUpdate(current) {        const content = String(current.draft ?? '').trim();
+        // 2026-11-18 十一轮：允许留空 —— 留空时保留原内容（高亮N 或原批注），不报「不能为空」，只是不改文字。
+        if (content === '' && String(current.content ?? '').trim() === '') { closeBubble(); return; }
+        if (content === '') { closeBubble(); return; }
         setSaving(true);
         setStatus('正在保存…');
         try {
@@ -1612,6 +2211,7 @@ window.__ModuleLoader__.load({
             type: target === null ? 'note' : target.type,
             content: target === null ? '' : String(target.content ?? ''),
             anchor: target === null ? {} : { ...(target.anchor ?? {}) },
+            markKind: target === null ? undefined : target.markKind,
           });
           setBubble(null);
           setStatus('已删除');
@@ -1632,7 +2232,7 @@ window.__ModuleLoader__.load({
           } else if (action.kind === 'update') {
             await mutate('annotations', 'update', { id: action.id, item: { content: String(action.before ?? '') } });
           } else if (action.kind === 'delete') {
-            const item = annotationCreateItem({ file: fileKey, type: action.type, content: action.content, anchor: action.anchor });
+            const item = annotationCreateItem({ file: fileKey, type: action.type, content: action.content, anchor: action.anchor, markKind: action.markKind, kpText: fileKey.startsWith('kp:') ? renderedText : undefined });
             await mutate('annotations', 'create', { item });
           }
           setStatus('已撤销一步');
@@ -1654,6 +2254,8 @@ window.__ModuleLoader__.load({
       }
       function stopBubbleMouseDown(event) {
         try {
+          // 气泡内任何按下都先打标：这一轮 selectionchange 不要拆气泡（见上面的监听）。
+          suppressBubbleCloseRef.current = true;
           const tag = event !== null && event !== undefined && event.target !== null && event.target !== undefined
             ? String(event.target.tagName ?? '').toUpperCase()
             : '';
@@ -1685,7 +2287,7 @@ window.__ModuleLoader__.load({
           ? { width: Number(window.innerWidth), height: Number(window.innerHeight) || 0 }
           : { width: 0, height: 0 };
         const size = bubble.mode === 'menu'
-          ? { width: 250, height: 38 }
+          ? { width: 320, height: 132 }
           : (bubble.type === 'insert' ? { width: 330, height: 150 } : { width: 330, height: 108 });
         const placed = placeAnnotationBubble(bubble.rect, viewport, size);
         const style = viewport.width > 0 ? { top: `${placed.top}px`, left: `${placed.left}px` } : { top: '12px', left: '12px' };
@@ -1706,38 +2308,100 @@ window.__ModuleLoader__.load({
           onBlur: () => submitBubble(bubble),
         });
         if (bubble.mode === 'menu') {
-          const button = (type, label, title) => h('button', {
+          const button = (type, label, title, onClick) => h('button', {
             className: 'sa-btn sa-annotation-bubble-entry',
             key: `bb-${type}`,
             'data-type': type,
             title,
-            onClick: () => startCompose(type),
+            onClick,
           }, label);
+          // 行内格式工具条（2026-11-17 D 卡）：2026-11-18 十三轮改为「先预览累积、点完成才落库」——
+          //   点色块/B/I 只更新 bubble.pendingStyle（同值再点取消），可叠加好再点「完成」一次性创建。
+          const pendF = bubble.pendingStyle !== null && bubble.pendingStyle !== undefined && typeof bubble.pendingStyle === 'object' ? bubble.pendingStyle : {};
+          const swatch = (kind, value, label, title) => {
+            // 2026-11-18（同左侧栏修复）：按 kind 取正确颜色当色块底色，highlight→backgroundColor、
+            //   color→color、underline→textDecorationColor。旧代码一律 ?.backgroundColor，字色/下划线取不到 → 全白。
+            const css = annotationStyleToCss(kind === 'highlight' ? { highlight: value } : (kind === 'underline' ? { underline: value } : { color: value }));
+            const chipColor = css === null ? undefined : (kind === 'highlight' ? css.backgroundColor : (kind === 'underline' ? css.textDecorationColor : css.color));
+            const selected = pendF[kind] === value;
+            return h('button', {
+              className: `sa-btn sa-annotation-swatch sa-annotation-swatch-${kind}${selected ? ' is-selected' : ''}`,
+              key: `sw-${kind}-${value}`,
+              'data-kind': kind,
+              'data-value': value,
+              'aria-pressed': selected ? 'true' : 'false',
+              title,
+              disabled: saving,
+              style: { backgroundColor: chipColor ?? undefined },
+              onClick: () => queueInlineStyle({ [kind]: value }),
+            }, label);
+          };
+          const flagBtn = (flag, glyph, title) => h('button', {
+            className: `sa-btn sa-annotation-flag${pendF[flag] === true ? ' is-selected' : ''}`,
+            'data-flag': flag,
+            'aria-pressed': pendF[flag] === true ? 'true' : 'false',
+            title,
+            disabled: saving,
+            onClick: () => queueInlineStyle({ [flag]: true }),
+          }, glyph);
+          const swatches = (kind, values, titles) => h('div', { className: 'sa-annotation-swatches', 'data-kind': kind },
+            ...values.map((value) => swatch(kind, value, '', titles[value] ?? value)));
           return h('div', {
             className: 'sa-annotation-bubble',
             'data-mode': 'menu',
+            'data-annotation-guard': '1',
             style,
             onMouseDown: stopBubbleMouseDown,
           },
-          button('note', '批注', '给选中的这段文字加一条批注'),
-          button('highlight', '高亮', '把选中的这段文字标成高亮'),
-          button('insert', '插入段落', '在这段文字后面插一段自己的话'),
-          h('button', { className: 'sa-btn sa-annotation-bubble-close', title: '关掉气泡（Esc）', onClick: closeBubble }, '×'));
+          h('div', { className: 'sa-annotation-bubble-row' },
+            // 高亮：一键默认淡黄，不弹输入框（用户 2026-11-17 拍板）
+            button('highlight', '高亮', '把选中的文字标成淡黄高亮（不弹输入框；要换色用下面色块）', applyQuickHighlight),
+            // 批注：可打字、可选色、允许留空（留空＝纯色高光）
+            button('note', '批注', '给选中的文字加一条可打字的彩色批注（可留空＝纯色高光）', () => startCompose('note')),
+            button('insert', '插入段落', '在这段文字后面插一段自己的话', () => startCompose('insert'))),
+          h('div', { className: 'sa-annotation-bubble-row sa-annotation-style-row' },
+            h('span', { className: 'sa-annotation-style-label' }, '高光'),
+            swatches('highlight', ['yellow', 'green', 'blue', 'pink', 'orange'], { yellow: '黄', green: '绿', blue: '蓝', pink: '粉', orange: '橙' }),
+            h('span', { className: 'sa-annotation-style-label' }, '字色'),
+            swatches('color', ['red', 'blue', 'green', 'black', 'gray'], { red: '红', blue: '蓝', green: '绿', black: '黑', gray: '灰' })),
+          h('div', { className: 'sa-annotation-bubble-row sa-annotation-style-row' },
+            h('span', { className: 'sa-annotation-style-label' }, '下划线'),
+            swatches('underline', ['red', 'blue', 'gray'], { red: '红', blue: '蓝', gray: '灰' }),
+            flagBtn('bold', 'B', '加粗'),
+            flagBtn('italic', 'I', '斜体'),
+            h('button', { className: 'sa-btn sa-annotation-bubble-close', title: '关掉气泡（Esc）', onClick: closeBubble }, '×')),
+          h('div', { className: 'sa-annotation-bubble-row' },
+            h('button', { className: 'sa-btn primary', 'data-action': 'apply-inline', disabled: saving, title: '把上面选的高光/字色/下划线/粗斜一次性加到这段文字', onClick: () => commitInlineStyle() }, saving ? '保存中…' : '完成')));
         }
         if (bubble.mode === 'compose') {
           const type = bubble.type ?? 'note';
           const label = type === 'insert'
             ? '插入的段落（失焦即保存）'
-            : (type === 'highlight' ? '高亮备注（留空＝用选中原文）' : '批注（失焦即保存）');
+            : '批注（可打字，也可留空＝纯色高光；失焦即保存）';
+          // 批注 compose 里也带一排高光色块：点是给「这条批注」定色（不是给正文选区）
+          const composeSwatch = (value, title) => h('button', {
+            className: 'sa-btn sa-annotation-swatch sa-annotation-swatch-highlight',
+            key: `csw-${value}`,
+            'data-compose-color': value,
+            title,
+            style: { backgroundColor: annotationStyleToCss({ highlight: value })?.backgroundColor ?? undefined },
+            onClick: () => { setBubble({ ...bubble, style: { ...(bubble.style ?? {}), highlight: value } }); },
+          }, '');
           return h('div', {
             className: 'sa-annotation-bubble',
             'data-mode': 'compose',
             'data-type': type,
+            'data-annotation-guard': '1',
             style,
             onMouseDown: stopBubbleMouseDown,
           },
           head(label),
-          input(type === 'insert' ? '写一段要插在这段文字后面的内容…' : '写点自己的话…'),
+          type === 'insert' ? null : h('div', { className: 'sa-annotation-bubble-row sa-annotation-style-row' },
+            h('span', { className: 'sa-annotation-style-label' }, '颜色'),
+            composeSwatch('yellow', '黄'), composeSwatch('green', '绿'), composeSwatch('blue', '蓝'), composeSwatch('pink', '粉'), composeSwatch('orange', '橙')),
+          markKindButtons(bubble.markKind, (kind) => setBubble((prev) => ({ ...(prev ?? {}), markKind: kind === null ? undefined : kind })),
+            'sa-annotation-bubble-row sa-annotation-style-row', 'sa-btn sa-annotation-mark-btn', saving),
+          input(type === 'insert' ? '写一段要插在这段文字后面的内容…' : '写点自己的话（可留空，留空就是纯色高光）…'),
           h('div', { className: 'sa-annotation-bubble-actions' },
             h('button', { className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => submitBubble(bubble) }, saving ? '保存中…' : '完成'),
             h('button', { className: 'sa-btn', 'data-action': 'cancel', onClick: closeBubble }, '取消')));
@@ -1745,11 +2409,30 @@ window.__ModuleLoader__.load({
         return h('div', {
           className: 'sa-annotation-bubble',
           'data-mode': 'view',
+          'data-annotation-guard': '1',
           'data-annotation-id': String(bubble.id ?? ''),
           style,
           onMouseDown: stopBubbleMouseDown,
         },
         head(bubble.state === 'fuzzy' ? '批注（位置待确认）' : '批注'),
+        h('div', { className: 'sa-annotation-bubble-row sa-annotation-style-row' },
+          h('span', { className: 'sa-annotation-style-label' }, '颜色'),
+          ...['yellow', 'green', 'blue', 'pink', 'orange'].map((value) => h('button', {
+            className: 'sa-btn sa-annotation-swatch sa-annotation-swatch-highlight',
+            key: `vsw-${value}`,
+            'data-view-color': value,
+            title: `改成${{ yellow: '黄', green: '绿', blue: '蓝', pink: '粉', orange: '橙' }[value]}色`,
+            style: { backgroundColor: annotationStyleToCss({ highlight: value })?.backgroundColor ?? undefined },
+            onClick: () => submitViewStyle(bubble, { highlight: value }),
+          }, '')),
+          h('button', {
+            className: 'sa-btn sa-annotation-flag',
+            'data-view-clear': '1',
+            title: '去掉颜色（保留批注文字）',
+            onClick: () => submitViewStyle(bubble, null),
+          }, '无色')),
+        markKindButtons(bubble.markKind, (kind) => submitMarkKind(bubble, kind),
+          'sa-annotation-bubble-row sa-annotation-style-row', 'sa-btn sa-annotation-mark-btn', saving),
         input('批注内容（失焦即保存）'),
         h('div', { className: 'sa-annotation-bubble-actions' },
           h('button', { className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => submitBubble(bubble) }, saving ? '保存中…' : '完成'),
@@ -1767,7 +2450,7 @@ window.__ModuleLoader__.load({
 
       return h('div', { className: 'sa-annotation-layer', 'data-file': fileKey },
         surface,
-        renderBubble(),
+        dockPanel ? null : renderBubble(),
         h('div', { className: 'sa-annotation-tools' },
           h('div', { className: 'sa-annotation-toolbar' },
             entryButton('note', '＋注释', '兜底入口：选中文字后点这里加批注（浮动气泡没弹出来时用）'),
@@ -2006,6 +2689,17 @@ window.__ModuleLoader__.load({
       return result;
     }
 
+    /**
+     * AI 材料导出（2026-11-18 E1）：GET /annotations/export?format=md|json&file=…（只读，不写盘）。
+     * format/file 的拼装交给纯函数 aiExportQuery；返回服务端原样的 { ok, markdown|notes, count, file }。
+     */
+    async function exportAnnotationsMaterial(format, file) {
+      const response = await fetch(`${API}/annotations/export?${aiExportQuery(format, file)}`, { headers: { Accept: 'application/json' } });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: `http-${response.status}` };
+      return result;
+    }
+
     /** 恢复：把导出的包写回十一份文档（覆盖同名文档，写前自动进 学习台/备份/）。 */
     async function restoreBackup(bundle) {
       const response = await fetch(`${API}/backup/restore`, {
@@ -2219,9 +2913,34 @@ window.__ModuleLoader__.load({
 .sa-annotation-status{color:var(--dsw-alias-label-secondary);margin:.25em 0}
 .sa-annotation-mark{border-radius:var(--dsw-radius-sm);padding:0 1px;cursor:pointer;background:transparent;color:inherit}
 .sa-annotation-mark.sa-annotation-found{box-shadow:inset 0 -2px var(--dsw-alias-brand-primary)}
+/* 2026-11-18：有自带底色的标记（选了色的高亮/纯色批注）不要再叠一条「等下划线」的 inset 阴影，
+   否则用户会以为高亮自带了橘色/蓝色下划线、还删不掉（那条下划线根本不是 underline 样式，是阴影）。 */
+.sa-annotation-mark.sa-annotation-filled{box-shadow:none}
+/* 2026-11-18 四修：公式子树整体高亮——高亮套在内层 span.sa-annotation-formula-hit（display:inline-block
+   由内联样式给出，宽度随内容收缩=只框公式本身），外层 .sa-formula 块级 div 布局/居中不受影响。 */
+.sa-annotation-formula-hit{position:relative;cursor:pointer}
+.sa-annotation-formula-hit:hover{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px}
 .sa-annotation-mark.is-highlight{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent);box-shadow:none}
 .sa-annotation-mark.sa-annotation-fuzzy{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,var(--dsw-alias-brand-primary)) 20%,transparent);box-shadow:none;text-decoration:underline dotted}
+/* 行内格式工具条（2026-11-17 D 卡）：气泡里两排色块 + B/I 按钮 */
+.sa-annotation-bubble-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.sa-annotation-style-row{gap:3px}
+.sa-annotation-style-label{font-size:.8em;color:var(--dsw-alias-label-tertiary);margin-right:1px;flex:none}
+.sa-annotation-swatches{display:inline-flex;gap:3px;flex-wrap:wrap;margin-right:6px}
+.sa-annotation-swatch{width:18px;height:18px;min-width:18px;padding:0;border-radius:var(--dsw-radius-sm);border:1px solid var(--dsw-alias-border-l1);font-size:0;line-height:0;flex:none}
+.sa-annotation-swatch.sa-annotation-swatch-underline{border-bottom-width:3px}
+.sa-annotation-swatch:hover{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+.sa-annotation-flag{width:24px;min-width:24px;padding:0;font-weight:700;flex:none}
+.sa-annotation-flag[data-flag="italic"]{font-style:italic}
+/* AI 材料标记类型按钮（2026-11-18 E1）：普通/重点/疑问/待复习，选中态用主题色描边 */
+.sa-annotation-mark-btn{padding:.15em .5em;min-width:auto;font-size:.8em;line-height:1.4;flex:none}
+.sa-annotation-mark-btn.is-selected{outline:2px solid var(--dsw-alias-brand-primary, var(--dsw-alias-border-l1));outline-offset:1px;color:var(--dsw-alias-brand-primary, inherit);font-weight:650}
 .sa-annotation-mark:hover{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+/* 行内格式角标（2026-11-17 D 卡第二轮反馈）：高亮/批注文字左侧挂一个小齿轮按钮，点它就改色/删除 */
+.sa-annotation-hit{position:relative;display:inline}
+.sa-annotation-badge{position:absolute;left:-2px;top:-0.72em;display:none;align-items:center;justify-content:center;width:15px;height:15px;padding:0;font-size:.72em;line-height:1;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);cursor:pointer;z-index:5;box-shadow:0 1px 3px color-mix(in srgb,var(--dsw-alias-label-primary) 18%,transparent)}
+.sa-annotation-hit:hover .sa-annotation-badge,.sa-annotation-badge:focus{display:inline-flex}
+.sa-annotation-badge:hover{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
 .sa-annotation-insert{display:block;border-left:3px solid var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent);border-radius:var(--dsw-radius-sm);padding:.4em .7em;margin:.5em 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary);cursor:pointer}
 .sa-annotation-highlight{border:1px dashed var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);padding:8px 10px;margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}
 .sa-annotation-foot{display:flex;gap:8px;justify-content:flex-end;margin:8px 0}
@@ -2432,8 +3151,42 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-study-slot{display:inline-flex;align-items:center;justify-content:center;min-height:26px;min-width:52px;padding:2px 8px;border:1px dashed var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);font-size:12px;color:var(--dsw-alias-label-tertiary);background:transparent}
 .sa-study-slot-hint{white-space:nowrap}
 @media (prefers-reduced-motion:no-preference){.sa-study-slot{transition:border-color .15s ease}}
+/* 左侧栏行内格式面板（2026-11-18 用户定）：选中文字后选项出现在竖条里，不再浮气泡被左栏挡。
+   竖条只有 200px 宽，面板用竖排、色块换行，尽量塞得下。 */
+.sa-dock-annotation{display:flex;flex-direction:column;gap:6px;padding:6px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--sa-focus-paper-base, var(--dsw-alias-bg-layer-2));box-sizing:border-box}
+.sa-dock-panel{display:flex;flex-direction:column;gap:6px;box-sizing:border-box}
+.sa-dock-head{font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary);line-height:1.3}
+.sa-dock-label{font-size:11px;color:var(--dsw-alias-label-tertiary);margin-top:2px}
+.sa-dock-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.sa-dock-swatches{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.sa-dock-panel .sa-annotation-swatch{width:18px;height:18px;min-width:18px;padding:0}
+.sa-dock-panel .sa-annotation-swatch.is-selected{outline:2px solid var(--dsw-alias-brand-primary, var(--dsw-alias-border-l1));outline-offset:1px}
+.sa-dock-panel .sa-annotation-flag.is-selected{outline:2px solid var(--dsw-alias-brand-primary, var(--dsw-alias-border-l1));outline-offset:1px}
+.sa-dock-panel .sa-annotation-bubble-input{width:100%;box-sizing:border-box;font-size:12px;resize:vertical}
+.sa-dock-hint{font-size:12px;color:var(--dsw-alias-label-tertiary)}
 /* 已填充的插槽（C2）：clock/switch 有内容后不再用虚线占位框，改成常规容器 */
-.sa-study-slot.sa-study-clock,.sa-study-slot.sa-study-switch{border-style:solid;justify-content:flex-start;align-items:stretch;color:var(--dsw-alias-label-secondary)}
+.sa-study-slot.sa-study-clock,.sa-study-slot.sa-study-switch,.sa-study-slot.sa-study-marks{border-style:solid;justify-content:flex-start;align-items:stretch;color:var(--dsw-alias-label-secondary)}
+/* marks 插槽（2026-11-17 D 卡）：本页高光/行内格式索引 —— 横排小色片，点击滚动定位 */
+.sa-marks-list{display:flex;flex-wrap:wrap;gap:4px;width:100%;align-items:center}
+.sa-marks-chip{max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 6px;font-size:11px;line-height:18px;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);cursor:pointer}
+.sa-marks-chip:hover{outline:1px solid var(--dsw-alias-brand-primary);outline-offset:1px}
+/* AI 材料徽标（2026-11-18 E1）：chip 上的中文角标，颜色按 markKind 分。 */
+.sa-marks-badge{font-weight:650;margin-right:2px}
+.sa-marks-badge[data-mark-kind='key']{color:#b8860b}
+.sa-marks-badge[data-mark-kind='question']{color:#1f6feb}
+.sa-marks-badge[data-mark-kind='review']{color:#a371f7}
+/* AI 材料导出区（2026-11-18 E1）：竖条底部，展开后范围切换 + 两格式入口 + 失败 <pre> 展示。 */
+.sa-ai-export{display:flex;flex-direction:column;gap:6px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l1);box-sizing:border-box}
+.sa-ai-export-toggle{justify-content:flex-start;text-align:left}
+.sa-ai-export-body{display:flex;flex-direction:column;gap:6px}
+.sa-ai-export-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.sa-ai-export-label{font-size:11px;color:var(--dsw-alias-label-tertiary);min-width:2.5em}
+.sa-ai-export-scope.is-selected{outline:2px solid var(--dsw-alias-brand-primary, var(--dsw-alias-border-l1));outline-offset:1px;font-weight:650}
+.sa-ai-export-auto{font-size:11px;line-height:1.4;color:var(--dsw-alias-label-secondary);padding:2px 0}
+.sa-ai-export-note{font-size:11px;color:var(--dsw-alias-label-secondary);line-height:1.4}
+.sa-ai-export-fallback{display:flex;flex-direction:column;gap:4px}
+.sa-ai-export-pre{max-height:220px;overflow:auto;padding:6px;font-size:11px;line-height:1.45;white-space:pre-wrap;word-break:break-word;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-base)}
+.sa-annotation-mark.is-flash{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
 /* 学习时钟（C2）：模式切换 + 预设 + 时间 + 按钮 + 今日累计 */
 .sa-clock{display:flex;flex-direction:column;gap:6px;width:100%}
 .sa-clock-tabs,.sa-clock-presets{display:flex;gap:4px;flex-wrap:wrap}
@@ -7255,7 +8008,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      * 正文里（内联 `<mark>`），状态必须和浮动气泡共用同一份，所以不能像 B1 那样把批注层挂在正文卡
      * 下面当兄弟节点。不带 file（没有可写盘的对象）时还是纯正文。
      */
-    function MaterialReading({ text, page, file = '' }) {
+    function MaterialReading({ text, page, file = '', onNotesChange = null }) {
       const [mode, setMode] = useState('preview');
       const body = String(text ?? '');
       // 重排一份 22KB 讲义不便宜（自写排版器是同步解析），无关的重渲染不该重排一遍：
@@ -7277,7 +8030,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           ? (mode === 'raw'
             ? h('pre', { className: 'sa-reading-pre', style: MATERIAL_PRE_STYLE }, body)
             : h('div', { className: 'sa-reading', style: MATERIAL_READING_STYLE }, ...nodes))
-          : h(AnnotationLayer, { file, text: body, mode, nodes }));
+          : h(AnnotationLayer, { file, text: body, mode, nodes, onNotesChange }));
     }
 
     /**
@@ -7291,7 +8044,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      * 行为不变项：pending 文案「读取中…」、truncated「已截断」pill、error 四类文案、页按钮高亮、
      * ready 时的 `MaterialReading` 渲染——全部原样保留，只是把两处重复代码收到一处。
      */
-    function MaterialReadingCard({ detail = null, openPath = null, onPage, onClose, extraActions = null, belowHeader = null, closeTitle = '关上这份正文' } = {}) {
+    function MaterialReadingCard({ detail = null, openPath = null, onPage, onClose, extraActions = null, belowHeader = null, closeTitle = '关上这份正文', onNotesChange = null } = {}) {
       if (openPath === null || openPath === undefined) return null;
       const data = detail?.data ?? null;
       const actions = Array.isArray(extraActions) ? extraActions.filter(Boolean) : [];
@@ -7331,7 +8084,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                   onClick: () => onPage?.(no),
                 }, String(no))))
               : null,
-            h(MaterialReading, { text: data.text, page: data.page, file: data.file ?? openPath }))
+            h(MaterialReading, { text: data.text, page: data.page, file: data.file ?? openPath, onNotesChange }))
           : null);
     }
 
@@ -7402,6 +8155,52 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         setFocusReading(true);
       };
       const exitFocusReading = () => setFocusReading(false);
+
+      // 行内格式（2026-11-17 D 卡）：点 marks 索引里的一条 → 尽量滚动到正文中对应的 <mark>。
+      // 找不到（正文还没渲染出来、或被筛掉）就静默返回，不报错。
+      const scrollToMark = (id) => {
+        const key = String(id ?? '');
+        if (key === '') return;
+        try {
+          const pane = readerRef.current;
+          const scope = pane ?? (typeof document !== 'undefined' ? document : null);
+          if (scope === null || typeof scope.querySelector !== 'function') return;
+          const target = scope.querySelector(`[data-annotation-mark-id="${key.replace(/"/g, '\\"')}"]`)
+            ?? scope.querySelector(`[data-annotation-id="${key.replace(/"/g, '\\"')}"]`);
+          if (target === null || target === undefined) return;
+          // 2026-11-18 二修（q：「点高亮栏只一点点上翻」）：不能盲信 readerRef 就是滚动容器。
+          // 从目标往上找**第一个真正能滚的元素**（scrollHeight > clientHeight 且 overflow 可滚），
+          // 滚它；找不到再退回 readerRef / scrollIntoView。这样学习模式 / 普通预览两种布局都准。
+          const findScroller = (el) => {
+            let cur = el;
+            while (cur !== null && cur !== undefined && cur !== document.body && cur !== document.documentElement) {
+              if (cur.scrollHeight - cur.clientHeight > 4) {
+                const oy = typeof getComputedStyle === 'function' ? getComputedStyle(cur).overflowY : '';
+                if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return cur;
+              }
+              cur = cur.parentElement;
+            }
+            return null;
+          };
+          const scroller = findScroller(target) ?? (pane && typeof pane.scrollTo === 'function' ? pane : null);
+          if (scroller !== null) {
+            const sRect = scroller.getBoundingClientRect();
+            const tRect = target.getBoundingClientRect();
+            // 目标中心对齐到滚动容器可视区中点
+            const delta = (tRect.top - sRect.top) - (scroller.clientHeight / 2 - tRect.height / 2);
+            const nextTop = Math.max(0, scroller.scrollTop + delta);
+            try { scroller.scrollTo({ top: nextTop, behavior: 'smooth' }); }
+            catch (error) { scroller.scrollTop = nextTop; }
+          } else if (typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+          // 闪一下：加 is-flash 让底色/描边明显晃眼，1.2 秒后移除。哪怕本就在视野内也能看见反应。
+          if (typeof target.classList?.add === 'function') {
+            target.classList.add('is-flash');
+            setTimeout(() => { try { target.classList?.remove?.('is-flash'); } catch (error) { /* 忽略 */ } }, 1200);
+          }
+        } catch (error) { /* 滚动失败不影响功能 */ }
+      };
 
       // ═══════════ 学习时钟（C2，2026-11-17）：正计时 + 番茄钟 ═══════════
       // 落盘口径：每段「学习场」结束落一条到 学习记录/学习时长.json（<5 秒不记）；
@@ -7594,9 +8393,65 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         };
       }, [focusReading]);
       const [selected, setSelected] = useState(restoredUi.selected); // 知识网络里选中的节点 id
+      // 行内格式（2026-11-17 D 卡）：当前阅读面的批注列表快照 + 版本号，供 marks 插槽（高光索引）列出。
+      const [readingMarks, setReadingMarks] = useState({ file: '', notes: [] });
+      const reportReadingNotes = useCallback((fileKey, notes) => {
+        setReadingMarks({ file: String(fileKey ?? ''), notes: Array.isArray(notes) ? notes : [] });
+      }, []);
+      // 行内格式（2026-11-18）：知识点正文的选中选项整合进左侧栏 —— 承接正文档 AnnotationLayer
+      // 上报的气泡状态 + 动作（dockPanel 模式）。{ file, bubble, saving, status, actions } | null。
+      const [dockState, setDockState] = useState(null);
+      const reportDockChange = useCallback((fileKey, next) => {
+        setDockState(next === null || next === undefined ? null : { file: String(fileKey ?? ''), ...next });
+      }, []);
       const [markBusy, setMarkBusy] = useState(false);
       const [markError, setMarkError] = useState('');
       const [markNote, setMarkNote] = useState('');
+      // AI 材料导出（2026-11-18 E1）：范围（当前文件/全部）+ 两格式入口 + 下载失败退 <pre> 复制。
+      const [aiExportOpen, setAiExportOpen] = useState(false);
+      const [aiExportScope, setAiExportScope] = useState('file');
+      const [aiExportBusy, setAiExportBusy] = useState(false);
+      const [aiExportNote, setAiExportNote] = useState('');
+      const [aiExportPreview, setAiExportPreview] = useState(null); // { format, text } | null
+      // 自动落盘信息（2026-11-18 用户要求「不用手点」）：服务端每次写批注都会把 AI 材料写进
+      // _工具/AI材料/，这里展示「已自动保存到哪、几份」，下载按钮只是随时另存一份最新。
+      const [aiMaterialInfo, setAiMaterialInfo] = useState(null); // { dir, count, files } | null
+      const loadAiMaterialInfo = useCallback(async () => {
+        try {
+          const r = await fetch(`${API}/annotations/material`, { headers: { Accept: 'application/json' } });
+          const j = await r.json().catch(() => null);
+          if (j?.ok === true) setAiMaterialInfo({ dir: String(j.dir ?? ''), count: Number(j.count ?? 0), files: Array.isArray(j.files) ? j.files : [] });
+        } catch { /* 只读信息，拿不到就不显示 */ }
+      }, []);
+      const runAiExport = useCallback(async (format) => {
+        setAiExportBusy(true);
+        setAiExportNote('');
+        setAiExportPreview(null);
+        try {
+          const file = aiExportScope === 'file' ? readingMarks.file : '';
+          const result = await exportAnnotationsMaterial(format, file).catch(() => ({ ok: false, error: 'unreachable' }));
+          if (result?.ok !== true) {
+            setAiExportNote(`导出失败：${result?.error ?? 'unknown'}`);
+            return;
+          }
+          const text = aiExportText(format, result);
+          const stamp = String(result.exportedAt ?? '').slice(0, 19).replace(/[:T]/g, '');
+          const scopeText = aiExportScope === 'file' ? '当前文件' : '全部';
+          const filename = `AI材料-${scopeText}-${stamp || 'export'}.${format === 'json' ? 'json' : 'md'}`;
+          const mime = format === 'json' ? 'application/json;charset=utf-8' : 'text/markdown;charset=utf-8';
+          const downloaded = downloadTextFile(text, filename, mime);
+          if (downloaded) {
+            setAiExportNote(`已另存一份最新（${result.count ?? 0} 条 · ${scopeText} · ${format === 'json' ? 'JSON' : 'Markdown'}）`);
+            loadAiMaterialInfo();
+          } else {
+            // DSH 内嵌 webview 常禁用 createObjectURL → 退回页面内展示，用户手动复制。
+            setAiExportPreview({ format, text });
+            setAiExportNote('浏览器不允许直接下载，内容已展示在下方，可手动复制（磁盘上的自动材料不受影响）。');
+          }
+        } finally {
+          setAiExportBusy(false);
+        }
+      }, [aiExportScope, readingMarks.file, loadAiMaterialInfo]);
       // 点了一个还没生成讲义的章（2026-10-29 用户定：右侧明说「还没生成」，不能点了没反应）。
       // 值形如 { title }，null = 不显示。
       const [lectureHint, setLectureHint] = useState(null);
@@ -8352,6 +9207,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const detailCard = MaterialReadingCard({
         detail: displayDetail,
         openPath,
+        onNotesChange: reportReadingNotes,
         onPage: (no) => showMaterial(openPath, no),
         onClose: () => {
           setOpenPath(null);
@@ -8690,7 +9546,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             return h('div', { className: 'sa-reading', style: { marginTop: 16 } }, ...analysisChildren);
           }
           return h('div', { style: { marginTop: 16 } },
-            h(AnnotationLayer, { file: kpFile, text: analysisBody, mode: 'preview', nodes: analysisChildren }));
+            h(AnnotationLayer, { file: kpFile, text: analysisBody, mode: 'preview', nodes: analysisChildren, onNotesChange: reportReadingNotes, dockPanel: true, onDockChange: reportDockChange }));
         })();
 
       const nodeCard = selectedNode === null ? null : h('div', { className: 'sa-card sa-node-detail', id: 'sa-kp-detail' },
@@ -9880,6 +10736,204 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               } }, '重置'),
             ];
           })();
+      // ═══════════ marks 插槽渲染（2026-11-17 D 卡）：高光/行内格式索引横条 ═══════════
+      // 数据来自当前阅读面 AnnotationLayer 通过 onNotesChange 上报的 readingMarks（file + notes）。
+      // 列出每条带行内格式或高亮的批注；点击调用 scrollToMark 尽量滚动到正文里那条 <mark>。
+      const marksSlotContent = (() => {
+        const notes = Array.isArray(readingMarks.notes) ? readingMarks.notes : [];
+        // 只列「看得见的」标记：有 style 的行内格式，或 type=highlight 的高亮。普通 note 不进索引。
+        const visible = notes.filter((note) => note !== null && typeof note === 'object'
+          && ((note.style !== null && note.style !== undefined && typeof note.style === 'object' && Object.keys(note.style).length > 0) || note.type === 'highlight'));
+        if (visible.length === 0) return h('span', { className: 'sa-study-slot-hint' }, '高光索引（暂无）');
+        return h('div', { className: 'sa-marks-list', role: 'list', 'aria-label': '本页高光与行内格式' },
+          ...visible.map((note, index) => {
+            const css = annotationStyleToCss(note.style);
+            // 2026-11-18 修（q2）：索引条优先显示批注内容（如「高亮1」），内容为空才回落到选中原文。
+            // 之前反过来（先 anchor.quote），于是高亮即使命名成「高亮1」也显示成原文，用户以为「又自动填了原文」。
+            const label = String(note.content ?? '').trim() || String(note?.anchor?.quote ?? '');
+            const quote = label;
+            const shortQuote = quote.length > 8 ? `${quote.slice(0, 8)}…` : quote;
+            // AI 材料徽标（2026-11-18 E1）：有 markKind 就在 chip 上加一个中文角标，一眼看出哪些是疑问。
+            // 无标记（含旧数据）不加角标，保持 D 卡原样。
+            const markBadge = annotationMarkBadge(note.markKind);
+            return h('button', {
+              key: `mk-${String(note.id ?? index)}`,
+              type: 'button',
+              className: 'sa-marks-chip',
+              'data-annotation-id': String(note.id ?? ''),
+              'data-mark-kind': note.markKind === undefined || note.markKind === null ? 'normal' : String(note.markKind),
+              role: 'listitem',
+              title: quote === '' ? '这条标记' : quote,
+              style: css === null ? undefined : { backgroundColor: css.backgroundColor ?? undefined, color: css.color ?? undefined, textDecorationColor: css.textDecorationColor ?? undefined, textDecorationLine: css.textDecorationLine ?? undefined, fontWeight: css.fontWeight ?? undefined, fontStyle: css.fontStyle ?? undefined },
+              onClick: () => scrollToMark(note.id),
+            }, markBadge !== null
+              ? h('span', { className: 'sa-marks-badge', 'data-mark-kind': String(note.markKind) }, `${markBadge} `)
+              : null, shortQuote === '' ? '标记' : shortQuote);
+          }));
+      })();
+
+      // ═══════════ 左侧栏行内格式面板（2026-11-18 用户定：整合进左侧栏，不再弹浮动气泡）═══════════
+      // 承接知识点正文 AnnotationLayer（dockPanel 模式）上报的 dockState = { file, bubble, saving, status, actions }。
+      // 气泡的 menu/compose/view 三种状态在这里用竖排按钮重画，动作全部转调 AnnotationLayer 的 actions（逻辑单点）。
+      const dockSW = (kind, value, label, title, onPick, selected) => {
+        // 2026-11-18（用户：初次选中时左侧「字色/下划线」色块全空白）：annotationStyleToCss 对
+        //   highlight 返回 backgroundColor、对 color 返回 color、对 underline 返回 textDecorationColor。
+        //   旧代码一律取 ?.backgroundColor，导致字色/下划线两类色块取不到值 → 全白。
+        //   这里按 kind 取正确的那个颜色当色块底色。
+        const css = annotationStyleToCss(kind === 'highlight' ? { highlight: value } : (kind === 'underline' ? { underline: value } : { color: value }));
+        const chipColor = css === null ? undefined : (kind === 'highlight' ? css.backgroundColor : (kind === 'underline' ? css.textDecorationColor : css.color));
+        return h('button', {
+          key: `dsw-${kind}-${value}`,
+          type: 'button',
+          className: `sa-btn sa-annotation-swatch sa-annotation-swatch-${kind}${selected === true ? ' is-selected' : ''}`,
+          'data-kind': kind,
+          'data-value': value,
+          'aria-pressed': selected === true ? 'true' : 'false',
+          title,
+          disabled: dockState.saving,
+          style: { backgroundColor: chipColor ?? undefined },
+          onClick: onPick,
+        }, label);
+      };
+      const dockPanelContent = (() => {
+        const b = dockState !== null && dockState !== undefined ? dockState.bubble : null;
+        if (b === null || b === undefined) {
+          return h('div', { className: 'sa-dock-hint sa-study-slot-hint' }, '在正文里选中文字，这里出现高亮/批注选项');
+        }
+        const saving = dockState.saving === true;
+        const actions = dockState.actions ?? {};
+        const head = (label) => h('div', { className: 'sa-dock-head' }, label);
+        if (b.mode === 'menu') {
+          // 2026-11-18 十三轮（用户 m02352）：首次选中态点色块/B/I 只累积 pendingStyle 预览（不落库、不关面板），
+          // 可把 高光+字色+下划线+粗/斜 叠加好，点「完成」一次性保存；「高亮」大按钮仍是一键淡黄立即保存。
+          const pend = b.pendingStyle !== null && b.pendingStyle !== undefined && typeof b.pendingStyle === 'object' ? b.pendingStyle : {};
+          const flagBtn = (flag, glyph, title) => h('button', {
+            type: 'button',
+            className: `sa-btn sa-annotation-flag${pend[flag] === true ? ' is-selected' : ''}`,
+            'data-flag': flag,
+            'aria-pressed': pend[flag] === true ? 'true' : 'false',
+            title,
+            disabled: saving,
+            onClick: () => actions.queueInlineStyle({ [flag]: true }),
+          }, glyph);
+          return h('div', { className: 'sa-dock-panel', 'data-mode': 'menu', 'data-annotation-guard': '1' },
+            h('div', { className: 'sa-dock-row' },
+              h('button', { type: 'button', className: 'sa-btn primary', 'data-type': 'highlight', title: '把选中文字标成淡黄高亮（不弹输入框；要换色用下面色块）', disabled: saving, onClick: () => actions.quickHighlight() }, '高亮'),
+              h('button', { type: 'button', className: 'sa-btn', 'data-type': 'note', title: '可打字、可选色的批注（可留空＝纯色高光）', disabled: saving, onClick: () => actions.compose('note') }, '批注'),
+              h('button', { type: 'button', className: 'sa-btn', 'data-type': 'insert', title: '在这段文字后面插一段自己的话', disabled: saving, onClick: () => actions.compose('insert') }, '插入段落')),
+            h('div', { className: 'sa-dock-label' }, '高光'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['yellow', 'green', 'blue', 'pink', 'orange'].map((v) => dockSW('highlight', v, '', `高亮${{ yellow: '黄', green: '绿', blue: '蓝', pink: '粉', orange: '橙' }[v]}色（再点取消）`, () => actions.queueInlineStyle({ highlight: v }), pend.highlight === v))),
+            h('div', { className: 'sa-dock-label' }, '字色'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['red', 'blue', 'green', 'black', 'gray'].map((v) => dockSW('color', v, '', `字色${{ red: '红', blue: '蓝', green: '绿', black: '黑', gray: '灰' }[v]}（再点取消）`, () => actions.queueInlineStyle({ color: v }), pend.color === v))),
+            h('div', { className: 'sa-dock-label' }, '下划线'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['red', 'blue', 'gray'].map((v) => dockSW('underline', v, '', `下划线${{ red: '红', blue: '蓝', gray: '灰' }[v]}（再点取消）`, () => actions.queueInlineStyle({ underline: v }), pend.underline === v)),
+              flagBtn('bold', 'B', '加粗'),
+              flagBtn('italic', 'I', '斜体')),
+            h('div', { className: 'sa-dock-row' },
+              h('button', { type: 'button', className: 'sa-btn primary', 'data-action': 'apply-inline', disabled: saving, title: '把上面选的高光/字色/下划线/粗斜一次性加到这段文字', onClick: () => actions.commitInlineStyle() }, saving ? '保存中…' : '完成'),
+              h('button', { type: 'button', className: 'sa-btn', 'data-action': 'cancel', onClick: () => actions.cancel() }, '取消')));
+        }
+        const type = b.type ?? 'note';
+        const isInsert = type === 'insert';
+        if (b.mode === 'view') {
+          const curHl = b.style !== null && b.style !== undefined ? b.style.highlight : null;
+          return h('div', { className: 'sa-dock-panel', 'data-mode': 'view', 'data-annotation-guard': '1', 'data-annotation-id': String(b.id ?? '') },
+            h('div', { className: 'sa-dock-head' }, b.state === 'fuzzy' ? '批注（位置待确认）' : '批注'),
+            h('div', { className: 'sa-dock-label' }, '颜色'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['yellow', 'green', 'blue', 'pink', 'orange'].map((v) => h('button', {
+                key: `dvsw-${v}`,
+                type: 'button',
+                className: `sa-btn sa-annotation-swatch sa-annotation-swatch-highlight${curHl === v ? ' is-selected' : ''}`,
+                'data-view-color': v,
+                'aria-pressed': curHl === v ? 'true' : 'false',
+                title: `改成${{ yellow: '黄', green: '绿', blue: '蓝', pink: '粉', orange: '橙' }[v]}色`,
+                style: { backgroundColor: annotationStyleToCss({ highlight: v })?.backgroundColor ?? undefined },
+                // 2026-11-18 十三轮（用户 m02352：编辑时点到高光颜色就退出编辑）：与字色/下划线一致，走 viewInline
+                // 以当前 style 为底 toggle 并在面板内连续保存（keepOpen），只有点「完成」/删除/× 才关。
+                onClick: () => actions.viewInline({ highlight: v }),
+              })),
+              h('button', { type: 'button', className: 'sa-btn sa-annotation-flag', 'data-view-clear': '1', title: '去掉颜色（保留批注文字）', onClick: () => actions.viewClear() }, '无色')),
+            // 2026-11-18（q1）：再编辑也支持 字色 / 下划线 / 粗 / 斜（与第一次选字一致）。
+            h('div', { className: 'sa-dock-label' }, '字色'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['red', 'blue', 'green', 'black', 'gray'].map((v) => h('button', {
+                key: `dvcol-${v}`,
+                type: 'button',
+                className: `sa-btn sa-annotation-swatch sa-annotation-swatch-color${b.style !== null && b.style !== undefined && b.style.color === v ? ' is-selected' : ''}`,
+                'data-view-color-text': v,
+                'aria-pressed': b.style !== null && b.style !== undefined && b.style.color === v ? 'true' : 'false',
+                title: `字色${{ red: '红', blue: '蓝', green: '绿', black: '黑', gray: '灰' }[v]}`,
+                disabled: saving,
+                style: { backgroundColor: annotationStyleToCss({ color: v })?.color ?? undefined },
+                onClick: () => actions.viewInline({ color: v }),
+              }))),
+            h('div', { className: 'sa-dock-label' }, '下划线'),
+            h('div', { className: 'sa-dock-swatches' },
+              ...['red', 'blue', 'gray'].map((v) => h('button', {
+                key: `dvul-${v}`,
+                type: 'button',
+                className: `sa-btn sa-annotation-swatch sa-annotation-swatch-underline${b.style !== null && b.style !== undefined && b.style.underline === v ? ' is-selected' : ''}`,
+                'data-view-underline': v,
+                'aria-pressed': b.style !== null && b.style !== undefined && b.style.underline === v ? 'true' : 'false',
+                title: `下划线${{ red: '红', blue: '蓝', gray: '灰' }[v]}（再点一次去掉）`,
+                disabled: saving,
+                style: { backgroundColor: annotationStyleToCss({ underline: v })?.textDecorationColor ?? undefined },
+                onClick: () => actions.viewInline({ underline: v }),
+              }))),
+            // 2026-11-18（q4）：加粗/斜体单独一行，放在「下划线颜色」下方，不与色块并列。
+            h('div', { className: 'sa-dock-row' },
+              h('button', { type: 'button', className: `sa-btn sa-annotation-flag${b.style !== null && b.style !== undefined && b.style.bold === true ? ' is-selected' : ''}`, 'data-view-flag': 'bold', 'aria-pressed': b.style !== null && b.style !== undefined && b.style.bold === true ? 'true' : 'false', title: '加粗', disabled: saving, onClick: () => actions.viewInline({ bold: true }) }, 'B'),
+              h('button', { type: 'button', className: `sa-btn sa-annotation-flag${b.style !== null && b.style !== undefined && b.style.italic === true ? ' is-selected' : ''}`, 'data-view-flag': 'italic', 'aria-pressed': b.style !== null && b.style !== undefined && b.style.italic === true ? 'true' : 'false', title: '斜体', disabled: saving, onClick: () => actions.viewInline({ italic: true }) }, 'I')),
+            markKindButtons(b.markKind, (kind) => actions.viewMarkKind(kind), 'sa-dock-row', 'sa-btn sa-annotation-mark-btn', saving, 'sa-dock-label'),
+            h('textarea', {
+              className: 'sa-annotation-bubble-input',
+              'data-role': 'annotation-draft',
+              placeholder: '批注内容（点完成保存）',
+              rows: 3,
+              value: String(b.draft ?? ''),
+              onChange: (event) => actions.setDraft(event !== null && event.target !== null ? String(event.target.value ?? '') : ''),
+            }),
+            h('div', { className: 'sa-dock-row' },
+              h('button', { type: 'button', className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => actions.commit() }, saving ? '保存中…' : '完成'),
+              h('button', { type: 'button', className: 'sa-btn', 'data-action': 'delete', onClick: () => actions.removeNote(b.id) }, '删除'),
+              h('button', { type: 'button', className: 'sa-btn', 'data-action': 'cancel', onClick: () => actions.cancel() }, '取消')));
+        }
+        const curColor = b.style !== null && b.style !== undefined ? b.style.highlight : null;
+        // 批注（可打字）的颜色在 bubble.style.highlight 里，点色块走 setStyle；「完成」时随 content 一起落库。
+        const colorRow = isInsert ? null : h('div', null,
+          h('div', { className: 'sa-dock-label' }, '颜色'),
+          h('div', { className: 'sa-dock-swatches' },
+            ...['yellow', 'green', 'blue', 'pink', 'orange'].map((v) => h('button', {
+              key: `dcsw-${v}`,
+              type: 'button',
+              className: `sa-btn sa-annotation-swatch sa-annotation-swatch-highlight${curColor === v ? ' is-selected' : ''}`,
+              'data-compose-color': v,
+              'aria-pressed': curColor === v ? 'true' : 'false',
+              title: `${{ yellow: '黄', green: '绿', blue: '蓝', pink: '粉', orange: '橙' }[v]}色`,
+              style: { backgroundColor: annotationStyleToCss({ highlight: v })?.backgroundColor ?? undefined },
+              onClick: () => actions.setStyle({ highlight: v }),
+            }))));
+        return h('div', { className: 'sa-dock-panel', 'data-mode': b.mode, 'data-type': type, 'data-annotation-guard': '1' },
+          head(isInsert ? '插入的段落（点完成保存）' : '批注（可打字、可留空＝纯色高光；点完成保存）'),
+          colorRow,
+          markKindButtons(b.markKind, (kind) => actions.setMarkKind(kind), 'sa-dock-row', 'sa-btn sa-annotation-mark-btn', saving, 'sa-dock-label'),
+          h('textarea', {
+            className: 'sa-annotation-bubble-input',
+            'data-role': 'annotation-draft',
+            placeholder: isInsert ? '写一段要插在这段文字后面的内容…' : '写点自己的话（可留空，留空就是纯色高光）…',
+            rows: isInsert ? 4 : 3,
+            value: String(b.draft ?? ''),
+            onChange: (event) => actions.setDraft(event !== null && event.target !== null ? String(event.target.value ?? '') : ''),
+          }),
+          h('div', { className: 'sa-dock-row' },
+            h('button', { type: 'button', className: 'sa-btn primary', 'data-action': 'commit', disabled: saving, onClick: () => actions.commit() }, saving ? '保存中…' : '完成'),
+            h('button', { type: 'button', className: 'sa-btn', 'data-action': 'cancel', onClick: () => actions.cancel() }, '取消')));
+      })();
+
       const clockSlotContent = h('div', { className: 'sa-clock' },
         h('div', { className: 'sa-clock-tabs', role: 'group', 'aria-label': '计时模式' },
           h('button', { type: 'button', className: `sa-btn sa-clock-tab${clockMode === 'stopwatch' ? ' primary' : ''}`, 'aria-pressed': clockMode === 'stopwatch' ? 'true' : 'false', onClick: () => setClockMode('stopwatch') }, '正计时'),
@@ -9989,8 +11043,34 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('div',{className:'sa-study-slots','aria-label':'学习模式工具栏'},
               h('div',{className:'sa-study-slot sa-study-clock','data-slot':'clock'}, clockSlotContent),
               h('div',{className:'sa-study-slot sa-study-switch','data-slot':'switch'}, switchSlotContent),
-              h('div',{className:'sa-study-slot sa-study-marks','data-slot':'marks'},
-                h('span',{className:'sa-study-slot-hint'},'高光索引'))),
+              h('div',{className:'sa-study-slot sa-study-marks','data-slot':'marks'}, marksSlotContent)),
+            // AI 材料导出区（2026-11-18 E1）：一条入口，展开后选范围（当前文件/全部）+ 两格式（md/json）。
+            // 下载走 Blob；webview 禁用 createObjectURL 时退页面内 <pre> 展示 + 复制。
+            h('div',{className:'sa-ai-export','data-slot':'ai-export'},
+              h('button',{type:'button',className:'sa-btn sa-ai-export-toggle','aria-expanded':aiExportOpen?'true':'false','aria-controls':'sa-ai-export-body',onClick:()=>{setAiExportOpen(v=>{const next=!v;if(next)loadAiMaterialInfo();return next;});}},
+                aiExportOpen ? '▾ AI 材料（自动收集）' : '▸ AI 材料（自动收集）'),
+              aiExportOpen ? h('div',{id:'sa-ai-export-body',className:'sa-ai-export-body'},
+                h('div',{className:'sa-ai-export-auto',role:'status'},
+                  aiMaterialInfo === null
+                    ? '标注变动会自动保存，无需手动操作。'
+                    : `✓ 已自动保存 ${aiMaterialInfo.count} 份到 _工具/AI材料/（无需手动下载）`),
+                h('div',{className:'sa-ai-export-row','aria-label':'导出范围'},
+                  h('span',{className:'sa-ai-export-label'},'范围'),
+                  h('button',{type:'button',className:'sa-btn sa-ai-export-scope'+(aiExportScope==='file'?' is-selected':''),'data-export-scope':'file','aria-pressed':aiExportScope==='file'?'true':'false',onClick:()=>setAiExportScope('file')},'当前文件'),
+                  h('button',{type:'button',className:'sa-btn sa-ai-export-scope'+(aiExportScope==='all'?' is-selected':''),'data-export-scope':'all','aria-pressed':aiExportScope==='all'?'true':'false',onClick:()=>setAiExportScope('all')},'全部')),
+                h('div',{className:'sa-ai-export-row','aria-label':'另存一份'},
+                  h('span',{className:'sa-ai-export-label'},'另存'),
+                  h('button',{type:'button',className:'sa-btn','data-export-format':'md',disabled:aiExportBusy,title:'再另存一份最新 Markdown 到下载目录（含 [重点]/[疑问]/[待复习] 与时间）',onClick:()=>runAiExport('md')},aiExportBusy?'处理中…':'另存 Markdown'),
+                  h('button',{type:'button',className:'sa-btn','data-export-format':'json',disabled:aiExportBusy,title:'再另存一份最新 JSON（原始批注数据）',onClick:()=>runAiExport('json')},aiExportBusy?'处理中…':'另存 JSON')),
+                aiExportNote !== '' ? h('div',{className:'sa-ai-export-note',role:'status'},aiExportNote) : null,
+                aiExportPreview !== null ? h('div',{className:'sa-ai-export-fallback'},
+                  h('button',{type:'button',className:'sa-btn',onClick:()=>{try{if(navigator?.clipboard?.writeText)navigator.clipboard.writeText(aiExportPreview.text).then(()=>setAiExportNote('已复制到剪贴板')).catch(()=>setAiExportNote('复制失败，请手动选中下方文字'));else setAiExportNote('浏览器不支持复制，请手动选中');}catch(e){setAiExportNote('复制失败，请手动选中');}}},'复制内容'),
+                  h('pre',{className:'sa-ai-export-pre'},aiExportPreview.text)) : null
+              ) : null),
+            // 左侧栏行内格式面板（2026-11-18 用户定：选中后选项出现在左栏，不再浮气泡被挡）
+            (dockState !== null && dockState !== undefined && dockState.bubble !== null && dockState.bubble !== undefined)
+              ? h('div',{className:'sa-dock-annotation','data-slot':'annotation-dock'}, dockPanelContent)
+              : null,
             h('span',{className:'sa-read-size',role:'group','aria-label':'正文字号'},
               h('button',{type:'button',className:'sa-btn','aria-label':'减小字号',title:'字号减 1px',onClick:()=>stepReadScale(-READ_SCALE_STEP)},'A−'),
               h('output',{className:'sa-zoom-value','aria-live':'polite',title:'正文字号：DSH 内容字号 × 本次倍率'},String(readFontPx)+'px'),
@@ -11066,17 +12146,28 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         // 批注渲染（2026-10-30 B1）：高亮切段、待处理列表、覆盖层组件
         annotationHighlightNodes,
         annotationPendingList,
+        nextHighlightLabel,
         annotationLayer: AnnotationLayer,
         // 批注交互（2026-10-31 F2）：选区→锚点、气泡定位、正文内联标记、提交参数
         annotationQuoteHits,
         resolveAnnotationAnchor,
+        resolveSelectionAnchor,
         placeAnnotationBubble,
         annotationRenderedText,
         annotationMarkOffsets,
         annotationMarkedNodes,
         annotationCreateItem,
+        // AI 材料导出（2026-11-18 E1）：纯函数，测试直接验徽标/查询串/文本/下载退化
+        annotationMarkBadge,
+        aiExportQuery,
+        aiExportText,
+        // 行内格式（2026-11-17 D 卡）：语义键→CSS 白名单映射
+        annotationStyleToCss,
+        ANNOTATION_STYLE_PALETTE,
         annotationRenderedOffsetOfRange,
         annotationSelectionSnapshot,
+        // 行内格式（2026-11-17 D 卡）：公式/表格区域判定
+        annotationUnsupportedRegion,
         // 正文组件（2026-10-29 晚）：测试要断言「换正文时不卸载、旧正文还在」，
         // 但假 React 不会展开函数组件，只能从元素节点上看它拿到的 text
         materialReading: MaterialReading,
