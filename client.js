@@ -2701,6 +2701,15 @@ window.__ModuleLoader__.load({
 .sa-row>.sa-muted{font-size:14px;line-height:1.5}
 .sa-card .sa-dock{margin-bottom:8px}
 .sa-card .sa-dock h3{margin-bottom:0}
+/* 「今日日程」三小节（2026-11-19 A 卡）：卡片内部的分组线，别把整张卡拆成三张 */
+.sa-sub{margin-top:16px;padding-top:14px;border-top:1px dashed var(--dsw-alias-border-l1)}
+.sa-sub-first{margin-top:8px;padding-top:0;border-top:0}
+.sa-sub h4{margin:0 0 8px;font-size:16px;font-weight:600;line-height:1.5;letter-spacing:.01em;color:var(--dsw-alias-label-primary)}
+.sa-sub .sa-dock h4{margin-bottom:0}
+/* 提醒结果条：成功/失败都停在这张卡里，不弹窗 */
+.sa-note{margin:10px 0 0;padding:9px 11px;border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sa-note-error{border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
+.sa-note pre{margin:8px 0 0;padding:0;font-family:inherit;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}
 @media (hover:hover) and (prefers-reduced-motion:no-preference){
   .sa-btn:hover:not(:disabled),.sa-tab:hover{transform:translateY(-1px)}
   .sa-btn:active:not(:disabled),.sa-tab:active{transform:translateY(0) scale(.97)}
@@ -3165,11 +3174,83 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       );
     }
 
+    /**
+     * 日程条目排序：有时间的按 `HH:mm` 升序，「全天」（time 为 null）排最后。
+     * 与 `lib/core.js` 的 `buildDailyBrief` 同一口径——面板列表和推送文本的顺序不能两样。
+     */
+    function compareScheduleEntry(a, b) {
+      if (a?.time === null && b?.time === null) return String(a?.title ?? '').localeCompare(String(b?.title ?? ''));
+      if (a?.time === null) return 1;
+      if (b?.time === null) return -1;
+      if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+      return String(a?.title ?? '').localeCompare(String(b?.title ?? ''));
+    }
+
+    /** 某一天的日程条目（坏日期直接丢掉，别把 `undefined` 渲染成一行）。 */
+    function scheduleEntriesOf(docs, day) {
+      const target = formatDay(parseDay(day) ?? new Date());
+      return objectList(docs?.schedule?.entries)
+        .filter((entry) => typeof entry.date === 'string' && parseDay(entry.date) !== null && formatDay(parseDay(entry.date)) === target)
+        .sort(compareScheduleEntry);
+    }
+
+    /** 今天之后 `days` 天内（不含今天）的日程条目，按日期 + 时间排：给「接下来」那一小段用。 */
+    function upcomingScheduleEntries(docs, day, days = 7) {
+      const today = parseDay(day);
+      if (today === null) return [];
+      const from = today.getTime();
+      const until = from + days * 24 * 60 * 60 * 1000;
+      return objectList(docs?.schedule?.entries)
+        .filter((entry) => {
+          const date = parseDay(entry?.date);
+          if (date === null) return false;
+          const t = date.getTime();
+          return t > from && t <= until;
+        })
+        .sort((a, b) => {
+          const da = parseDay(a.date).getTime();
+          const db = parseDay(b.date).getTime();
+          return da !== db ? da - db : compareScheduleEntry(a, b);
+        });
+    }
+
+    /**
+     * 复制文本到剪贴板。
+     *
+     * 面板挂在宿主的内网 http 页面上，`navigator.clipboard` 在非安全上下文里可能不存在，
+     * 所以留一条 `textarea + execCommand` 的老路；两条都失败就返回 false，
+     * 由调用方把文本原样摊开给用户手动复制——**不能假装复制成功了**。
+     */
+    async function copyTextToClipboard(text) {
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch {
+        // 落到下面的兜底路径
+      }
+      try {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.style.position = 'fixed';
+        area.style.left = '-9999px';
+        area.style.top = '0';
+        document.body.appendChild(area);
+        area.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(area);
+        return ok === true;
+      } catch {
+        return false;
+      }
+    }
+
     // ---------------------------------------------------------------------
     // 页签：今日
     // ---------------------------------------------------------------------
 
-    function TodayTab({ docs, now, refresh, onOpenKnowledgeReview, onOpenKnowledge, onOpenKnowledgeCoverage }) {
+    function TodayTab({ docs, now, refresh, busy, run, setBusy, onOpenKnowledgeReview, onOpenKnowledge, onOpenKnowledgeCoverage }) {
       const term = docs.term?.terms?.find((t) => t.id === docs.term?.currentId) ?? docs.term?.terms?.[0] ?? null;
       const week = currentTeachingWeek(term, now);
       const gpa = useMemo(() => computeGpa(docs.grades), [docs.grades]);
@@ -3211,6 +3292,133 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           .sort((a, b) => Number(a.session?.startPeriod ?? 0) - Number(b.session?.startPeriod ?? 0));
       }, [docs.courses, week.inTerm, week.week, now]);
 
+      // ---- 今日日程（2026-11-19 A 卡）：自定义日程 + 今日 DDL + 一键提醒 ----
+      // 课程仍是上面那个 todayCourses；这里补第 14 份文档 `schedule` 的今日条目，
+      // 以及推送按钮的状态。表单默认日期就是「今天」，改日期只影响这一条落在哪天。
+      const todayEntries = useMemo(() => scheduleEntriesOf(docs, now), [docs.schedule, now]);
+      const upcomingEntries = useMemo(() => upcomingScheduleEntries(docs, now, 7), [docs.schedule, now]);
+      const todayDeadlineCount = useMemo(
+        () => sorted.filter((task) => deadlineUrgency(task, now).level === 'today').length,
+        [sorted, now],
+      );
+
+      const [draft, setDraft] = useState({ date: '', time: '', title: '', note: '' });
+      const [scheduleNote, setScheduleNote] = useState(null);
+      const [remindBusy, setRemindBusy] = useState(false);
+      const [remindNote, setRemindNote] = useState(null);
+
+      // 日期输入框的展示值：空串表示「没动过」，跟今天走（跨天刷新后自动落到新的一天）
+      const draftDate = draft.date === '' ? formatDay(now) : draft.date;
+
+      const addScheduleEntry = () => {
+        const title = draft.title.trim();
+        if (title === '') {
+          setScheduleNote({ kind: 'error', message: '日程标题不能为空。' });
+          return;
+        }
+        setScheduleNote(null);
+        setBusy(true);
+        // 与服务端 normalizeScheduleEntry 同一套字段：time 留空 → null（全天）
+        run(() => mutate('schedule', 'create', {
+          item: { title, date: draftDate, time: draft.time === '' ? null : draft.time, note: draft.note.trim() },
+        }))
+          .then(async () => {
+            setDraft({ date: draftDate, time: '', title: '', note: '' });
+            setScheduleNote({ kind: 'ok', message: '已加进日程。' });
+            await refresh();
+          })
+          .catch(() => {}) // run() 已经把错误挂到顶部横幅了，这里吞掉避免未处理 rejection
+          .finally(() => setBusy(false));
+      };
+
+      const removeScheduleEntry = (entry) => {
+        if (!window.confirm(`删除日程「${entry.title}」？`)) return;
+        setBusy(true);
+        run(() => mutate('schedule', 'delete', { id: entry.id }))
+          .then(() => refresh())
+          .catch(() => {})
+          .finally(() => setBusy(false));
+      };
+
+      /**
+       * 一键提醒：只调后端 `POST /remind`，前端不碰任何 botId / token。
+       * 后端回 `{ ok, channel, text }`；失败时 text 也带回来，这里先复制到剪贴板再提示
+       * （用户 2026-11-19 定的兜底方案：复制 + 提示，复制不成就把文本摊开手动选）。
+       */
+      const remind = () => {
+        if (remindBusy) return;
+        setRemindBusy(true);
+        setRemindNote(null);
+        fetch(`${API}/remind`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: '{}',
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok === true) {
+              setRemindNote({
+                kind: 'ok',
+                message: result.channel === 'weixin'
+                  ? '已推到微信（本人私聊）。'
+                  : '微信没发出去，已回退 QQ（本人私聊）。',
+              });
+              return;
+            }
+            const text = typeof result.text === 'string' ? result.text : '';
+            const copied = text === '' ? false : await copyTextToClipboard(text);
+            setRemindNote({
+              kind: 'error',
+              message: [
+                result.detail ?? result.error ?? '推送失败',
+                copied ? '日程文本已复制到剪贴板，可直接粘贴发送。' : '没能自动复制，请手动全选下面的文本复制。',
+              ].join('\n'),
+              fallbackText: text,
+              showText: text !== '' && !copied,
+            });
+          })
+          .catch((error) => setRemindNote({ kind: 'error', message: `推送请求失败：${String(error?.message ?? error)}` }))
+          .finally(() => setRemindBusy(false));
+      };
+
+      // ---- 今日要闻（2026-11-19 B 卡）----
+      // 数据不是面板写出来的：插件外的 tools/fetch-news.mjs 由 Windows 计划任务每天 7:00 跑一次，
+      // 抓公开源写进第 15 份文档 `要闻.json`；这里只读展示，点标题去原文。
+      const [news, setNews] = useState(null);
+      const [newsError, setNewsError] = useState(null);
+
+      useEffect(() => {
+        let alive = true;
+        fetch(`${API}/news?days=7`, { headers: { Accept: 'application/json' } })
+          .then((response) => response.json().catch(() => null))
+          .then((payload) => {
+            if (!alive || payload === null) return;
+            if (payload.ok !== true) {
+              setNewsError(payload.error === 'news-unreadable'
+                ? '要闻文件读不出来（结构不符），请检查 学习台/要闻.json。'
+                : `要闻读取失败：${String(payload.error ?? '未知原因')}`);
+              return;
+            }
+            setNews(payload.board);
+          })
+          .catch(() => {
+            if (alive) setNewsError('要闻暂时读不到（接口不通），不影响其它板块。');
+          });
+        return () => { alive = false; };
+      }, []);
+
+      // 来源徽标：用户 2026-11-19 定案「只做来源徽标」，不加上下文筛选、不做分类徽标
+      const newsSources = useMemo(() => {
+        if (news === null) return [];
+        const counts = new Map();
+        for (const item of news.items) counts.set(item.source, (counts.get(item.source) ?? 0) + 1);
+        return [...counts.entries()].sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1));
+      }, [news]);
+
+      const todaySummary = `${todayCourses.length} 节课 · ${todayEntries.length} 条日程 · ${todayDeadlineCount} 个今天到期`
+        + (overdueCount > 0 ? ` · ${overdueCount} 个逾期` : '');
+
       return h(
         'div',
         null,
@@ -3229,14 +3437,161 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               `${term.name}　${formatDay(now)}　${TEXT.weekdays[isoWeekday(now)] ?? ''}` + (week.inTerm ? '' : term.startDate && parseDay(now) < parseDay(term.startDate) ? '（尚未开学）' : '（已放假）')),
 
         h('div', { className: 'sa-card' },
-          h('h3', null, '今日课程'),
-          todayCourses.length === 0
-            ? h('div', { className: 'sa-muted' }, TEXT.noCourseToday)
-            : todayCourses.map(({ course, session }, index) => h('div', { className: 'sa-row', key: `${course.id}-${index}` },
-                h('span', { className: 'sa-grow' }, course.name),
-                h('span', { className: 'sa-muted' }, session.startPeriod === session.endPeriod ? `第 ${session.startPeriod} 节` : `第 ${session.startPeriod}-${session.endPeriod} 节`),
-                h('span', { className: 'sa-muted' }, session.location ?? ''),
-              )),
+          h('div', { className: 'sa-dock' },
+            h('h3', { className: 'sa-grow' }, '今日日程'),
+            h('span', { className: 'sa-muted' }, todaySummary),
+            h('button', {
+              className: 'sa-btn',
+              disabled: busy || remindBusy,
+              title: '把这份日程推到本人微信；微信不通自动改发 QQ',
+              onClick: remind,
+            }, remindBusy ? '推送中…' : '一键提醒'),
+          ),
+          remindNote === null
+            ? null
+            : h('div', { className: remindNote.kind === 'error' ? 'sa-note sa-note-error' : 'sa-note' },
+                h('div', null, remindNote.message),
+                remindNote.showText === true && typeof remindNote.fallbackText === 'string'
+                  ? h('pre', null, remindNote.fallbackText)
+                  : null),
+
+          // 一、今日课程：数据源还是原来那个 todayCourses（口径一个字没改）
+          h('div', { className: 'sa-sub sa-sub-first' },
+            h('h4', null, '今日课程'),
+            todayCourses.length === 0
+              ? h('div', { className: 'sa-muted' }, week.inTerm ? TEXT.noCourseToday : '今天不在教学周内。')
+              : todayCourses.map(({ course, session }, index) => h('div', { className: 'sa-row', key: `${course.id}-${index}` },
+                  h('span', { className: 'sa-grow' }, course.name),
+                  h('span', { className: 'sa-muted' }, session.startPeriod === session.endPeriod ? `第 ${session.startPeriod} 节` : `第 ${session.startPeriod}-${session.endPeriod} 节`),
+                  h('span', { className: 'sa-muted' }, session.location ?? ''),
+                )),
+          ),
+
+          // 二、自定义日程：第 14 份文档 日程.json，增删都走通用 /mutate（没有专用路由）
+          h('div', { className: 'sa-sub' },
+            h('div', { className: 'sa-dock' },
+              h('h4', { className: 'sa-grow' }, '自定义日程'),
+              h('span', { className: 'sa-muted' }, `${todayEntries.length} 条`)),
+            todayEntries.length === 0
+              ? h('div', { className: 'sa-muted' }, '今天没有自定义日程。')
+              : todayEntries.map((entry) => h('div', { className: 'sa-row', key: entry.id },
+                  h('span', { className: 'sa-pill soon', style: { whiteSpace: 'nowrap' } }, entry.time === null ? '全天' : entry.time),
+                  h('span', { className: 'sa-grow' },
+                    entry.title,
+                    entry.note === '' ? null : h('span', { className: 'sa-muted' }, `　${entry.note}`)),
+                  h('button', { className: 'sa-btn', disabled: busy, onClick: () => removeScheduleEntry(entry) }, '删'),
+                )),
+            h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 } },
+              h('input', {
+                type: 'date', className: 'sa-input', value: draftDate,
+                onChange: (e) => setDraft({ ...draft, date: e.target.value }),
+              }),
+              h('input', {
+                type: 'time', className: 'sa-input', title: '不填就是「全天」', style: { width: 110 }, value: draft.time,
+                onChange: (e) => setDraft({ ...draft, time: e.target.value }),
+              }),
+              h('input', {
+                className: 'sa-input', placeholder: '日程标题（必填）', value: draft.title,
+                onChange: (e) => setDraft({ ...draft, title: e.target.value }),
+                onKeyDown: (e) => { if (e.key === 'Enter') addScheduleEntry(); },
+              }),
+              h('input', {
+                className: 'sa-input', placeholder: '备注（可选）', style: { width: 150 }, value: draft.note,
+                onChange: (e) => setDraft({ ...draft, note: e.target.value }),
+              }),
+              h('button', { className: 'sa-btn', disabled: busy, onClick: addScheduleEntry }, '添加'),
+            ),
+            scheduleNote === null
+              ? null
+              : h('div', { className: scheduleNote.kind === 'error' ? 'sa-note sa-note-error' : 'sa-note' }, scheduleNote.message),
+            draftDate !== formatDay(now)
+              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `这条会记到 ${draftDate}，不会出现在今天的列表里。`)
+              : null,
+            upcomingEntries.length === 0
+              ? null
+              : h('div', { style: { marginTop: 10 } },
+                  h('div', { className: 'sa-muted', style: { fontSize: 14 } }, `接下来 7 天还有 ${upcomingEntries.length} 条：`),
+                  upcomingEntries.map((entry) => h('div', { className: 'sa-row', key: entry.id },
+                    h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } },
+                      `${formatMonthDay(parseDay(entry.date))}${entry.time === null ? '' : ` ${entry.time}`}`),
+                    h('span', { className: 'sa-grow' }, entry.title),
+                  )),
+                ),
+          ),
+
+          // 三、今日 DDL：原「临近截止」卡整体并入，内容口径不变（按紧迫度的前 8 条）
+          h('div', { className: 'sa-sub' },
+            h('div', { className: 'sa-dock' },
+              h('h4', { className: 'sa-grow' }, '今日 DDL'),
+              h('span', { className: 'sa-muted' }, `今天到期 ${todayDeadlineCount} · 逾期 ${overdueCount}`)),
+            sorted.length === 0
+              ? h('div', { className: 'sa-muted' }, TEXT.noDeadline)
+              : sorted.slice(0, 8).map((task) => {
+                  const urgency = deadlineUrgency(task, now);
+                  const subject = courseNameIn(courseIndex, task.courseId);
+                  return h('div', { className: 'sa-row', key: task.id },
+                    h(Pill, { level: urgency.level }, urgencyText(urgency)),
+                    h('span', { className: 'sa-grow' }, task.title),
+                    // 科目单独占一格、且不参与伸缩：挤的时候先截断标题，而不是把科目吃掉
+                    subject === '' ? null : h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, subject),
+                    h('span', { className: 'sa-muted' }, task.due ?? '无截止日'),
+                  );
+                }),
+            sorted.length > 8
+              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `按紧迫度排的前 8 条，共 ${sorted.length} 个未完成；全量在「DDL」页签。`)
+              : null,
+          ),
+        ),
+
+        // 今日要闻（2026-11-19 B 卡）：数据由计划任务每天 7:00 抓进 要闻.json，这里只读展示。
+        // 标题行给「最近 N 天 M 条 + 抓取时间」与来源徽标；条目标题可点开原文（新标签、noopener）。
+        h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-dock' },
+            h('h3', { className: 'sa-grow' }, '今日要闻'),
+            h('span', { className: 'sa-muted' },
+              news === null
+                ? (newsError === null ? '读取中…' : '读取失败')
+                : `最近 ${news.days} 天 ${news.shown} 条`
+                  + (news.todayCount > 0 ? ` · 今天 ${news.todayCount}` : '')
+                  + (news.fetchedClock === null ? '' : ` · 抓取于 ${news.fetchedClock}`)),
+          ),
+          newsError === null
+            ? null
+            : h('div', { className: 'sa-note sa-note-error' }, newsError),
+          newsSources.length === 0
+            ? null
+            : h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 } },
+                newsSources.map(([source, count]) => h('span', {
+                  key: source,
+                  className: 'sa-pill later',
+                  style: { whiteSpace: 'nowrap' },
+                  title: `${source}：${count} 条`,
+                }, `${source} ${count}`)),
+              ),
+          news === null
+            ? h('div', { className: 'sa-muted' }, newsError === null ? '正在读取要闻…' : '要闻读取失败，其它板块不受影响。')
+            : news.items.length === 0
+              ? h('div', { className: 'sa-muted' },
+                  '最近 7 天没有抓到要闻。抓取脚本每天 7:00 跑一次（公开源：学发中心 / 清华新闻 / iCenter / 挑战杯），'
+                  + `库里现存 ${news.total} 条。`)
+              : news.items.slice(0, 20).map((item) => h('div', { className: 'sa-row', key: item.id },
+                  h('span', { className: 'sa-pill later', style: { whiteSpace: 'nowrap' }, title: item.publishedAt },
+                    item.publishedAt.slice(5)),
+                  h('span', { className: 'sa-grow' },
+                    h('a', {
+                      href: item.url,
+                      target: '_blank',
+                      rel: 'noopener',
+                      style: { color: 'inherit', textDecoration: 'underline' },
+                    }, item.title),
+                    item.excerpt === ''
+                      ? null
+                      : h('div', { className: 'sa-muted', style: { fontSize: 13, marginTop: 2 } }, item.excerpt)),
+                  h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, item.source),
+                )),
+          news !== null && news.items.length > 20
+            ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `先给最近 20 条，共 ${news.items.length} 条。`)
+            : null,
         ),
 
         h('div', { className: 'sa-card' },
@@ -3289,22 +3644,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                 : `还有 ${analysisCoverageSummary.missing} 个知识点没有详解（分析线下一批照着这个数往下写）。`),
         ),
 
-        h('div', { className: 'sa-card' },
-          h('h3', null, '临近截止'),
-          sorted.length === 0
-            ? h('div', { className: 'sa-muted' }, TEXT.noDeadline)
-            : sorted.slice(0, 8).map((task) => {
-                const urgency = deadlineUrgency(task, now);
-                const subject = courseNameIn(courseIndex, task.courseId);
-                return h('div', { className: 'sa-row', key: task.id },
-                  h(Pill, { level: urgency.level }, urgencyText(urgency)),
-                  h('span', { className: 'sa-grow' }, task.title),
-                  // 科目单独占一格、且不参与伸缩：挤的时候先截断标题，而不是把科目吃掉
-                  subject === '' ? null : h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, subject),
-                  h('span', { className: 'sa-muted' }, task.due ?? '无截止日'),
-                );
-              }),
-        ),
         h('div', null, h('button', { className: 'sa-btn', onClick: refresh }, '刷新')),
       );
     }
@@ -10985,7 +11324,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           h('button', { className: 'sa-btn', style: { marginTop: 8 }, onClick: refresh }, TEXT.retry),
         );
       } else if (tab === 'today') {
-        body = h(TodayTab, { docs, now, refresh, onOpenKnowledgeReview, onOpenKnowledge, onOpenKnowledgeCoverage });
+        body = h(TodayTab, { docs, now, refresh, busy, run, setBusy, onOpenKnowledgeReview, onOpenKnowledge, onOpenKnowledgeCoverage });
       } else if (tab === 'schedule') {
         body = h(ScheduleTab, { docs, now, refresh, busy, run, setBusy });
       } else if (tab === 'deadlines') {

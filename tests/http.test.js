@@ -68,7 +68,8 @@ test('GET /health：数据正常时 200', async () => {
     const payload = await response.json();
     assert.equal(payload.ok, true);
     // 四份学习数据 + 作业流 + 三份取字产物（资料索引 / 题目 / 知识点候选）+ 知识网络 + 批注 + 知识映射（第 13 份）
-    assert.equal(payload.files.length, 13);
+    // + 日程（第 14 份，2026-11-19 A 卡）+ 要闻（第 15 份，2026-11-19 B 卡）
+    assert.equal(payload.files.length, 15);
   } finally {
     await server.close();
   }

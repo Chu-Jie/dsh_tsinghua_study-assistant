@@ -57,8 +57,10 @@ test('交互助手对话已下线：三条路由与对话索引读取都不该�
 
 test('学习记录不进 /state：旁挂目录不能混进 DOC_KEYS', () => {
   assert.ok(DOC_KEYS.includes('annotations'), '批注确实是第 12 份文档（A2 已立）');
-  assert.ok(DOC_KEYS.length === 13, 'DOC_KEYS 现为 13 份（批注 + 知识映射），学习记录没有混进来');
+  assert.ok(DOC_KEYS.length === 15, 'DOC_KEYS 现为 15 份（批注 + 知识映射 + 日程 + 要闻），学习记录没有混进来');
   assert.ok(DOC_KEYS.includes('knowledgeMap'), '知识映射是第 13 份文档（C0 已立）');
+  assert.ok(DOC_KEYS.includes('schedule'), '日程是第 14 份文档（2026-11-19 A 卡）');
+  assert.ok(DOC_KEYS.includes('news'), '要闻是第 15 份文档（2026-11-19 B 卡）');
   assert.ok(!DOC_KEYS.some((key) => /studylog|studyLog|records|reading/i.test(key)), '学习记录不是主文档');
   assert.ok(!STUDY_LOG.includes('writeDocument'), '学习记录用原子写，不走 store.writeDocument');
 });

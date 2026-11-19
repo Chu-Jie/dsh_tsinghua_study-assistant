@@ -194,7 +194,7 @@ async function main() {
 
   const status = await statusTool.execute({}, {});
   check('study_status 报告健康', status.healthy === true, JSON.stringify(status.files?.map((f) => f.reason)));
-  check('study_status 看到十三份文件', status.files.length === 13, `实际 ${status.files.length} 份`);
+  check('study_status 看到十五份文件（含第 14 份 日程.json / 第 15 份 要闻.json）', status.files.length === 15, `实际 ${status.files.length} 份`);
   const statusText = statusTool.output.render({}, status)[0].text;
   check('study_status 渲染出文本', typeof statusText === 'string' && statusText.includes('总体状态'));
 
@@ -261,12 +261,21 @@ async function main() {
 
     const state = await fetch(`${base}/state`);
     const stateBody = await state.json();
-    check('GET /state → 200 且带十三份数据', state.status === 200 && ['term', 'courses', 'tasks', 'grades', 'homework', 'materials', 'questions', 'knowledgeCandidates', 'knowledgeNetwork', 'knowledgeOutline', 'knowledgeAnalysis', 'annotations', 'knowledgeMap'].every((k) => stateBody.docs[k] !== undefined));
+    check('GET /state → 200 且带十五份数据', state.status === 200 && ['term', 'courses', 'tasks', 'grades', 'homework', 'materials', 'questions', 'knowledgeCandidates', 'knowledgeNetwork', 'knowledgeOutline', 'knowledgeAnalysis', 'annotations', 'knowledgeMap', 'schedule', 'news'].every((k) => stateBody.docs[k] !== undefined));
     check('/state 返回每份文档的 sha256', typeof stateBody.hashes?.courses === 'string' && typeof stateBody.hashes?.homework === 'string');
 
     const overviewRes = await fetch(`${base}/overview`);
     const overviewBody = await overviewRes.json();
     check(`GET /overview → 200 且计数与课程.json 一致（${expectCourses}）`, overviewRes.status === 200 && overviewBody.counts.courses === expectCourses, `${overviewBody.counts?.courses} vs ${expectCourses}`);
+
+    // 2026-11-19 B 卡：今日要闻。板块读它，所以装好之后这条必须真的通——
+    // 空库也要 200（`missing:true`），面板才能显示空态而不是「接口挂了」。
+    const newsRes = await fetch(`${base}/news?days=7`);
+    const newsBody = newsRes.status === 200 ? await newsRes.json() : {};
+    check('GET /news → 200（路由已注册，不是 404）', newsRes.status === 200, String(newsRes.status));
+    check('/news 返回 ok + days + board（空库时 items 为空数组）',
+      newsBody.ok === true && newsBody.days === 7 && Array.isArray(newsBody.items) && typeof newsBody.board?.shown === 'number',
+      JSON.stringify({ ok: newsBody.ok, days: newsBody.days, items: newsBody.items?.length }));
 
     // 回归：/learn/* 曾经因为只注册 exact 而整族 404（真机反馈过）。
     // 现在必须是「请求到达 handler」——GET 拿 200，POST 缺自定义头拿 403（不是 404）。
@@ -331,7 +340,7 @@ async function main() {
   const stateHashAfter = await sha256File(STATE_FILE);
   check('_工具/作业台状态.json 未被改动', stateHashAfter === stateHashBefore, `${stateHashBefore} → ${stateHashAfter}`);
   const dataFiles = await fs.readdir(DATA_DIR);
-  check('学习台十三份数据在位', ['学期.json', '课程.json', '任务.json', '成绩.json', '作业.json', '资料索引.json', '题目.json', '知识点候选.json', '知识点网络.json', '知识点大纲.json', '资料分析.json', '批注.json', '知识映射.json'].every((f) => dataFiles.includes(f)), dataFiles.join(', '));
+  check('学习台十五份数据在位', ['学期.json', '课程.json', '任务.json', '成绩.json', '作业.json', '资料索引.json', '题目.json', '知识点候选.json', '知识点网络.json', '知识点大纲.json', '资料分析.json', '批注.json', '知识映射.json', '日程.json', '要闻.json'].every((f) => dataFiles.includes(f)), dataFiles.join(', '));
   check('备份目录存在', dataFiles.includes('备份'));
 
   console.log(`\n=== 结果：${passed} 项通过，${failed} 项失败 ===`);
