@@ -2078,27 +2078,44 @@ test('client.js：能「返回上一页」——页签/筛选/打开的文件一
   assert.ok(source.includes('收起这个知识点的详情'), '节点卡要有「收起」');
 });
 
-test('截止列表必须带科目：主面板「今日 DDL」与右侧栏「最近截止」都不能只显示任务名', () => {
+test('截止列表必须带科目：主面板分类版块与右侧栏「最近截止」都不能只剩任务名', () => {
   // 用户反馈：「临近截止那一栏，不要只有任务名，加上科目信息」。
-  // 2026-11-19 A 卡把主面板那张「临近截止」卡并进了「今日日程」的第三小节「今日 DDL」，
-  // 行结构与科目那一格**原样搬过来**——这条断言跟着改名，但「必须带科目」的要求不变。
-  // 任务是只存 courseId 的，所以科目名必须现算现渲染 —— 这条把「算出来了」和
-  // 「渲染出去了」分开钉住：只算不画同样是没有科目。
+  // 2026-11-19 A 卡把「临近截止」并进「今日日程」；A2 卡又把今日日程改成 4 个分类版块，
+  // 行上只留「起-止 + 标题」（用户 2026-11-19 定：点开才看详情），科目挪进**展开详情**。
+  // 所以这条断言从「查源码里有没有那个字符串」升级成「拿 buildScheduleBoard 真跑一遍，
+  // 看科目在不在详情行里」——只算不画，仍然等于没有科目。
+  const { half } = loadClient();
+  const internals = half.DESCRIPTORS.internals;
   const source = fs.readFileSync(path.join(HERE, '..', 'client.full.js'), 'utf8');
-  const labels = ['今日 DDL', '最近截止'];
-  for (const label of labels) {
+
+  for (const label of ['今日安排（按分类）', '最近截止']) {
     assert.ok(source.includes(`'${label}'`), `应存在「${label}」这一栏`);
   }
 
-  // 两处截止列表都要建课程索引（两处各一次 useMemo/常量 + 用到就拿）
-  const indexUses = [...source.matchAll(/courseNameIndex\(docs\)/g)].length;
-  assert.ok(indexUses >= 2, `两处截止列表都应建立课程索引，实际 ${indexUses} 处`);
+  // 主面板：DDL 条目的详情里必须有「科目：<课程名>」，不能只剩任务名
+  const board = internals.buildScheduleBoard({
+    courses: [],
+    tasks: [{
+      id: 't_subject',
+      title: '交实验报告',
+      due: '2026-11-19 23:59',
+      courseId: 'c1',
+      subjectName: '数字电路',
+    }],
+    entries: [],
+    overrides: {},
+    now: new Date('2026-11-19T09:00:00+08:00'),
+  });
+  const rows = board.blocks.reduce((all, block) => all.concat(block.rows), []);
+  assert.equal(rows.length, 1, '一条 DDL 应只生成一行');
+  assert.ok(
+    rows[0].detail.lines.some((line) => line.startsWith('科目：数字电路')),
+    `展开详情里必须带科目，实际 ${JSON.stringify(rows[0].detail.lines)}`,
+  );
 
-  // 科目名必须真的被渲染成元素：subject === '' ? null : h('span', …)
+  // 右侧栏「最近截止」仍是行内一格：科目必须真的被渲染成元素，且不被伸缩吃掉
   const rendered = [...source.matchAll(/subject === '' \? null : h\('span'[^)]*\)/g)].length;
-  assert.equal(rendered, 2, `两处截止列表都应把科目渲染成独立元素，实际 ${rendered} 处`);
-
-  // 科目那一格不参与伸缩：否则窄容器里被截掉的是科目，用户就白提了这个需求
+  assert.ok(rendered >= 1, `「最近截止」应把科目渲染成独立元素，实际 ${rendered} 处`);
   assert.ok(/whiteSpace: 'nowrap'/.test(source), '科目那一格必须 whiteSpace: nowrap，避免被伸缩吃掉');
 });
 

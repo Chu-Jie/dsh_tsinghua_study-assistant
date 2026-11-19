@@ -2706,6 +2706,40 @@ window.__ModuleLoader__.load({
 .sa-sub-first{margin-top:8px;padding-top:0;border-top:0}
 .sa-sub h4{margin:0 0 8px;font-size:16px;font-weight:600;line-height:1.5;letter-spacing:.01em;color:var(--dsw-alias-label-primary)}
 .sa-sub .sa-dock h4{margin-bottom:0}
+/* 「今日日程」四分类横向版块（2026-11-19 A2 卡）：一张卡里横排 4 个版块，窄了就降 2 / 1 列。
+   容器查询按**面板宽度**算（.sa-root 已经是 inline-size 容器），不是浏览器窗口宽度 ——
+   插件停靠在侧边栏时窗口很宽但面板很窄，用 @media 会一直以为是 4 列而挤成一团。 */
+.sa-cat-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:start}
+.sa-cat{border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);padding:10px 10px 6px;background:var(--dsw-alias-bg-base);min-width:0}
+.sa-cat-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:6px}
+.sa-cat-item{border-top:1px solid var(--dsw-alias-border-l1);padding:6px 0}
+.sa-cat-row{display:flex;align-items:center;gap:4px;min-width:0}
+.sa-cat-main{flex:1 1 auto;min-width:0;display:flex;align-items:flex-start;gap:6px;background:none;border:0;padding:2px 0;cursor:pointer;text-align:left;color:var(--dsw-alias-label-primary);font:inherit;border-radius:max(var(--dsw-radius-sm,4px),6px)}
+.sa-cat-time{flex:none;font-size:13px;line-height:1.6;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap;max-width:9.5em;overflow:hidden;text-overflow:ellipsis}
+.sa-cat-title{flex:1 1 auto;min-width:0;font-size:14px;line-height:1.6;white-space:normal;overflow-wrap:anywhere}
+.sa-cat-caret{flex:none;font-size:12px;line-height:1.9;color:var(--dsw-alias-label-secondary);opacity:.85}
+.sa-cat-select{flex:none;max-width:6.4em;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-sm,4px),6px);font-size:12px;line-height:1.5;padding:1px 2px;font-family:inherit}
+.sa-cat-empty{color:var(--dsw-alias-label-secondary);font-size:13px;padding:4px 0 8px}
+.sa-cat-detail{margin:6px 0 2px;padding:8px 9px;border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2);font-size:13px;line-height:1.65;display:flex;flex-direction:column;gap:4px;animation:sa-reveal .18s ease}
+.sa-cat-note{color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}
+.sa-cat-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:space-between}
+/* 分类徽标：只借 .sa-pill 的形态，色调全部落在已有语义令牌上（品牌 / 业务 / 成功 / 次级文字），不新增颜色。 */
+.sa-pill.cat-study{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
+.sa-pill.cat-innovation{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary)) 8%,transparent)}
+.sa-pill.cat-life{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary)) 8%,transparent)}
+.sa-pill.cat-work{color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-secondary) 8%,transparent)}
+/* AI 识别条 + 预览条：识别结果只进表单，所以预览看起来要像「草稿」——虚线框，不是卡片。 */
+.sa-ai{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.sa-ai-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sa-ai-preview{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px dashed var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);font-size:14px;line-height:1.6;background:var(--dsw-alias-bg-base)}
+.sa-form{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;align-items:center}
+.sa-form .sa-form-title{flex:1 1 220px}
+@container (max-width:900px){
+  .sa-cat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@container (max-width:560px){
+  .sa-cat-grid{grid-template-columns:minmax(0,1fr)}
+}
 /* 提醒结果条：成功/失败都停在这张卡里，不弹窗 */
 .sa-note{margin:10px 0 0;padding:9px 11px;border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
 .sa-note-error{border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
@@ -3186,6 +3220,290 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return String(a?.title ?? '').localeCompare(String(b?.title ?? ''));
     }
 
+    // ---------------------------------------------------------------------
+    // 「今日日程」四个分类版块（2026-11-19 A2 卡）
+    // ---------------------------------------------------------------------
+    //
+    // 一张大卡里横排 4 个版块（学习 / 科创 / 生活 / 工作其他），课程、DDL、自定义日程
+    // 都按分类塞进对应版块：
+    //   - 自定义条目：分类存在 `日程.json` 的 `category`（缺省 work），用户可以改；
+    //   - 课程 / DDL：分类是**渲染层算的**（关键词），用户改过的结果只写 localStorage
+    //     覆盖表，**绝不写回 课程.json / 任务.json**（用户 2026-11-19 定）。
+    // 空文档、旧数据、坏条目都在这里被挡掉，别把 undefined 渲染成一行。
+
+    /** 分类键（与 lib/core.js 的 SCHEDULE_CATEGORIES 一字不差）。 */
+    const SCHEDULE_CATEGORIES = ['study', 'innovation', 'life', 'work'];
+    /** 分类的中文名：版块头、下拉选项、条目徽标共用这一份。 */
+    const SCHEDULE_CATEGORY_LABEL = { study: '学习', innovation: '科创', life: '生活', work: '工作其他' };
+    /**
+     * 每个分类的配色**只用一个语义键**，样式表里映射到已有的 `.sa-pill` 色调令牌
+     * （brand / business / success / secondary），不硬编码新颜色。
+     */
+    const SCHEDULE_CATEGORY_TONE = { study: 'cat-study', innovation: 'cat-innovation', life: 'cat-life', work: 'cat-work' };
+
+    /**
+     * 关键词表（用户 2026-11-19 定案的那份）。顺序有意义：**先判科创 / 生活 / 工作，
+     * 都不命中才兜底「学习」**——「课程设计比赛」应该进科创，而「课程复习」进学习。
+     */
+    const SCHEDULE_KEYWORDS = {
+      innovation: ['比赛', '竞赛', '大创', '挑战杯', '星火', '项目', '科研', '论文', '专利', '路演', '答辩', '创新创业'],
+      life: ['社团', '聚会', '运动', '体育', '电影', '生日', '聚餐', '娱乐', '健身'],
+      work: ['实习', '兼职', '面试', '招聘', '宣讲', '工作', '会议', '杂项'],
+    };
+
+    /**
+     * 按关键词判一个标题属于哪个分类；**兜底 study**。
+     *
+     * 纯函数、不读存储：课程 / DDL 的「自动归类」和测试都直接调它。
+     * @param {string} text 标题（可带科目名）
+     * @returns {'study'|'innovation'|'life'|'work'}
+     */
+    function classifyByKeyword(text) {
+      const hay = String(text ?? '');
+      if (hay.trim() === '') return 'study';
+      // 顺序：科创 → 生活 → 工作；学习是兜底，不单独匹配（否则「课程设计比赛」会被抢走）
+      for (const category of ['innovation', 'life', 'work']) {
+        for (const word of SCHEDULE_KEYWORDS[category]) {
+          if (hay.includes(word)) return category;
+        }
+      }
+      return 'study';
+    }
+
+    /**
+     * 课程 / DDL 分类的本地覆盖表（localStorage）。
+     *
+     * 键形如 `course:c_ds` / `ddl:t_1`，值必须是四个分类之一；坏值一律丢掉（下次读时自愈）。
+     * **不写回任务 / 课程数据**：覆盖只影响这张卡的摆放，换台机器就回到关键词判断。
+     */
+    const SCHEDULE_OVERRIDE_STORAGE_KEY = 'study-assistant:schedule-category-override';
+
+    function safeLocalStorage() {
+      try {
+        return window?.localStorage ?? null;
+      } catch {
+        return null; // 隐私模式下读 localStorage 会抛，覆盖表就退化成「没有覆盖」
+      }
+    }
+
+    function readCategoryOverrides(storage) {
+      const target = storage === undefined ? safeLocalStorage() : storage;
+      if (target === null || target === undefined || typeof target.getItem !== 'function') return {};
+      let parsed = null;
+      try {
+        parsed = JSON.parse(target.getItem(SCHEDULE_OVERRIDE_STORAGE_KEY) ?? '{}');
+      } catch {
+        return {};
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof key !== 'string' || !SCHEDULE_CATEGORIES.includes(value)) continue;
+        out[key] = value;
+      }
+      return out;
+    }
+
+    function writeCategoryOverride(storage, key, category) {
+      const target = storage === undefined ? safeLocalStorage() : storage;
+      const next = { ...readCategoryOverrides(target) };
+      if (SCHEDULE_CATEGORIES.includes(category)) next[key] = category;
+      else delete next[key];
+      if (target !== null && target !== undefined && typeof target.setItem === 'function') {
+        try {
+          target.setItem(SCHEDULE_OVERRIDE_STORAGE_KEY, JSON.stringify(next));
+        } catch {
+          // 写不进去（配额满 / 隐私模式）就算了：界面这一次照样按新分类摆放
+        }
+      }
+      return next;
+    }
+
+    /**
+     * 板块内排序用的「一天中的第几分钟」。
+     *
+     * 课程数据只有节次（没有钟点），要跟自定义日程 / DDL 排在同一条时间轴上，
+     * 只能按一张**近似作息表**把节次折算成分钟。它**只用于排序**：不显示、不入库、
+     * 不参与任何判断；与实际作息不符时改这一处即可（其余代码不用动）。
+     * 索引 = 节次（第 1 节 → 08:00，第 12 节 → 19:20）。
+     */
+    const PERIOD_START_MINUTES = [null, 480, 530, 590, 640, 690, 810, 860, 910, 960, 1010, 1110, 1160];
+
+    /** `HH:mm` → 分钟；不是合法时刻返回 null。 */
+    function minuteOfClock(value) {
+      const matched = /^(\d{2}):(\d{2})$/.exec(String(value ?? '').trim());
+      if (matched === null) return null;
+      const hour = Number(matched[1]);
+      const minute = Number(matched[2]);
+      if (hour > 23 || minute > 59) return null;
+      return hour * 60 + minute;
+    }
+
+    /** 课程节次 → 排序分钟（超出表的节次按第 12 节算，不造新值）。 */
+    function minuteOfPeriod(period) {
+      const slot = Number(period);
+      if (!Number.isInteger(slot) || slot <= 0) return null;
+      return PERIOD_START_MINUTES[slot] ?? PERIOD_START_MINUTES[PERIOD_START_MINUTES.length - 1];
+    }
+
+    /** 一条日程的时刻文案：`09:30–11:00` / `09:30` / `全天`。 */
+    function scheduleTimeLabel(time, endTime) {
+      if (typeof time !== 'string' || time === '') return '全天';
+      return typeof endTime === 'string' && endTime !== '' ? `${time}–${endTime}` : time;
+    }
+
+    /**
+     * 组装「今日日程」的四个版块（纯函数）。
+     *
+     * @param {{courses?: Array, tasks?: Array, entries?: Array, overrides?: object, now?: Date}} input
+     *   `courses` —— 与 `todayCourses` 同形状（`{course, session}`）
+     *   `tasks`   —— 已经按紧迫度排好的未完成任务（调用方决定取前几条）
+     *   `entries` —— `日程.json` 里今天的条目
+     *   `overrides` —— localStorage 覆盖表（`course:<id>` / `ddl:<id>` → category）
+     * @returns {{blocks: Array<{category: string, label: string, tone: string, rows: Array<object>}>, total: number}}
+     */
+    function buildScheduleBoard(input) {
+      const courses = Array.isArray(input?.courses) ? input.courses : [];
+      const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
+      const entries = Array.isArray(input?.entries) ? input.entries : [];
+      const overrides = input?.overrides !== null && typeof input?.overrides === 'object' ? input.overrides : {};
+
+      const rows = [];
+      for (const item of courses) {
+        const course = item?.course ?? null;
+        const session = item?.session ?? null;
+        if (course === null || session === null) continue;
+        const id = String(course.id ?? '');
+        if (id === '') continue;
+        const start = Number(session.startPeriod);
+        const end = Number(session.endPeriod);
+        const span = Number.isInteger(start) && start > 0
+          ? (Number.isInteger(end) && end > start ? `第 ${start}-${end} 节` : `第 ${start} 节`)
+          : '节次未填';
+        const category = SCHEDULE_CATEGORIES.includes(overrides[`course:${id}`])
+          ? overrides[`course:${id}`]
+          : classifyByKeyword(`${course.name ?? ''} ${Array.isArray(course.aliases) ? course.aliases.join(' ') : ''}`);
+        rows.push({
+          key: `course:${id}`,
+          kind: 'course',
+          id,
+          category,
+          title: String(course.name ?? ''),
+          timeLabel: span,
+          minutes: minuteOfPeriod(start),
+          detail: {
+            lines: [
+              `${span}`,
+              typeof session.location === 'string' && session.location.trim() !== '' ? `地点：${session.location.trim()}` : '',
+              typeof course.teacher === 'string' && course.teacher.trim() !== '' ? `教师：${course.teacher.trim()}` : '',
+              typeof session.weeks === 'string' && session.weeks.trim() !== '' ? `周次：${session.weeks.trim()}` : '',
+            ].filter((line) => line !== ''),
+            note: '',
+            location: '',
+            source: '',
+          },
+        });
+      }
+
+      for (const task of tasks) {
+        if (task === null || typeof task !== 'object' || typeof task.id !== 'string') continue;
+        const due = typeof task.due === 'string' ? task.due.trim() : '';
+        const clock = /(\d{1,2}):(\d{2})/.exec(due);
+        const clockText = clock === null ? '' : `${String(Number(clock[1])).padStart(2, '0')}:${clock[2]}`;
+        const category = SCHEDULE_CATEGORIES.includes(overrides[`ddl:${task.id}`])
+          ? overrides[`ddl:${task.id}`]
+          : classifyByKeyword(`${task.title ?? ''} ${task.subjectName ?? ''}`);
+        const urgency = deadlineUrgency(task, input?.now ?? new Date());
+        rows.push({
+          key: `ddl:${task.id}`,
+          kind: 'ddl',
+          id: task.id,
+          category,
+          title: String(task.title ?? ''),
+          timeLabel: clockText !== '' ? clockText : (due === '' ? '无截止' : due),
+          minutes: clockText === '' ? null : minuteOfClock(clockText),
+          detail: {
+            lines: [
+              `截止：${due === '' ? '无截止日' : due}`,
+              typeof task.subjectName === 'string' && task.subjectName !== '' ? `科目：${task.subjectName}` : '',
+              `紧迫度：${urgencyText(urgency)}`,
+            ].filter((line) => line !== ''),
+            note: typeof task.note === 'string' ? task.note : '',
+            location: '',
+            source: '',
+          },
+        });
+      }
+
+      for (const entry of entries) {
+        if (entry === null || typeof entry !== 'object' || typeof entry.id !== 'string') continue;
+        const time = typeof entry.time === 'string' && entry.time.trim() !== '' ? entry.time.trim() : null;
+        const endTime = typeof entry.endTime === 'string' && entry.endTime.trim() !== '' ? entry.endTime.trim() : null;
+        const category = SCHEDULE_CATEGORIES.includes(entry.category) ? entry.category : 'work';
+        rows.push({
+          key: `entry:${entry.id}`,
+          kind: 'entry',
+          id: entry.id,
+          category,
+          title: String(entry.title ?? ''),
+          timeLabel: scheduleTimeLabel(time, endTime),
+          minutes: time === null ? null : minuteOfClock(time),
+          detail: {
+            lines: [
+              typeof entry.date === 'string' ? `日期：${entry.date}` : '',
+              typeof entry.location === 'string' && entry.location.trim() !== '' ? `地点：${entry.location.trim()}` : '',
+            ].filter((line) => line !== ''),
+            note: typeof entry.note === 'string' ? entry.note : '',
+            location: typeof entry.location === 'string' ? entry.location : '',
+            source: entry.source === 'auto-ai' ? 'auto-ai' : 'manual',
+          },
+        });
+      }
+
+      // 同一版块内：有钟点的按时间升序在前，没有钟点的（课程按节次、全天、无时刻 DDL）按
+      // 「分钟为 null → 节次分钟 → 兜底」排在后面；再按标题稳定排序，避免每次渲染跳行。
+      const sorted = rows.sort((a, b) => {
+        const ka = a.minutes === null ? null : a.minutes;
+        const kb = b.minutes === null ? null : b.minutes;
+        if (ka !== kb) {
+          if (ka === null) return 1;
+          if (kb === null) return -1;
+          return ka - kb;
+        }
+        return String(a.title).localeCompare(String(b.title));
+      });
+
+      const blocks = SCHEDULE_CATEGORIES.map((category) => ({
+        category,
+        label: SCHEDULE_CATEGORY_LABEL[category],
+        tone: SCHEDULE_CATEGORY_TONE[category],
+        rows: sorted.filter((row) => row.category === category),
+      }));
+      return { blocks, total: sorted.length };
+    }
+
+    /**
+     * 把 `/schedule/parse` 的失败结果翻成一句人话（面板里直接显示）。
+     *
+     * 密钥相关的分支**只说「没读到密钥」和该看哪个文件**：密钥本身永远不出现在界面上。
+     */
+    function aiFailureText(result) {
+      const code = typeof result?.error === 'string' ? result.error : '';
+      const detail = typeof result?.detail === 'string' ? result.detail : '';
+      if (code === 'ai-key-missing' || code === 'ai-key-unreadable') {
+        return '没读到 AI 密钥（~/.dsh/.credentials.yaml 的 refs.PARATERA_API_KEY），智能识别暂不可用；手填表单不受影响。';
+      }
+      if (code === 'ai-bad-output' || code === 'ai-bad-title') {
+        return `AI 没抽出可用的日程${detail === '' ? '' : `（${detail}）`}。表单已清空，请手动填。`;
+      }
+      if (code === 'ai-unavailable' || code === 'ai-timeout' || code === 'ai-rejected') {
+        return `AI 通道暂时不通${detail === '' ? '' : `（${detail}）`}。表单已清空，请手动填或稍后再试。`;
+      }
+      if (code === 'schedule-parse-empty') return '先把要识别的那段话贴进来再点识别。';
+      return `识别失败${detail === '' && code === '' ? '' : `（${detail || code}）`}。表单已清空，请手动填。`;
+    }
+
+
     /** 某一天的日程条目（坏日期直接丢掉，别把 `undefined` 渲染成一行）。 */
     function scheduleEntriesOf(docs, day) {
       const target = formatDay(parseDay(day) ?? new Date());
@@ -3253,7 +3571,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     function TodayTab({ docs, now, refresh, busy, run, setBusy, onOpenKnowledgeReview, onOpenKnowledge, onOpenKnowledgeCoverage }) {
       const term = docs.term?.terms?.find((t) => t.id === docs.term?.currentId) ?? docs.term?.terms?.[0] ?? null;
       const week = currentTeachingWeek(term, now);
-      const gpa = useMemo(() => computeGpa(docs.grades), [docs.grades]);
       const tasks = useMemo(() => (objectList(docs.tasks?.tasks)), [docs.tasks]);
       const active = useMemo(() => tasks.filter((t) => t.status !== 'done' && t.status !== 'dropped'), [tasks]);
       const sorted = useMemo(() => [...active].sort((a, b) => compareTasksByDue(a, b, now)), [active, now]);
@@ -3302,13 +3619,46 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         [sorted, now],
       );
 
-      const [draft, setDraft] = useState({ date: '', time: '', title: '', note: '' });
+      const [draft, setDraft] = useState({
+        date: '',
+        time: '',
+        endTime: '',
+        title: '',
+        note: '',
+        location: '',
+        category: 'study',
+        source: 'manual',
+      });
       const [scheduleNote, setScheduleNote] = useState(null);
       const [remindBusy, setRemindBusy] = useState(false);
       const [remindNote, setRemindNote] = useState(null);
+      // 分类版块的展开状态（按条目 key 记，刷新后自然重置）与课程 / DDL 的本地覆盖表
+      const [openRows, setOpenRows] = useState({});
+      const [overrides, setOverrides] = useState(() => readCategoryOverrides());
+      // AI 识别：粘贴框、状态提示、忙碌
+      const [aiText, setAiText] = useState('');
+      const [aiNote, setAiNote] = useState(null);
+      const [aiBusy, setAiBusy] = useState(false);
 
       // 日期输入框的展示值：空串表示「没动过」，跟今天走（跨天刷新后自动落到新的一天）
       const draftDate = draft.date === '' ? formatDay(now) : draft.date;
+
+      /**
+       * 把草稿写回**空白表单**（失败路径用）。
+       *
+       * 「AI 失败 → 表单留空 + 报错」是用户 2026-11-19 定的第一硬规矩：宁可让用户从零手填，
+       * 也不许把半截识别结果当成事实留在表单里被顺手提交。
+       */
+      const blankDraft = () => setDraft({
+        date: '',
+        time: '',
+        endTime: '',
+        title: '',
+        note: '',
+        location: '',
+        category: 'study',
+        source: 'manual',
+      });
 
       const addScheduleEntry = () => {
         const title = draft.title.trim();
@@ -3316,14 +3666,42 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           setScheduleNote({ kind: 'error', message: '日程标题不能为空。' });
           return;
         }
+        if (draft.endTime !== '' && draft.time === '') {
+          setScheduleNote({ kind: 'error', message: '填了结束时间，也要填开始时间；只想到一个钟点就把它填在「开始」。' });
+          return;
+        }
+        if (draft.endTime !== '' && draft.time !== '' && draft.endTime <= draft.time) {
+          setScheduleNote({ kind: 'error', message: '结束时间要晚于开始时间。' });
+          return;
+        }
         setScheduleNote(null);
         setBusy(true);
-        // 与服务端 normalizeScheduleEntry 同一套字段：time 留空 → null（全天）
+        // 与服务端 normalizeScheduleEntry 同一套字段：time 留空 → null（全天），
+        // category / location / endTime / source 都是 A2 卡新增的可选字段。
         run(() => mutate('schedule', 'create', {
-          item: { title, date: draftDate, time: draft.time === '' ? null : draft.time, note: draft.note.trim() },
+          item: {
+            title,
+            date: draftDate,
+            time: draft.time === '' ? null : draft.time,
+            endTime: draft.endTime === '' ? null : draft.endTime,
+            location: draft.location.trim(),
+            category: draft.category,
+            source: draft.source,
+            note: draft.note.trim(),
+          },
         }))
           .then(async () => {
-            setDraft({ date: draftDate, time: '', title: '', note: '' });
+            setDraft({
+              date: draftDate,
+              time: '',
+              endTime: '',
+              title: '',
+              note: '',
+              location: '',
+              category: 'study',
+              source: 'manual',
+            });
+            setAiNote(null);
             setScheduleNote({ kind: 'ok', message: '已加进日程。' });
             await refresh();
           })
@@ -3339,6 +3717,98 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           .catch(() => {})
           .finally(() => setBusy(false));
       };
+
+      /**
+       * 改一条的分类。
+       *
+       * - 自定义条目：分类是**数据**，直接 `POST /mutate` 改 `日程.json`；
+       * - 课程 / DDL：分类是**渲染层的判断**，只写 localStorage 覆盖表 ——
+       *   绝不写回 `课程.json` / `任务.json`（用户 2026-11-19 定的边界）。
+       */
+      const changeRowCategory = (row, category) => {
+        if (!SCHEDULE_CATEGORIES.includes(category)) return;
+        if (row.kind !== 'entry') {
+          setOverrides(writeCategoryOverride(safeLocalStorage(), row.key, category));
+          return;
+        }
+        setBusy(true);
+        run(() => mutate('schedule', 'update', { id: row.id, item: { category } }))
+          .then(() => refresh())
+          .catch(() => {})
+          .finally(() => setBusy(false));
+      };
+
+      const toggleRow = (key) => setOpenRows((previous) => ({ ...previous, [key]: previous[key] !== true }));
+
+      /**
+       * AI 识别：一段话 → 草稿 → **填进表单**。
+       *
+       * 只调 `POST /schedule/parse`，前端不拼 prompt、不碰密钥；返回 `ok:false` 时
+       * 清空表单并报错，成功也只是「填表单」——入库永远要用户再点一次「添加」。
+       */
+      const parseWithAi = () => {
+        const text = aiText.trim();
+        if (text === '') {
+          setAiNote({ kind: 'error', message: '先把要识别的那段话贴进上面的框。' });
+          return;
+        }
+        if (aiBusy) return;
+        setAiBusy(true);
+        setAiNote(null);
+        fetch(`${API}/schedule/parse`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ text }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            return result;
+          })
+          .then((result) => {
+            if (result.ok !== true) {
+              blankDraft();
+              setAiNote({ kind: 'error', message: aiFailureText(result) });
+              return;
+            }
+            const item = result.draft ?? {};
+            setDraft({
+              date: typeof item.date === 'string' ? item.date : '',
+              time: typeof item.time === 'string' ? item.time : '',
+              endTime: typeof item.endTime === 'string' ? item.endTime : '',
+              title: typeof item.title === 'string' ? item.title : '',
+              note: '',
+              location: typeof item.location === 'string' ? item.location : '',
+              category: SCHEDULE_CATEGORIES.includes(item.category) ? item.category : 'study',
+              source: 'auto-ai',
+            });
+            setAiNote({
+              kind: 'ok',
+              message: '识别完成：结果已填进下面表单，核对 / 改完再点「添加」才入库。没识别到的字段留空。',
+            });
+          })
+          .catch((error) => {
+            blankDraft();
+            setAiNote({ kind: 'error', message: `识别请求失败：${String(error?.message ?? error)}。表单已清空，可手动填。` });
+          })
+          .finally(() => setAiBusy(false));
+      };
+
+      // 四个版块（学习 / 科创 / 生活 / 工作其他）：课程 + DDL（按紧迫度前 8 条）+ 今日自定义日程
+      const board = useMemo(() => buildScheduleBoard({
+        courses: todayCourses,
+        tasks: sorted.slice(0, 8).map((task) => ({ ...task, subjectName: courseNameIn(courseIndex, task.courseId) })),
+        entries: todayEntries,
+        overrides,
+        now,
+      }), [todayCourses, sorted, todayEntries, overrides, now, courseIndex]);
+
+      /**
+       * AI 草稿预览条：只有「AI 刚填过、标题非空」时才出现。
+       *
+       * 它是**预览**而不是一条日程：虚线框 + 「AI 草稿，确认后入库」，提醒用户还没落盘。
+       */
+      const draftPreview = draft.source === 'auto-ai' && draft.title.trim() !== '' ? draft.title.trim() : null;
 
       /**
        * 一键提醒：只调后端 `POST /remind`，前端不碰任何 botId / token。
@@ -3423,14 +3893,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         'div',
         null,
         h(Style),
-        h(
-          'div',
-          { className: 'sa-stat' },
-          h('div', null, h('b', null, week.inTerm ? String(week.week) : '—'), h('span', { className: 'sa-muted' }, '教学周')),
-          h('div', null, h('b', null, String(active.length)), h('span', { className: 'sa-muted' }, '未完成')),
-          h('div', null, h('b', { className: overdueCount > 0 ? 'sa-error' : undefined }, String(overdueCount)), h('span', { className: 'sa-muted' }, '已逾期')),
-          h('div', null, h('b', null, gpa.gpa === null ? '—' : String(gpa.gpa)), h('span', { className: 'sa-muted' }, 'GPA')),
-        ),
+        // 顶部那条「教学周 / 未完成 / 已逾期 / GPA」四格统计已按用户 2026-11-19 的要求删掉：
+        // 这页是「今天该干什么」，周次与 GPA 属于「概况」，留在成绩页签看，不占今日页第一屏。
         term === null
           ? h('div', { className: 'sa-card sa-muted' }, TEXT.noTerm)
           : h('div', { className: 'sa-muted', style: { marginBottom: 10 } },
@@ -3455,48 +3919,141 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                   ? h('pre', null, remindNote.fallbackText)
                   : null),
 
-          // 一、今日课程：数据源还是原来那个 todayCourses（口径一个字没改）
+          // 一、四个分类版块（2026-11-19 A2 卡）：课程 / DDL / 自定义日程统一摊进这张版块图。
+          // 每条只占一行「起-止时间 + 标题」，点这一行展开详情（备注 / 地点 / 来源 / 删除），
+          // 行右侧的小下拉改分类；课程与 DDL 的改动只落 localStorage，不写回数据文件。
           h('div', { className: 'sa-sub sa-sub-first' },
-            h('h4', null, '今日课程'),
-            todayCourses.length === 0
-              ? h('div', { className: 'sa-muted' }, week.inTerm ? TEXT.noCourseToday : '今天不在教学周内。')
-              : todayCourses.map(({ course, session }, index) => h('div', { className: 'sa-row', key: `${course.id}-${index}` },
-                  h('span', { className: 'sa-grow' }, course.name),
-                  h('span', { className: 'sa-muted' }, session.startPeriod === session.endPeriod ? `第 ${session.startPeriod} 节` : `第 ${session.startPeriod}-${session.endPeriod} 节`),
-                  h('span', { className: 'sa-muted' }, session.location ?? ''),
-                )),
+            h('div', { className: 'sa-dock' },
+              h('h4', { className: 'sa-grow' }, '今日安排（按分类）'),
+              h('span', { className: 'sa-muted' },
+                `课程 ${todayCourses.length} · 日程 ${todayEntries.length} · DDL ${Math.min(sorted.length, 8)}`
+                + (week.inTerm ? '' : ' · 今天不在教学周内'))),
+            h('div', { className: 'sa-cat-grid' },
+              board.blocks.map((block) => h('div', { className: 'sa-cat', key: block.category },
+                h('div', { className: 'sa-cat-head' },
+                  h('span', { className: `sa-pill ${block.tone}` }, block.label),
+                  h('span', { className: 'sa-muted' }, `${block.rows.length} 条`),
+                ),
+                block.rows.length === 0
+                  ? h('div', { className: 'sa-cat-empty' }, '—')
+                  : block.rows.map((row) => {
+                      const open = openRows[row.key] === true;
+                      return h('div', { className: 'sa-cat-item', key: row.key },
+                        h('div', { className: 'sa-cat-row' },
+                          h('button', {
+                            type: 'button',
+                            className: 'sa-cat-main',
+                            'aria-expanded': open ? 'true' : 'false',
+                            title: open ? '收起详情' : '展开详情',
+                            onClick: () => toggleRow(row.key),
+                          },
+                            h('span', { className: 'sa-cat-time', title: row.timeLabel }, row.timeLabel),
+                            h('span', { className: 'sa-cat-title' }, row.title),
+                            h('span', { className: 'sa-cat-caret', 'aria-hidden': 'true' }, open ? '▾' : '▸'),
+                          ),
+                          h('select', {
+                            className: 'sa-cat-select',
+                            value: row.category,
+                            disabled: busy,
+                            title: row.kind === 'entry'
+                              ? '改这条日程的分类（会写进 日程.json）'
+                              : '改分类只影响这张卡的摆放，不改 课程.json / 任务.json',
+                            'aria-label': `${row.title} 的分类`,
+                            onClick: (e) => e.stopPropagation(),
+                            onChange: (e) => changeRowCategory(row, e.target.value),
+                          }, SCHEDULE_CATEGORIES.map((category) => h('option', { value: category, key: category }, SCHEDULE_CATEGORY_LABEL[category]))),
+                        ),
+                        open
+                          ? h('div', { className: 'sa-cat-detail' },
+                              row.detail.lines.map((line, index) => h('div', { className: 'sa-muted', key: index }, line)),
+                              row.detail.note === '' ? null : h('div', { className: 'sa-cat-note' }, row.detail.note),
+                              h('div', { className: 'sa-cat-meta' },
+                                h('span', { className: 'sa-muted' },
+                                  row.kind === 'entry'
+                                    ? (row.detail.source === 'auto-ai' ? '来源：AI 识别后确认' : '来源：手动添加')
+                                    : (row.kind === 'ddl' ? '来自「DDL」页签' : '来自课表')),
+                                row.kind === 'entry'
+                                  ? h('button', {
+                                      className: 'sa-btn',
+                                      disabled: busy,
+                                      onClick: () => removeScheduleEntry(todayEntries.find((item) => item.id === row.id) ?? { id: row.id, title: row.title }),
+                                    }, '删除')
+                                  : null,
+                              ),
+                            )
+                          : null,
+                      );
+                    }),
+              )),
+            ),
+            sorted.length > 8
+              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 8 } },
+                  `DDL 只摆紧迫度前 8 条（共 ${sorted.length} 个未完成），全量在「DDL」页签；今天到期 ${todayDeadlineCount}、逾期 ${overdueCount}。`)
+              : null,
           ),
 
-          // 二、自定义日程：第 14 份文档 日程.json，增删都走通用 /mutate（没有专用路由）
+          // 二、自定义日程 + AI 识别：第 14 份文档 日程.json，增删改都走通用 /mutate（没有专用路由）。
+          // AI 只负责把一段话填进下面的表单，入库要用户再点「添加」——绝不自动写盘。
           h('div', { className: 'sa-sub' },
             h('div', { className: 'sa-dock' },
               h('h4', { className: 'sa-grow' }, '自定义日程'),
               h('span', { className: 'sa-muted' }, `${todayEntries.length} 条`)),
-            todayEntries.length === 0
-              ? h('div', { className: 'sa-muted' }, '今天没有自定义日程。')
-              : todayEntries.map((entry) => h('div', { className: 'sa-row', key: entry.id },
-                  h('span', { className: 'sa-pill soon', style: { whiteSpace: 'nowrap' } }, entry.time === null ? '全天' : entry.time),
-                  h('span', { className: 'sa-grow' },
-                    entry.title,
-                    entry.note === '' ? null : h('span', { className: 'sa-muted' }, `　${entry.note}`)),
-                  h('button', { className: 'sa-btn', disabled: busy, onClick: () => removeScheduleEntry(entry) }, '删'),
-                )),
-            h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 } },
+            h('div', { className: 'sa-ai' },
+              h('textarea', {
+                className: 'sa-input sa-textarea',
+                rows: 3,
+                placeholder: '粘贴一段话，例如「明天下午三点在六教 3204 开小组会，讨论挑战杯初赛」。点「AI 识别」只会把结果填进下面的表单，不会自动入库。',
+                value: aiText,
+                onChange: (e) => setAiText(e.target.value),
+              }),
+              h('div', { className: 'sa-ai-bar' },
+                h('button', { className: 'sa-btn', disabled: busy || aiBusy, onClick: parseWithAi }, aiBusy ? '识别中…' : 'AI 识别'),
+                h('span', { className: 'sa-muted' }, '识别结果先进表单；没识别到的字段留空。失败时表单保持空白，不拿半成品入库。'),
+              ),
+            ),
+            aiNote === null
+              ? null
+              : h('div', { className: aiNote.kind === 'error' ? 'sa-note sa-note-error' : 'sa-note' }, aiNote.message),
+            draftPreview === null
+              ? null
+              : h('div', { className: 'sa-ai-preview' },
+                  h('span', { className: `sa-pill ${SCHEDULE_CATEGORY_TONE[draft.category]}` }, SCHEDULE_CATEGORY_LABEL[draft.category]),
+                  h('span', null, `${draftDate}　${draft.time === '' ? '全天' : scheduleTimeLabel(draft.time, draft.endTime)}`),
+                  h('span', { className: 'sa-grow' }, draft.title.trim()),
+                  draft.location.trim() === '' ? null : h('span', { className: 'sa-muted' }, draft.location.trim()),
+                  h('span', { className: 'sa-muted' }, 'AI 草稿，确认后入库'),
+                ),
+            h('div', { className: 'sa-form' },
+              h('select', {
+                className: 'sa-input',
+                title: '分类（必选）',
+                'aria-label': '日程分类',
+                value: draft.category,
+                onChange: (e) => setDraft({ ...draft, category: e.target.value }),
+              }, SCHEDULE_CATEGORIES.map((category) => h('option', { value: category, key: category }, SCHEDULE_CATEGORY_LABEL[category]))),
               h('input', {
-                type: 'date', className: 'sa-input', value: draftDate,
+                type: 'date', className: 'sa-input', value: draftDate, title: '日期',
                 onChange: (e) => setDraft({ ...draft, date: e.target.value }),
               }),
               h('input', {
-                type: 'time', className: 'sa-input', title: '不填就是「全天」', style: { width: 110 }, value: draft.time,
+                type: 'time', className: 'sa-input', title: '开始时间；不填就是「全天」', style: { width: 108 }, value: draft.time,
                 onChange: (e) => setDraft({ ...draft, time: e.target.value }),
               }),
               h('input', {
-                className: 'sa-input', placeholder: '日程标题（必填）', value: draft.title,
+                type: 'time', className: 'sa-input', title: '结束时间（可选）', style: { width: 108 }, value: draft.endTime,
+                onChange: (e) => setDraft({ ...draft, endTime: e.target.value }),
+              }),
+              h('input', {
+                className: 'sa-input', placeholder: '地点（可选）', style: { width: 130 }, value: draft.location,
+                onChange: (e) => setDraft({ ...draft, location: e.target.value }),
+              }),
+              h('input', {
+                className: 'sa-input sa-form-title', placeholder: '日程标题（必填）', value: draft.title,
                 onChange: (e) => setDraft({ ...draft, title: e.target.value }),
                 onKeyDown: (e) => { if (e.key === 'Enter') addScheduleEntry(); },
               }),
               h('input', {
-                className: 'sa-input', placeholder: '备注（可选）', style: { width: 150 }, value: draft.note,
+                className: 'sa-input', placeholder: '备注（可选）', style: { width: 130 }, value: draft.note,
                 onChange: (e) => setDraft({ ...draft, note: e.target.value }),
               }),
               h('button', { className: 'sa-btn', disabled: busy, onClick: addScheduleEntry }, '添加'),
@@ -3505,7 +4062,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               ? null
               : h('div', { className: scheduleNote.kind === 'error' ? 'sa-note sa-note-error' : 'sa-note' }, scheduleNote.message),
             draftDate !== formatDay(now)
-              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `这条会记到 ${draftDate}，不会出现在今天的列表里。`)
+              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `这条会记到 ${draftDate}，不会出现在今天的版块里。`)
               : null,
             upcomingEntries.length === 0
               ? null
@@ -3517,29 +4074,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                     h('span', { className: 'sa-grow' }, entry.title),
                   )),
                 ),
-          ),
-
-          // 三、今日 DDL：原「临近截止」卡整体并入，内容口径不变（按紧迫度的前 8 条）
-          h('div', { className: 'sa-sub' },
-            h('div', { className: 'sa-dock' },
-              h('h4', { className: 'sa-grow' }, '今日 DDL'),
-              h('span', { className: 'sa-muted' }, `今天到期 ${todayDeadlineCount} · 逾期 ${overdueCount}`)),
-            sorted.length === 0
-              ? h('div', { className: 'sa-muted' }, TEXT.noDeadline)
-              : sorted.slice(0, 8).map((task) => {
-                  const urgency = deadlineUrgency(task, now);
-                  const subject = courseNameIn(courseIndex, task.courseId);
-                  return h('div', { className: 'sa-row', key: task.id },
-                    h(Pill, { level: urgency.level }, urgencyText(urgency)),
-                    h('span', { className: 'sa-grow' }, task.title),
-                    // 科目单独占一格、且不参与伸缩：挤的时候先截断标题，而不是把科目吃掉
-                    subject === '' ? null : h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, subject),
-                    h('span', { className: 'sa-muted' }, task.due ?? '无截止日'),
-                  );
-                }),
-            sorted.length > 8
-              ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 6 } }, `按紧迫度排的前 8 条，共 ${sorted.length} 个未完成；全量在「DDL」页签。`)
-              : null,
           ),
         ),
 
@@ -11662,6 +12196,16 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         materialReadingCard: MaterialReadingCard,
         // 今日页（2026-10-22 凌晨）：待复习知识点卡要能单独渲染
         todayTab: TodayTab,
+        // 今日日程四分类（2026-11-19 A2 卡）：分类判定、覆盖表、版块组装、失败文案都是纯函数，
+        // 测试直接拿它们验「关键词命中 / 兜底 / 覆盖优先 / 旧条目缺省 work」。
+        classifyByKeyword,
+        buildScheduleBoard,
+        readCategoryOverrides,
+        writeCategoryOverride,
+        SCHEDULE_CATEGORIES,
+        SCHEDULE_CATEGORY_LABEL,
+        SCHEDULE_OVERRIDE_STORAGE_KEY,
+        aiFailureText,
         materialText,
         // 正文缓存（2026-10-29 晚）：测试要能验「同一份资料第二次打开不再发请求」与缓存上限
         materialTextCached,

@@ -16,6 +16,11 @@ import { createStore } from '../lib/store.js';
 import { createApiHandler, API_PREFIX, REQUEST_HEADER } from '../lib/api.js';
 import { makeTempDir, removeTempDir } from './_tmpdir.js';
 
+// 抓取时间按本机时区显示，断言不能写死某个时区的结果（CI 是 UTC）
+const FETCHED_AT_DATE = new Date(2026, 10, 19, 7, 0); // 本地 07:00
+const FETCHED_AT = FETCHED_AT_DATE.toISOString(); // 同一时刻的 UTC 串
+const FETCHED_CLOCK = `${String(FETCHED_AT_DATE.getHours()).padStart(2, '0')}:${String(FETCHED_AT_DATE.getMinutes()).padStart(2, '0')}`; // 本机时区 HH:mm
+
 async function startServer() {
   const dir = await makeTempDir('study-assistant-news-http-');
   const store = createStore(dir);
@@ -49,7 +54,7 @@ function item(overrides = {}) {
     publishedAt: '2026-11-19',
     excerpt: '第一段。',
     category: 'academic',
-    fetchedAt: '2026-11-19T07:00:00.000Z',
+    fetchedAt: FETCHED_AT,
     ...overrides,
   };
 }
@@ -77,7 +82,7 @@ test('GET /news：窗口按 ?days= 裁剪，今天与 30 天前的条目分开�
     const doc = {
       version: 1,
       items: [item({ id: 'n_today', publishedAt: '2026-11-19' }), item({ id: 'n_old', title: '旧闻', publishedAt: '2026-10-20', url: 'https://www.tsinghua.edu.cn/info/1177/2.htm' })],
-      fetchedAt: '2026-11-19T07:00:00.000Z',
+      fetchedAt: FETCHED_AT,
       updatedAt: '2026-11-19T07:00:00.000Z',
     };
     const written = await server.store.writeDocument('news', doc);
@@ -88,7 +93,7 @@ test('GET /news：窗口按 ?days= 裁剪，今天与 30 天前的条目分开�
     assert.equal(seven.board.shown, 1, '30 天前的进不了 7 天窗口');
     assert.equal(seven.board.todayCount, 1);
     assert.equal(seven.items[0].id, 'n_today');
-    assert.equal(seven.board.fetchedClock, '15:00', 'fetchedAt 是 UTC 07:00，本机 +8 就是 15:00');
+    assert.equal(seven.board.fetchedClock, FETCHED_CLOCK, '抓取时间按本机时区取 HH:mm，任意时区一致');
 
     const wide = await (await fetch(`${server.baseUrl}/news?days=60&now=2026-11-19T03:00:00.000Z`)).json();
     assert.equal(wide.board.shown, 2);
