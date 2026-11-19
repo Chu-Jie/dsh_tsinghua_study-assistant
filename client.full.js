@@ -3009,6 +3009,11 @@ body[data-ds-dark-theme] .sa-reader-pane[data-study-mode="true"][data-eye-care="
 body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-paper:var(--dsw-static-neutral-bluish-875, #232324);--sa-focus-paper-base:#232324}
 .sa-root:has(.sa-reader-pane[data-focus-reader="true"])>.sa-body{overflow:hidden}
 .sa-root:has(.sa-reader-pane[data-study-mode="true"])>.sa-body{overflow:hidden}
+/* 学习模式是全屏 fixed 层（z-index 2147483000），而助手浮层只有 absolute/z-index 40，
+   用户报「一进学习模式按钮就没了」。把浮层一并抬到同一层之上，并改成同样的视口定位；
+   浮层自身 pointer-events:none、只有按钮/面板接收点击，不会挡住阅读。 */
+.sa-root:has(.sa-reader-pane[data-study-mode="true"]) .sa-assist,
+.sa-root:has(.sa-reader-pane[data-focus-reader="true"]) .sa-assist{position:fixed;inset:0;z-index:2147483001}
 .sa-knowledge-page:has([data-focus-reader="true"]){animation:none!important;transform:none!important}
 .sa-knowledge-page:has([data-study-mode="true"]){animation:none!important;transform:none!important}
 .sa-reader-pane[data-focus-reader="true"]>.sa-node-detail,.sa-reader-pane[data-focus-reader="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
@@ -3120,6 +3125,39 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
   .sa-head{border-bottom:1px solid #bbb}
   .sa-pill{border:1px solid #999 !important;background:#fff !important;color:#000 !important}
 }
+
+/* 学习助手浮层（2026-11-19 MVP 卡）：只活在 .sa-root 面板里，不越出到全窗。
+   定位用 absolute + inset:0 铺满**面板**（.sa-root 自身 position:relative），
+   圆按钮与聊天面板贴在右下角；⚠️ 刻意不用 position:fixed —— fixed 会相对整个
+   窗口定位，盖到 DSH 外层顶栏上（原卡第 ② 节点名不许这么干）。
+   外层 pointer-events:none，只有按钮/面板本身接事件，铺满的那层不挡面板内容。 */
+.sa-assist{position:absolute;inset:0;z-index:40;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;gap:10px;padding:14px;pointer-events:none}
+.sa-assist>*{pointer-events:auto}
+.sa-assist-fab{width:38px;height:38px;flex:0 0 auto;box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-overlay);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 2px 10px color-mix(in srgb,var(--dsw-alias-label-primary) 12%,transparent);transition:background .18s ease,border-color .18s ease,box-shadow .2s ease}
+.sa-assist-fab:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary)}
+.sa-assist-fab[aria-expanded="true"]{border-color:var(--dsw-alias-brand-primary);box-shadow:0 2px 12px color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent)}
+.sa-assist-dot{display:block;width:11px;height:11px;border-radius:999px;background:var(--dsw-alias-brand-primary)}
+.sa-assist-panel{width:min(360px,calc(100cqw - 28px));height:460px;max-height:calc(100% - 76px);min-height:0;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:max(var(--dsw-radius-lg,12px),14px);box-shadow:0 10px 30px color-mix(in srgb,var(--dsw-alias-label-primary) 16%,transparent);animation:sa-fade .18s cubic-bezier(.2,.8,.2,1)}
+.sa-assist-head{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1.5}
+.sa-assist-head strong{font-size:15px;font-weight:650}
+.sa-assist-hint{color:var(--dsw-alias-label-caption);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.sa-assist-head .sa-btn{min-height:28px;padding:2px 9px;font-size:13px}
+.sa-assist-log{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--dsw-alias-bg-base);scrollbar-gutter:stable}
+.sa-assist-empty{font-size:14px;line-height:1.7}
+.sa-assist-msg{display:flex;flex-direction:column;gap:3px;min-width:0}
+.sa-assist-msg.user{align-items:flex-end}
+.sa-assist-msg.assistant{align-items:flex-start}
+.sa-assist-who{font-size:12px;line-height:1.4;color:var(--dsw-alias-label-caption)}
+.sa-assist-bubble{max-width:86%;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2);font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-sizing:border-box}
+.sa-assist-msg.user .sa-assist-bubble{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-brand-primary)}
+.sa-assist-msg.assistant .sa-assist-bubble{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
+.sa-assist-error{flex:0 0 auto;margin:0 12px 6px;font-size:13px;line-height:1.6;color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-primary))}
+.sa-assist-compose{flex:0 0 auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay)}
+.sa-assist-input{width:100%;min-height:64px;max-height:132px;resize:none;box-sizing:border-box;line-height:1.6}
+.sa-assist-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.sa-assist-actions .sa-muted{font-size:12px;margin-right:auto}
+.sa-assist-actions .sa-btn{min-height:32px;padding:4px 14px}
+@media print{.sa-assist{display:none !important}}
 `;
 
     // ---------------------------------------------------------------------
@@ -11721,6 +11759,273 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     // 主面板
     // ---------------------------------------------------------------------
 
+    // ---------------------------------------------------------------------
+    // 学习助手浮层（2026-11-19 MVP 卡）：面板内的置顶答疑
+    // ---------------------------------------------------------------------
+
+    /**
+     * `/assistant/reply` 的失败码 → 界面上的中文。
+     *
+     * 只翻错误码，**绝不把响应里的任何密钥/原文再显示一遍**：服务端的 detail
+     * 本身就只留错误类型与 HTTP 码（见 lib/api.js 的 handleAssistantReply）。
+     */
+    function assistantFailureText(result, status) {
+      const code = String(result?.error ?? '');
+      const detail = typeof result?.detail === 'string' ? result.detail : '';
+      const messages = {
+        'bad-request': detail === '' ? '请求不合法，检查一下问的内容。' : `请求不合法：${detail}`,
+        'assistant-key-missing': '没有读到 magpie 密钥（~/.dsh/.credentials.yaml 的 refs.MAGPIE_GATEWAY_KEY），学习助手暂不可用。',
+        'assistant-unavailable': '通道没通（超时 / 限流 / 网络），这次没有回复，稍后再试。',
+        'bad-json': '请求体不是合法 JSON。',
+        'too-large': '这次贴的内容太长了，拆成几次问。',
+        'need-request-header': '请求被拒绝：缺少安全请求头（插件可能还没重启）。',
+        'cross-site-rejected': '请求被拒绝：来源不可信。',
+      };
+      if (messages[code] !== undefined) return messages[code];
+      return detail !== '' ? detail : `请求失败（HTTP ${status}）`;
+    }
+
+    /**
+     * 采集「当前界面」→ `/assistant/reply` 的可选 `context`（v2-A，B3 两级）。
+     *
+     * 真源就是面板现有的三处状态，**不新造「当前在哪」**：
+     *   - 页签：调用方传进来的 `tab`（MainPanel 的 state），退回模块里的 `navTabMemory`；
+     *   - 知识点：`readKnowledgeUi().selected`（string node id）；
+     *   - 资料：`readMaterialsUi().openPath` / `openPage`。
+     *
+     * 两条门控很重要（否则会把"上次看过"当成"现在在看"）：
+     *   1. 只有当前就在 `knowledge` 页签时才带节点；离开后 `selected` 仍留在内存里；
+     *   2. 只有当前就在 `materials` 页签、且处在文件视图时才带资料；`openPath`
+     *      是跨页签保留的记忆，题目视图下也不代表"正在读这份文件"。
+     *
+     * 取不到的一律不填（空字符串 / 非正整数 / null 都跳过），**绝不为取不到而抛错**。
+     * `nodeTitle` 由调用方用现成知识网络数据查（`getKnowledgeTitle`），查不到就只带 id，
+     * 不为标题额外拉接口。
+     */
+    function buildAssistantContext(tab, getKnowledgeTitle) {
+      const context = {};
+      const currentTab = typeof tab === 'string' && tab !== '' ? tab : navTabMemory;
+      if (currentTab !== '') context.tab = currentTab;
+
+      if (currentTab === 'knowledge') {
+        const knowledge = readKnowledgeUi();
+        if (knowledge.selected !== null && knowledge.selected !== undefined && knowledge.selected !== '') {
+          context.nodeId = knowledge.selected;
+          if (typeof knowledge.courseId === 'string' && knowledge.courseId !== '') {
+            context.courseId = knowledge.courseId;
+          }
+          if (typeof getKnowledgeTitle === 'function') {
+            const title = getKnowledgeTitle(knowledge.selected);
+            if (typeof title === 'string' && title.trim() !== '') context.nodeTitle = title.trim();
+          }
+        }
+      }
+
+      if (currentTab === 'materials') {
+        const materials = readMaterialsUi();
+        // 文件视图：openPath 非空 = 正在读这份资料；页码只认 1-based 正整数
+        if (materials.view === 'files'
+          && typeof materials.openPath === 'string'
+          && materials.openPath !== '') {
+          context.materialPath = materials.openPath;
+          if (Number.isInteger(materials.openPage) && materials.openPage > 0) {
+            context.materialPage = materials.openPage;
+          }
+        }
+        // 题目视图：没有"当前第几题"的状态，按卡 ⑤ 取不到就不填 questionNo，只带课程 id
+        if (materials.view === 'questions'
+          && typeof materials.courseId === 'string'
+          && materials.courseId !== '') {
+          context.courseId = materials.courseId;
+        }
+      }
+
+      return context;
+    }
+
+    /**
+     * 学习助手浮层（MVP）。
+     *
+     * 形态与边界（原卡第 ⑥/② 节）：
+     *   - 只渲染在 `.sa-root` 内部，定位用 `position:absolute`（不是 fixed，不盖 DSH 顶栏）；
+     *   - 一个纯 CSS 圆按钮（无 emoji、无图片），点开 320–380px 的聊天面板，再点收起；
+     *   - 多轮对话：前端维护整段 `messages`，每次把**全量历史**发给后端；
+     *   - **不落盘**：对话只在这个组件的 state 里，刷新/关掉面板即消失；
+     *   - 发送中禁用输入与按钮，按钮文案变「思考中…」；失败只显示可读的中文错误。
+     *
+     * 为什么把状态放在这里而不是模块级全局：关掉面板、刷新页面都自然清空，
+     * 也避免两处渲染（主面板 / 右侧栏）共享一份对话而互相串味。
+     */
+    function AssistantOverlay(props = {}) {
+      // 页签与标题查询都由 MainPanel 传进来：前者是 React state（比模块记忆更即时），
+      // 后者在发送那一刻按 id 查现成知识网络数据（拿不到标题就只带 id）。
+      const panelTab = typeof props.tab === 'string' && props.tab !== '' ? props.tab : navTabMemory;
+      const getKnowledgeTitle = props.getKnowledgeTitle;
+      const [open, setOpen] = useState(false);
+      const [draft, setDraft] = useState('');
+      const [messages, setMessages] = useState([]);
+      const [busy, setBusy] = useState(false);
+      const [failure, setFailure] = useState('');
+      const logRef = useRef(null);
+
+      // 新消息进来 / 展开面板 / 从「思考中」回到回答时，把对话区滚到底。
+      // 假 DOM 里没有 scrollHeight 数字，直接跳过，别让整页挂掉。
+      useEffect(() => {
+        const el = logRef.current;
+        if (el === null || el === undefined || typeof el.scrollHeight !== 'number') return;
+        el.scrollTop = el.scrollHeight;
+      }, [messages, busy, open]);
+
+      /**
+       * 发一次问答。
+       *
+       * 先把用户这句追加进对话再发请求（失败时用户仍能看到自己问了什么），
+       * 成功后把助手回复追加进同一条对话；**失败不自动重发**，避免一次手滑
+       * 变成重复扣额度。
+       */
+      const send = () => {
+        if (busy) return;
+        const text = draft.trim();
+        if (text === '') return;
+        const history = messages.concat([{ role: 'user', content: text }]);
+        setMessages(history);
+        setDraft('');
+        setFailure('');
+        setBusy(true);
+        // v2-A（A1 隐式）：多带一个 context 给后端拼 system，界面与回复都不显式说破。
+        // 取不到就是空对象，后端归一为空串、不会多出 system —— 与 MVP 行为一致。
+        const context = buildAssistantContext(panelTab, getKnowledgeTitle);
+        const payload = { messages: history.map((item) => ({ role: item.role, content: item.content })) };
+        if (Object.keys(context).length > 0) payload.context = context;
+        fetch(`${API}/assistant/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          // MVP 不落盘：只发当前这段历史。conversationId / persist 留给下一版，
+          // 这一版前端也刻意不带，免得让人误以为已经在服务端存了一份。
+          body: JSON.stringify(payload),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            const reply = typeof result.reply === 'string' ? result.reply : '';
+            if (reply.trim() === '') throw new Error('助手没有返回内容，稍后再试。');
+            setMessages((current) => current.concat([{ role: 'assistant', content: reply }]));
+          })
+          .catch((error) => {
+            setFailure(String(error?.message ?? error));
+          })
+          .finally(() => setBusy(false));
+      };
+
+      const clear = () => {
+        setMessages([]);
+        setDraft('');
+        setFailure('');
+      };
+
+      const onKeyDown = (event) => {
+        // 输入法组合中的 Enter 是「选词」，不是发送
+        if (event?.nativeEvent?.isComposing === true || event?.isComposing === true) return;
+        if (event?.key !== 'Enter' || event?.shiftKey === true) return;
+        event.preventDefault();
+        send();
+      };
+
+      return h('div', { className: 'sa-assist' },
+        open
+          ? h('div', {
+              className: 'sa-assist-panel',
+              role: 'dialog',
+              'aria-label': '学习助手',
+              'data-sa-assist-panel': true,
+            },
+              h('div', { className: 'sa-assist-head' },
+                h('strong', null, '学习助手'),
+                h('span', { className: 'sa-assist-hint' }, '粘贴题目或段落直接问'),
+                h('span', { className: 'sa-spacer' }),
+                h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  disabled: busy || messages.length === 0,
+                  onClick: clear,
+                }, '清空'),
+                h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  title: '收起面板（对话不会丢，刷新才清空）',
+                  onClick: () => setOpen(false),
+                }, '收起'),
+              ),
+              h('div', {
+                className: 'sa-assist-log',
+                ref: logRef,
+                role: 'log',
+                'aria-live': 'polite',
+                'data-sa-assist-log': true,
+              },
+                messages.length === 0 && busy !== true
+                  ? h('div', { className: 'sa-muted sa-assist-empty' },
+                      '把要问的题目、看不懂的段落或课件文字贴进来，我给出解答。对话只存在这层界面里，刷新或关掉就清空。')
+                  : messages.map((item, index) => h('div', {
+                      key: `sa-assist-${index}`,
+                      className: `sa-assist-msg ${item.role === 'user' ? 'user' : 'assistant'}`,
+                    },
+                      h('div', { className: 'sa-assist-who' }, item.role === 'user' ? '我' : '助手'),
+                      h('div', { className: 'sa-assist-bubble' }, item.content),
+                    )),
+                busy
+                  ? h('div', { className: 'sa-assist-msg assistant' },
+                      h('div', { className: 'sa-assist-who' }, '助手'),
+                      h('div', { className: 'sa-assist-bubble sa-muted' },
+                        h('span', { className: 'sa-spinner', 'aria-hidden': true }),
+                        '思考中…',
+                      ),
+                    )
+                  : null,
+              ),
+              failure !== ''
+                ? h('div', { className: 'sa-assist-error', role: 'alert' }, `出错了：${failure}`)
+                : null,
+              h('div', { className: 'sa-assist-compose' },
+                h('textarea', {
+                  className: 'sa-input sa-assist-input',
+                  value: draft,
+                  rows: 3,
+                  placeholder: '粘贴要问的文本…（Enter 发送，Shift+Enter 换行）',
+                  'aria-label': '向学习助手提问',
+                  disabled: busy,
+                  onChange: (event) => setDraft(String(event?.target?.value ?? '')),
+                  onKeyDown,
+                }),
+                h('div', { className: 'sa-assist-actions' },
+                  h('span', { className: 'sa-muted' }, 'Enter 发送 · Shift+Enter 换行'),
+                  h('button', {
+                    className: 'sa-btn primary',
+                    type: 'button',
+                    disabled: busy || draft.trim() === '',
+                    onClick: send,
+                  }, busy ? '思考中…' : '发送'),
+                ),
+              ),
+            )
+          : null,
+        h('button', {
+          className: 'sa-assist-fab',
+          type: 'button',
+          title: '学习助手',
+          'aria-label': '学习助手',
+          'aria-expanded': open,
+          onClick: () => setOpen((value) => value !== true),
+        },
+          h('span', { className: 'sa-assist-dot', 'aria-hidden': true }),
+        ),
+      );
+    }
+
     function MainPanel(props) {
       const openDetail = props?.openDetail;
 
@@ -11838,6 +12143,17 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       };
       const now = useMemo(() => new Date(), [data]);
 
+      /**
+       * 给学习助手浮层用的「按节点 id 取标题」：只查现成的知识网络数据，
+       * 查不到就返回空串（于是前端只带 nodeId）——绝不为一个标题额外拉接口。
+       */
+      const knowledgeTitleOf = useCallback((nodeId) => {
+        if (typeof nodeId !== 'string' || nodeId === '') return '';
+        const node = objectList(docs.knowledgeNetwork?.nodes)
+          .find((item) => String(item?.id ?? '') === nodeId);
+        return typeof node?.name === 'string' ? node.name : '';
+      }, [docs.knowledgeNetwork]);
+
       const tabDefs = [
         ['today', TEXT.tabs.today],
         ['schedule', TEXT.tabs.schedule],
@@ -11920,6 +12236,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           ? h('div', { style: { padding: '8px 14px' } }, h('span', { className: 'sa-error' }, error))
           : null,
         h('div', { className: 'sa-body' }, body),
+        // 学习助手浮层：挂在 .sa-root 里（absolute 相对面板），盖在页签内容之上，
+        // 但**不**越出面板、不盖 DSH 外层顶栏。
+        h(AssistantOverlay, { tab, getKnowledgeTitle: knowledgeTitleOf }),
       );
     }
 
