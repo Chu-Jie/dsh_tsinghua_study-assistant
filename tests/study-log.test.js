@@ -136,7 +136,18 @@ test('原子写 + 备份：旧文件先进 _backup，写坏不会留半个文件
     const text = await fs.readFile(file, 'utf8');
     assert.deepEqual(JSON.parse(text), { n: 12 }, '最后写入的是第 13 次的内容');
     const backups = (await fs.readdir(backupDir)).filter((name) => name.startsWith('x.json.') && name.endsWith('.bak'));
+    // 备份名现在带“时间戳之后”的进程内唯一后缀，同毫秒连写也不会互相覆盖，
+    // 所以 13 次连写必然产生 13 个唯一名字 → 清理后恰好留 BACKUP_KEEP 份。
+    // 这里保留等值断言（不放宽到 <=），作为“同毫秒不撞名”的回归保护；
+    // 也不再依赖“13 次写盘跨 ≥10 个毫秒”这种时序假设（快盘/CI 上原本必失败）。
     assert.equal(backups.length, BACKUP_KEEP, `备份最多保留 ${BACKUP_KEEP} 份`);
+    // 再确认按名字字典序保留的是**最新**一份（后缀加在时间戳之前会打乱排序，这里会抓到）
+    const newest = backups.slice().sort().at(-1);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(backupDir, newest), 'utf8')),
+      { n: 11 },
+      '排序保留的应是最新一份备份（第 13 次写前落盘的 {n:11}）',
+    );
     // 不能留 .tmp 中间文件
     const leftovers = (await fs.readdir(dir)).filter((name) => name.includes('.tmp-'));
     assert.equal(leftovers.length, 0, '不能留临时文件');

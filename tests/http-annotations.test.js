@@ -508,6 +508,10 @@ test('file 键归一化：反斜杠/前导斜杠/绝对路径/学习台前缀 �
     assert.equal(created.status, 200);
     const absWin = path.join(server.root, LESSON_REL);
     const absPosix = absWin.replace(/\\/g, '/');
+    // 合法 file URL 要按平台拼：POSIX 是 `file://` + `/abs`（共 3 个斜杠），Windows 是 `file:///` + `C:/…`。
+    // 旧写法 `file:///${absPosix}` 在 POSIX 上会多拼一个斜杠（`file:////tmp/…`，Windows 形状），
+    // 正好掩盖了 lib 归一化把合法 `file:///abs` 首个斜杠吃掉的真缺陷。
+    const fileUrlForm = process.platform === 'win32' ? `file:///${absPosix}` : `file://${absPosix}`;
     const forms = [
       LESSON_REL,
       LESSON_REL.replace(/\//g, '\\'),
@@ -516,7 +520,7 @@ test('file 键归一化：反斜杠/前导斜杠/绝对路径/学习台前缀 �
       `学习台/${LESSON_REL}`,
       absPosix,
       absWin,
-      `file:///${absPosix}`,
+      fileUrlForm,
     ];
     for (const form of forms) {
       const listed = await listNotes(server, form);
