@@ -194,7 +194,7 @@ async function main() {
 
   const status = await statusTool.execute({}, {});
   check('study_status 报告健康', status.healthy === true, JSON.stringify(status.files?.map((f) => f.reason)));
-  check('study_status 看到十五份文件（含第 14 份 日程.json / 第 15 份 要闻.json）', status.files.length === 15, `实际 ${status.files.length} 份`);
+  check('study_status 看到十六份文件（含第 15 份 要闻.json / 第 16 份 学习行为.json）', status.files.length === 16, `实际 ${status.files.length} 份`);
   const statusText = statusTool.output.render({}, status)[0].text;
   check('study_status 渲染出文本', typeof statusText === 'string' && statusText.includes('总体状态'));
 
@@ -261,7 +261,7 @@ async function main() {
 
     const state = await fetch(`${base}/state`);
     const stateBody = await state.json();
-    check('GET /state → 200 且带十五份数据', state.status === 200 && ['term', 'courses', 'tasks', 'grades', 'homework', 'materials', 'questions', 'knowledgeCandidates', 'knowledgeNetwork', 'knowledgeOutline', 'knowledgeAnalysis', 'annotations', 'knowledgeMap', 'schedule', 'news'].every((k) => stateBody.docs[k] !== undefined));
+    check('GET /state → 200 且带十六份数据', state.status === 200 && ['term', 'courses', 'tasks', 'grades', 'homework', 'materials', 'questions', 'knowledgeCandidates', 'knowledgeNetwork', 'knowledgeOutline', 'knowledgeAnalysis', 'annotations', 'knowledgeMap', 'schedule', 'news', 'learningBehavior'].every((k) => stateBody.docs[k] !== undefined));
     check('/state 返回每份文档的 sha256', typeof stateBody.hashes?.courses === 'string' && typeof stateBody.hashes?.homework === 'string');
 
     const overviewRes = await fetch(`${base}/overview`);
@@ -340,7 +340,7 @@ async function main() {
   const stateHashAfter = await sha256File(STATE_FILE);
   check('_工具/作业台状态.json 未被改动', stateHashAfter === stateHashBefore, `${stateHashBefore} → ${stateHashAfter}`);
   const dataFiles = await fs.readdir(DATA_DIR);
-  check('学习台十五份数据在位', ['学期.json', '课程.json', '任务.json', '成绩.json', '作业.json', '资料索引.json', '题目.json', '知识点候选.json', '知识点网络.json', '知识点大纲.json', '资料分析.json', '批注.json', '知识映射.json', '日程.json', '要闻.json'].every((f) => dataFiles.includes(f)), dataFiles.join(', '));
+  check('学习台十六份数据在位', ['学期.json', '课程.json', '任务.json', '成绩.json', '作业.json', '资料索引.json', '题目.json', '知识点候选.json', '知识点网络.json', '知识点大纲.json', '资料分析.json', '批注.json', '知识映射.json', '日程.json', '要闻.json', '学习行为.json'].every((f) => dataFiles.includes(f)), dataFiles.join(', '));
   check('备份目录存在', dataFiles.includes('备份'));
 
   console.log(`\n=== 结果：${passed} 项通过，${failed} 项失败 ===`);

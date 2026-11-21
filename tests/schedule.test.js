@@ -58,9 +58,9 @@ function doc(overrides = {}) {
 }
 
 test('日程：已登记为第 14 份文档，默认空壳含 entries:[]', () => {
-  assert.equal(DOC_KEYS.length, 15, 'DOC_KEYS 应为 15 份（本卡之后要闻是第 15 份）');
-  assert.equal(DOC_KEYS[DOC_KEYS.length - 2], 'schedule', '日程退到倒数第二，最后一份留给要闻');
-  assert.equal(DOC_KEYS[DOC_KEYS.length - 1], 'news', '要闻是第 15 份（2026-11-19 B 卡）');
+  assert.equal(DOC_KEYS.length, 16, 'DOC_KEYS 应为 16 份（要闻是第 15 份、学习行为是第 16 份）');
+  assert.equal(DOC_KEYS[DOC_KEYS.length - 3], 'schedule', '日程退到倒数第三（后面是要闻与学习行为）');
+  assert.equal(DOC_KEYS[DOC_KEYS.length - 2], 'news', '要闻是第 15 份（2026-11-19 B 卡）');
   assert.equal(DOC_FILES.schedule, '日程.json');
 
   const skeleton = defaultDoc('schedule');

@@ -55,9 +55,9 @@ function newsDoc(items, overrides = {}) {
 }
 
 test('要闻：已登记为第 15 份文档，默认空壳含 items:[] 且可校验', () => {
-  assert.equal(DOC_KEYS.length, 15, 'DOC_KEYS 应为 15 份');
-  assert.equal(DOC_KEYS[DOC_KEYS.length - 1], 'news', '新文档排在最后，不打乱既有顺序');
-  assert.equal(DOC_KEYS[DOC_KEYS.length - 2], 'schedule', '日程因此退到倒数第二');
+  assert.equal(DOC_KEYS.length, 16, 'DOC_KEYS 应为 16 份（v2-B 卡把学习行为追加在最后）');
+  assert.equal(DOC_KEYS[DOC_KEYS.length - 2], 'news', '要闻仍是第 15 份，只被学习行为挤到倒数第二');
+  assert.equal(DOC_KEYS[DOC_KEYS.length - 3], 'schedule', '日程因此退到倒数第三');
   assert.equal(DOC_FILES.news, '要闻.json');
 
   const skeleton = defaultDoc('news');

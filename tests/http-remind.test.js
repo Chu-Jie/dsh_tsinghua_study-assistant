@@ -269,7 +269,7 @@ test('日程写进 /state 与 /backup/export（新文档自动跟着既有链路
     assert.equal(all.docs.schedule.entries.length, 1);
 
     const exported = await (await fetch(`${server.baseUrl}/backup/export`)).json();
-    assert.equal(exported.count, 15);
+    assert.equal(exported.count, 16);
     assert.equal(exported.bundle.docs.schedule.entries.length, 1);
   } finally {
     await server.close();

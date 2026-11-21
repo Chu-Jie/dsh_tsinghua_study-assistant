@@ -700,6 +700,46 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 打开知识点时上报一次「学习行为」（v2-B 卡，2026-11-20）。
+     *
+     * 口径（与任务卡 ⑥ 前端一节对应）：
+     *   - 只送 `{nodeId}`：次数 +1、首次/最后学习时间都由**服务端**算（不信客户端时钟）；
+     *   - **停留时长本卡不报**：第二步才做真计时，这里一个分钟数都不编；
+     *   - **两层去重**：这里按 nodeId 做 5 秒节流（一次打开可能触发多次渲染），
+     *     服务端再按「同一分钟」去重 —— 两层一起兜，次数不会被刷上去；
+     *   - **失败静默**：行为记录是后台数据，失败不该弹错误打断学习；
+     *   - 服务端顺手推进了掌握度（`mastery.changed`）时，把缓存作废，
+     *     让下一次读取拿到新等级 —— 否则面板还显示「未学」，而磁盘上已经是「学过」。
+     */
+    const BEHAVIOR_THROTTLE_MS = 5000;
+    const behaviorReportedAt = new Map(); // nodeId → 上次上报时刻（ms）
+    function reportKnowledgeBehavior(nodeId) {
+      const id = typeof nodeId === 'string' ? nodeId.trim() : '';
+      if (id === '') return Promise.resolve(null);
+      const now = Date.now();
+      const last = behaviorReportedAt.get(id);
+      if (typeof last === 'number' && now - last < BEHAVIOR_THROTTLE_MS) return Promise.resolve(null);
+      behaviorReportedAt.set(id, now);
+      return fetch(`${API}/assistant/behavior`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+        body: JSON.stringify({ nodeId: id }),
+      })
+        .then((response) => response.json().catch(() => null))
+        .then((result) => {
+          if (result === null || result.ok !== true) return null;
+          if (result.mastery !== null && result.mastery !== undefined && result.mastery.changed === true) {
+            cache.value = null;
+            // 知识网络被服务端改过：丢掉旧 hash，下一次写会用服务端现读的 hash 做乐观并发
+            if (typeof result.networkHash === 'string') hashes.knowledgeNetwork = result.networkHash;
+            else delete hashes.knowledgeNetwork;
+          }
+          return result;
+        })
+        .catch(() => null);
+    }
+
+    /**
      * 网络学堂同步请求。
      *
      * 走的是 `/learn/*` 而不是 `/mutate`，因为一次同步在服务端是**一次读、一次写**的
@@ -3157,6 +3197,27 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-assist-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .sa-assist-actions .sa-muted{font-size:12px;margin-right:auto}
 .sa-assist-actions .sa-btn{min-height:32px;padding:4px 14px}
+/* 掌握度预览的「确认修改 / 取消」（v2-B 卡，2026-11-20）。
+   只在助手发出的预览消息下面出现一行按钮：**预览不落库，点了确认才发第二个请求**。
+   刻意不加任何「处理中」式的可见状态文案（沿用 A1 精神：界面不替用户下结论）。 */
+.sa-assist-proposal{display:flex;align-items:center;flex-wrap:wrap;gap:8px;max-width:86%;padding:6px 8px;border:1px dashed var(--dsw-alias-brand-primary);border-radius:max(var(--dsw-radius-sm,6px),8px);box-sizing:border-box}
+.sa-assist-proposal .sa-muted{font-size:12px;margin-right:auto;line-height:1.5}
+.sa-assist-proposal .sa-btn{min-height:28px;padding:2px 10px;font-size:13px}
+.sa-assist-proposal .sa-btn.primary{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.sa-assist-proposal[data-resolved="true"]{opacity:.5;border-style:solid;border-color:var(--dsw-alias-border-l1)}
+.sa-assist-proposal .sa-btn[disabled]{cursor:default}
+/* 批量清单（v2-B2 卡，2026-11-21）：一张可勾选的清单，超过 5 个折成「… 共 N 个」。
+   与单点预览同一个「预览不落库」的壳，只是纵向排：清单 → 状态行 → 确认/取消。 */
+.sa-assist-proposal-batch{flex-direction:column;align-items:stretch;gap:6px}
+.sa-assist-batch-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.sa-assist-batch-head .sa-muted{font-size:12px;line-height:1.5;margin-right:auto}
+.sa-assist-batch-list{display:flex;flex-direction:column;gap:2px;max-height:220px;overflow:auto}
+.sa-assist-batch-row{display:flex;align-items:center;gap:6px;font-size:13px;line-height:1.6}
+.sa-assist-batch-row input{flex:0 0 auto;margin:0;cursor:pointer}
+.sa-assist-batch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sa-assist-batch-row .sa-muted{margin-left:auto;font-size:12px;white-space:nowrap}
+.sa-assist-batch-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.sa-assist-batch-actions .sa-muted{font-size:12px;line-height:1.5;margin-right:auto}
 @media print{.sa-assist{display:none !important}}
 `;
 
@@ -9230,6 +9291,23 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         readKnowledgeUi({ courseId, query: kpQuery, filter: kpFilter, view: kpView, selected, openTree, mindOpen, masteryLevels: kpMastery, detailPath: openPath, treeCourseId, subjectTrees: subjectTreesRef.current, readScale });
       }, [courseId, kpQuery, kpFilter, kpView, selected, openTree, mindOpen, kpMastery, openPath, treeCourseId, readScale]);
 
+      // 打开知识点详情 → 记一次学习行为（v2-B 卡，2026-11-20）。
+      // 触发点是 `selected` 变成非空（= 详情卡已经打开），关掉详情（变 null）不报。
+      // 同一 nodeId 的重复渲染由 reportKnowledgeBehavior 的 5 秒节流 + 服务端按分钟去重兜住，
+      // 所以这里不需要再自己记时间戳。
+      useEffect(() => {
+        if (selected === null || selected === undefined || selected === '') return undefined;
+        let cancelled = false;
+        reportKnowledgeBehavior(selected).then((result) => {
+          // 服务端顺手把掌握度推进了（未学 → 学过）：拉一次最新数据，别让界面停在旧等级
+          if (!cancelled && result !== null && result.mastery !== null && result.mastery !== undefined
+            && result.mastery.changed === true && typeof refresh === 'function') {
+            refresh().catch(() => {});
+          }
+        });
+        return () => { cancelled = true; };
+      }, [selected, refresh]);
+
       // 恢复上次用「看原页」打开的那份资料（返回/切页签回来时）
       useEffect(() => {
         const restored = readKnowledgeUi();
@@ -11780,6 +11858,12 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         'too-large': '这次贴的内容太长了，拆成几次问。',
         'need-request-header': '请求被拒绝：缺少安全请求头（插件可能还没重启）。',
         'cross-site-rejected': '请求被拒绝：来源不可信。',
+        // v2-B 卡（2026-11-20）：改掌握度写路由的错误码。措辞要让人一眼看出「改没改」。
+        'bad-mastery': '掌握度只能是 0–3（未学 / 学过 / 熟练 / 精通），这次没改。',
+        'confirm-required': '这是写操作，要先确认再落库；这次没改（可能插件还没重启）。',
+        'unknown-node': '这个知识点不在知识点网络里，这次没改。',
+        'bad-node-id': '知识点 id 不合法，这次没改。',
+        conflict: '数据刚被别处改过（可能另一个窗口在写），这次没改，刷新后重试。',
       };
       if (messages[code] !== undefined) return messages[code];
       return detail !== '' ? detail : `请求失败（HTTP ${status}）`;
@@ -11913,7 +11997,174 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           .then((result) => {
             const reply = typeof result.reply === 'string' ? result.reply : '';
             if (reply.trim() === '') throw new Error('助手没有返回内容，稍后再试。');
-            setMessages((current) => current.concat([{ role: 'assistant', content: reply }]));
+            // v2-B 卡（2026-11-20）：后端可能回一条「改掌握度的预览」。
+            // **这里只是把它显示成一行待确认的按钮，一个字节都没落库**；
+            // 落库要等用户点「确认修改」→ confirmMastery 再发第二个请求。
+            // v2-B2（2026-11-21）：范围批量用另一个 kind（`set-mastery-batch`），
+            // 预览里带一整个清单 → 界面渲染成可勾选列表，默认全选（用户 m00484 拍板「不限条数」）。
+            const proposal = result.proposedAction !== null && typeof result.proposedAction === 'object'
+              && (result.proposedAction.kind === 'set-mastery' || result.proposedAction.kind === 'set-mastery-batch')
+              ? result.proposedAction
+              : null;
+            const batch = proposal !== null && proposal.kind === 'set-mastery-batch' ? proposal : null;
+            setMessages((current) => current.concat([{
+              role: 'assistant',
+              content: reply,
+              action: proposal,
+              actionState: proposal === null ? null : 'pending',
+              // 批量清单的勾选状态放在这条消息里：关掉面板/刷新即消失，与对话自身的生命周期一致
+              batchSelected: batch === null ? null : (Array.isArray(batch.nodes) ? batch.nodes.map((item) => item.nodeId) : []),
+              batchExpanded: false,
+            }]));
+          })
+          .catch((error) => {
+            setFailure(String(error?.message ?? error));
+          })
+          .finally(() => setBusy(false));
+      };
+
+      /**
+       * 确认落库（v2-B 卡）：这是**第二次请求**，与上面的预览严格分开。
+       *
+       * 服务端没有 `confirm: true` 就 400 `confirm-required`，所以这里显式带上 ——
+       * 「预览与落库不能合并成一次」这条红线在两端各有一道锁。
+       */
+      const confirmMastery = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || message.actionState !== 'pending') return;
+        setBusy(true);
+        setFailure('');
+        fetch(`${API}/assistant/mastery`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ nodeId: action.nodeId, mastery: action.to, confirm: true }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            // 落库成功：这条预览的按钮置灰收起，再追一条回执（说清到底改没改）
+            const receipt = result.changed === true
+              ? `已更新「${action.nodeName}」为 ${action.toLabel}。`
+              : `「${action.nodeName}」本来就是 ${action.toLabel}，等级没动；已记下这是你定的。`;
+            setMessages((current) => current
+              .map((item, at) => (at === index ? { ...item, actionState: 'done' } : item))
+              .concat([{ role: 'assistant', content: receipt, action: null, actionState: null }]));
+            // 知识网络的显示要跟着变（面板上的掌握度徽标、章节统计都读同一份数据）
+            if (typeof props.onMasteryChanged === 'function') {
+              try { props.onMasteryChanged(); } catch { /* 刷新失败不影响回执 */ }
+            }
+          })
+          .catch((error) => {
+            setFailure(String(error?.message ?? error));
+          })
+          .finally(() => setBusy(false));
+      };
+
+      /** 取消：什么都不改（连请求都不发），只把这条预览收起并说明一句。 */
+      const cancelMastery = (index) => {
+        setMessages((current) => current
+          .map((item, at) => (at === index ? { ...item, actionState: 'cancelled' } : item))
+          .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
+      };
+
+      /**
+       * 批量失败原因 → 一句人话。
+       *
+       * 只翻**错误码**，不回显服务端的 detail：与 `assistantFailureText` 同一条纪律，
+       * 界面上的字必须是我们自己写得出来的（别把响应体原样倒给用户）。
+       */
+      const describeBatchFailures = (failures) => {
+        const list = Array.isArray(failures) ? failures : [];
+        const reasons = [...new Set(list.map((item) => String(item?.reason ?? '')))].filter((item) => item !== '');
+        const text = reasons.map((reason) => ({
+          'unknown-node': '知识点已不在网络里',
+          'bad-mastery': '等级不合法',
+          'bad-node-id': '知识点 id 不合法',
+          'bad-item': '清单条目损坏',
+        }[reason] ?? '原因未知')).join('、');
+        return text === '' ? '原因未知' : text;
+      };
+
+      /** 勾/取消清单里的一个节点（只改本地状态，**不发请求**）。 */
+      const toggleBatchNode = (index, nodeId) => {
+        setMessages((current) => current.map((item, at) => {
+          if (at !== index) return item;
+          const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+          const next = selected.includes(nodeId)
+            ? selected.filter((id) => id !== nodeId)
+            : selected.concat([nodeId]);
+          return { ...item, batchSelected: next };
+        }));
+      };
+
+      /** 全选 / 全不选（只改本地状态，**不发请求**）。 */
+      const toggleBatchAll = (index) => {
+        setMessages((current) => current.map((item, at) => {
+          if (at !== index) return item;
+          const nodes = Array.isArray(item.action?.nodes) ? item.action.nodes : [];
+          const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+          const allOn = nodes.length > 0 && selected.length === nodes.length;
+          return { ...item, batchSelected: allOn ? [] : nodes.map((node) => node.nodeId) };
+        }));
+      };
+
+      /** 展开/收起清单（默认只渲染前 5 个 + 「… 共 N 个」）。 */
+      const toggleBatchExpand = (index) => {
+        setMessages((current) => current.map((item, at) => (
+          at === index ? { ...item, batchExpanded: item.batchExpanded !== true } : item
+        )));
+      };
+
+      /**
+       * 批量确认落库（v2-B2 卡）：与 `confirmMastery` 是同一套两步走，只是**一批只发一个请求**。
+       *
+       * 只带**当前勾选**的 nodeId（清单里取消勾选的那几个这次就不改），动作等级统一用预览里的
+       * `action.level`。回执如实写「改了 M 个 / 失败 K 个」，并说明已有几个本来就是这个等级。
+       */
+      const confirmMasteryBatch = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || message.actionState !== 'pending') return;
+        const selected = Array.isArray(message.batchSelected) ? message.batchSelected : [];
+        if (selected.length === 0) return;
+        setBusy(true);
+        setFailure('');
+        fetch(`${API}/assistant/mastery-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({
+            items: selected.map((nodeId) => ({ nodeId, mastery: action.level })),
+            confirm: true,
+          }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            const changed = Number.isFinite(result.changed) ? result.changed : 0;
+            const skipped = Number.isFinite(result.skipped) ? result.skipped : 0;
+            const failed = Number.isFinite(result.failed) ? result.failed : 0;
+            let receipt = `已把 ${changed} 个知识点更新为 ${action.toLabel}`;
+            if (skipped > 0) receipt += `（另有 ${skipped} 个本来就是 ${action.toLabel}，等级没动）`;
+            if (failed > 0) receipt += `；${failed} 个没改成（${describeBatchFailures(result.failures)}）`;
+            receipt += '。';
+            setMessages((current) => current
+              .map((item, at) => (at === index ? { ...item, actionState: 'done' } : item))
+              .concat([{ role: 'assistant', content: receipt, action: null, actionState: null }]));
+            // 知识网络的显示要跟着变（面板上的掌握度徽标、章节统计都读同一份数据）
+            if (typeof props.onMasteryChanged === 'function') {
+              try { props.onMasteryChanged(); } catch { /* 刷新失败不影响回执 */ }
+            }
           })
           .catch((error) => {
             setFailure(String(error?.message ?? error));
@@ -11933,6 +12184,83 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         if (event?.key !== 'Enter' || event?.shiftKey === true) return;
         event.preventDefault();
         send();
+      };
+
+      /**
+       * 批量清单的渲染（v2-B2 卡）：可勾选、可全选、超过 5 个折成「… 共 N 个」。
+       *
+       * 默认只渲染前 5 个（用户 m00484 拍板）；后端**不截断**数组（他明确不接受上限），
+       * 所以这里只是「显示折叠」，点「展开全部」能看到整批。
+       * 状态文案与单点预览同口径：只说 pending/done/cancelled，不替用户下结论。
+       */
+      const renderBatchProposal = (item, index) => {
+        const action = item.action;
+        const nodes = Array.isArray(action?.nodes) ? action.nodes : [];
+        const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+        const expanded = item.batchExpanded === true;
+        const pending = item.actionState === 'pending';
+        const visible = expanded ? nodes : nodes.slice(0, 5);
+        const allOn = nodes.length > 0 && selected.length === nodes.length;
+        return h('div', {
+          className: 'sa-assist-proposal sa-assist-proposal-batch',
+          'data-resolved': pending ? 'false' : 'true',
+          'data-sa-batch': true,
+        },
+          h('div', { className: 'sa-assist-batch-head' },
+            h('span', { className: 'sa-muted' },
+              `待改 ${nodes.length} 个 · 已选 ${selected.length} 个${action.skipped > 0 ? ` · ${action.skipped} 个已是「${action.toLabel}」，会跳过` : ''}`),
+            h('button', {
+              className: 'sa-btn',
+              type: 'button',
+              disabled: !pending || nodes.length === 0,
+              onClick: () => toggleBatchAll(index),
+            }, allOn ? '全不选' : '全选'),
+          ),
+          h('div', { className: 'sa-assist-batch-list' },
+            visible.map((node) => h('label', {
+              key: `sa-batch-${node.nodeId}`,
+              className: 'sa-assist-batch-row',
+            },
+              h('input', {
+                type: 'checkbox',
+                className: 'sa-batch-selected',
+                checked: selected.includes(node.nodeId),
+                disabled: !pending,
+                onChange: () => toggleBatchNode(index, node.nodeId),
+              }),
+              h('span', { className: 'sa-assist-batch-name' }, node.nodeName),
+              h('span', { className: 'sa-muted' }, `${node.fromLabel} → ${action.toLabel}`),
+            )),
+            nodes.length > visible.length
+              ? h('div', { className: 'sa-muted' }, `… 共 ${nodes.length} 个（点「展开全部」看完整清单）`)
+              : null,
+            nodes.length > 5
+              ? h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  onClick: () => toggleBatchExpand(index),
+                }, expanded ? '收起清单' : `展开全部 ${nodes.length} 个`)
+              : null,
+          ),
+          h('div', { className: 'sa-assist-batch-actions' },
+            h('span', { className: 'sa-muted' },
+              item.actionState === 'pending'
+                ? '这一步还没落库'
+                : item.actionState === 'done' ? '已落库' : '已取消'),
+            h('button', {
+              className: 'sa-btn primary',
+              type: 'button',
+              disabled: busy || item.actionState !== 'pending' || selected.length === 0,
+              onClick: () => confirmMasteryBatch(index),
+            }, selected.length === 0 ? '确认修改（未选）' : `确认修改（${selected.length} 个）`),
+            h('button', {
+              className: 'sa-btn',
+              type: 'button',
+              disabled: busy || item.actionState !== 'pending',
+              onClick: () => cancelMastery(index),
+            }, '取消'),
+          ),
+        );
       };
 
       return h('div', { className: 'sa-assist' },
@@ -11976,6 +12304,35 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                     },
                       h('div', { className: 'sa-assist-who' }, item.role === 'user' ? '我' : '助手'),
                       h('div', { className: 'sa-assist-bubble' }, item.content),
+                      // 改掌握度预览的确认行（v2-B 卡）：只有后端回了 proposedAction 才出现。
+                      // 文案只说状态、不替用户下结论：pending=还没落库，done=已落库，cancelled=已取消。
+                      // v2-B2（2026-11-21）：范围批量（`set-mastery-batch`）走可勾选清单那一套，
+                      // 单点（`set-mastery`）仍是这一行按钮 —— 两种 kind 的确认接口也不同。
+                      item.action !== null && item.action !== undefined
+                        ? item.action.kind === 'set-mastery-batch'
+                          ? renderBatchProposal(item, index)
+                          : h('div', {
+                              className: 'sa-assist-proposal',
+                              'data-resolved': item.actionState === 'pending' ? 'false' : 'true',
+                            },
+                              h('span', { className: 'sa-muted' },
+                                item.actionState === 'pending'
+                                  ? '这一步还没落库'
+                                  : item.actionState === 'done' ? '已落库' : '已取消'),
+                              h('button', {
+                                className: 'sa-btn primary',
+                                type: 'button',
+                                disabled: busy || item.actionState !== 'pending',
+                                onClick: () => confirmMastery(index),
+                              }, '确认修改'),
+                              h('button', {
+                                className: 'sa-btn',
+                                type: 'button',
+                                disabled: busy || item.actionState !== 'pending',
+                                onClick: () => cancelMastery(index),
+                              }, '取消'),
+                            )
+                        : null,
                     )),
                 busy
                   ? h('div', { className: 'sa-assist-msg assistant' },
@@ -12238,7 +12595,12 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         h('div', { className: 'sa-body' }, body),
         // 学习助手浮层：挂在 .sa-root 里（absolute 相对面板），盖在页签内容之上，
         // 但**不**越出面板、不盖 DSH 外层顶栏。
-        h(AssistantOverlay, { tab, getKnowledgeTitle: knowledgeTitleOf }),
+        h(AssistantOverlay, {
+          tab,
+          getKnowledgeTitle: knowledgeTitleOf,
+          // 经聊天改完掌握度后要立刻反映到面板（等级、章节统计读的都是同一份知识网络）
+          onMasteryChanged: () => { if (typeof refresh === 'function') refresh().catch(() => {}); },
+        }),
       );
     }
 

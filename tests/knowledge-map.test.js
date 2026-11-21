@@ -7,8 +7,9 @@ import { DOC_KEYS, DOC_FILES, DOC_VERSION, defaultDoc, validateDoc } from '../li
 
 test('knowledgeMap：已登记为第 13 份文档', () => {
   assert.ok(DOC_KEYS.includes('knowledgeMap'), 'DOC_KEYS 应含 knowledgeMap');
-  // 2026-11-19 A 卡把日程插在倒数第二、B 卡把要闻插在最后（第 15 份）—— 顺序本身仍是契约的一部分
-  assert.equal(DOC_KEYS.indexOf('knowledgeMap'), DOC_KEYS.length - 3, 'knowledgeMap 应排在倒数第三（它后面是 schedule 与 news）');
+  // 2026-11-19 A 卡把日程插在倒数第二、B 卡把要闻插在最后（第 15 份）；
+  // 2026-11-20 v2-B 卡把学习行为追加成第 16 份 —— 顺序本身仍是契约的一部分
+  assert.equal(DOC_KEYS.indexOf('knowledgeMap'), DOC_KEYS.length - 4, 'knowledgeMap 应排在倒数第四（它后面是 schedule / news / learningBehavior）');
   assert.equal(DOC_FILES.knowledgeMap, '知识映射.json');
 });
 

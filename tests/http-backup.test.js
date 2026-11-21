@@ -55,19 +55,19 @@ async function getCourses(server) {
   return Array.isArray(state?.doc?.courses) ? state.doc.courses : [];
 }
 
-test('导出：十五份文档都在，包带格式/版本/校验和，缺的文档记进 skipped', async () => {
+test('导出：十六份文档都在，包带格式/版本/校验和，缺的文档记进 skipped', async () => {
   const server = await startServer();
   try {
     const response = await fetch(`${server.baseUrl}/backup/export`);
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.equal(result.ok, true);
-    assert.equal(result.count, 15, '十五份文档（含日程与要闻）都是默认结构，应当全部导出');
+    assert.equal(result.count, 16, '十六份文档（含日程、要闻与学习行为）都是默认结构，应当全部导出');
     assert.deepEqual(result.skipped, []);
     assert.equal(result.bundle.format, 'study-assistant.bundle');
     assert.equal(result.bundle.version, 1);
     assert.match(result.bundle.checksum, /^sha256:[0-9a-f]{64}$/);
-    assert.equal(Object.keys(result.bundle.docs).length, 15);
+    assert.equal(Object.keys(result.bundle.docs).length, 16);
     assert.ok(result.bundle.hashes && typeof result.bundle.hashes.courses === 'string', '每份文档带磁盘 sha256');
     assert.ok(typeof result.bundle.exportedAt === 'string');
   } finally {
@@ -84,7 +84,7 @@ test('恢复：改掉数据后导回，内容回到导出时刻（覆盖同名�
       item: { id: 'c_keep', name: '要留住的课' },
     });
     const exported = await (await fetch(`${server.baseUrl}/backup/export`)).json();
-    assert.equal(exported.count, 15);
+    assert.equal(exported.count, 16);
 
     // 导出之后再改：多一门课 —— 恢复后这门课应当消失
     await postJson(`${server.baseUrl}/mutate`, {
@@ -98,7 +98,7 @@ test('恢复：改掉数据后导回，内容回到导出时刻（覆盖同名�
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.equal(result.ok, true);
-    assert.equal(result.restored.length, 15);
+    assert.equal(result.restored.length, 16);
     assert.deepEqual(result.failed, []);
     assert.equal(result.exportedAt, exported.bundle.exportedAt);
 

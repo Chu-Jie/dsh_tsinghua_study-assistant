@@ -4593,3 +4593,51 @@ test('E1 bug 修：跨段落选区（quote 带 \\n）能折平锚定，选中可
 });
 
 
+
+
+/**
+ * v2-B 卡（2026-11-20）：学习行为上报 + 「经聊天改掌握度」的两步交互。
+ *
+ * 这里只做**源码级**断言（渲染层交互已经在 http-assistant-mastery.test.js 用真路由测过
+ * 「预览不落库、确认才落库」）；目的是把几条红线钉在字符串上，谁改回去就红：
+ *   - 打开知识点只送 `{nodeId}`，前端**不编任何分钟数**（停留时长是第二步的事）；
+ *   - 确认按钮才发第二个请求，且**必带 `confirm: true`**（服务端没它就 400，两端各一把锁）；
+ *   - 取消不发请求；
+ *   - 不加可见的「处理中」式文案（沿用 A1）。
+ */
+test('v2-B：打开知识点上报行为，改掌握度走「预览 → 确认」两步', () => {
+  const source = fs.readFileSync(CLIENT_FILE, 'utf8');
+
+  // ① 行为上报：路由、只带 nodeId、有两层去重里的前端那层
+  assert.ok(source.includes('/assistant/behavior'), '要调行为上报路由');
+  assert.ok(source.includes('function reportKnowledgeBehavior('), '要有 reportKnowledgeBehavior');
+  assert.ok(source.includes('BEHAVIOR_THROTTLE_MS'), '要有前端节流常量（同一 nodeId 短时间重复打开只算一次）');
+  assert.ok(source.includes('body: JSON.stringify({ nodeId: id })'), '上报体只带 nodeId（时间与次数由服务端算）');
+  assert.equal(source.includes('totalMinutes'), false, '本卡不实现停留时长：前端不许出现分钟数');
+
+  // ② 触发点：详情卡打开（selected 非空）时上报一次
+  assert.ok(source.includes('reportKnowledgeBehavior(selected)'), 'KnowledgeTab 要在 selected 变非空时上报');
+  assert.ok(source.includes('[selected, refresh]'), '上报 effect 的依赖要含 selected');
+
+  // ③ 预览 → 确认：确认是**第二个请求**，且显式带 confirm: true
+  assert.ok(source.includes('`${API}/assistant/mastery`'), '确认要调改掌握度路由');
+  assert.ok(source.includes('confirm: true'), '确认请求必须显式带二次确认标记');
+  assert.ok(source.includes('const confirmMastery = ('), '要有 confirmMastery');
+  assert.ok(source.includes("actionState !== 'pending'"), '一条预览只能确认一次（落库/取消后按钮禁用）');
+
+  // ④ 取消：不发请求，只收起并在对话里说一句
+  assert.ok(source.includes('const cancelMastery = ('), '要有 cancelMastery');
+  assert.ok(source.includes('好，这次没改。'), '取消要给一句明确回执');
+  const cancelBlock = source.slice(source.indexOf('const cancelMastery = ('));
+  const cancelBody = cancelBlock.slice(0, cancelBlock.indexOf('};'));
+  assert.equal(cancelBody.includes('/assistant/mastery'), false, '取消**不许**发写请求');
+
+  // ⑤ 界面上不出现针对「改掌握度」的结论性文案（导出按钮原有的「处理中…」不算）
+  for (const phrase of ['正在修改', '正在更新掌握度', '正在改掌握度']) {
+    assert.equal(source.includes(phrase), false, `不要加可见的「${phrase}」式文案`);
+  }
+
+  // ⑥ 预览行要能看出「还没落库 / 已落库 / 已取消」
+  assert.ok(source.includes("'sa-assist-proposal'"), '预览确认行要有独立样式类');
+  assert.ok(source.includes("'data-resolved'"), '预览行要标出已处理的终态');
+});
