@@ -473,16 +473,16 @@ test('context 里的字符串不进响应、不进日志（只进 system）', as
   }
 });
 
-test('context 不改变"不落盘"：成功用例前后数据目录全量快照一致', async () => {
+test('context 不改变"不落盘"：不带 conversationId 时成功用例前后数据目录全量快照一致', async () => {
   const server = await startServer({
     assistantChat: async () => ({ content: '收到' }),
   });
   try {
     const before = await snapshotDir(server.dir);
+    // v2-C（2026-11-21）起：只有**带 conversationId** 才落盘，不带则维持 MVP 不落盘。
+    // 这里刻意不带 conversationId，验证「context 本身绝不触发落盘」这条老约定仍然成立。
     const response = await jsonRequest(`${server.baseUrl}/assistant/reply`, {
       messages: [{ role: 'user', content: '问' }],
-      conversationId: 'conv-context-1',
-      persist: true,
       context: { tab: 'materials', materialPath: 'a.md', materialPage: 2 },
     });
     assert.equal(response.status, 200);

@@ -3177,26 +3177,61 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-assist-fab:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary)}
 .sa-assist-fab[aria-expanded="true"]{border-color:var(--dsw-alias-brand-primary);box-shadow:0 2px 12px color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent)}
 .sa-assist-dot{display:block;width:11px;height:11px;border-radius:999px;background:var(--dsw-alias-brand-primary)}
-.sa-assist-panel{width:min(360px,calc(100cqw - 28px));height:460px;max-height:calc(100% - 76px);min-height:0;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l2);border-radius:max(var(--dsw-radius-lg,12px),14px);box-shadow:0 10px 30px color-mix(in srgb,var(--dsw-alias-label-primary) 16%,transparent);animation:sa-fade .18s cubic-bezier(.2,.8,.2,1)}
-.sa-assist-head{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1.5}
-.sa-assist-head strong{font-size:15px;font-weight:650}
-.sa-assist-hint{color:var(--dsw-alias-label-caption);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.sa-assist-head .sa-btn{min-height:28px;padding:2px 9px;font-size:13px}
-.sa-assist-log{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--dsw-alias-bg-base);scrollbar-gutter:stable}
+/* v2-G（2026-11-22）：面板自管一套配色，彻底摆脱宿主的半透明 alias 令牌。
+   宿主 --dsw-alias-bg-overlay 带 alpha，后面的讲义会从面板底下透上来（用户报「看字不清晰」）。
+   改成面板自有变量 --sa-assist-*：浅色默认一套、深色（data-sa-assist-theme="dark"）覆盖一套，
+   两套全是不透明实色；正文色对各自底色对比度均在 12:1 以上，次级字也 ≥ 5.9:1。
+   宽高由 state 给（拖拽改），这里只留 min/max 兜底：最大别撑破 .sa-assist（父 padding 14px，
+   底下还要给 38px 的圆按钮 + 10px gap 让位，所以高上限扣 76px）。 */
+.sa-assist-panel{--sa-assist-surface:#ffffff;--sa-assist-surface-2:#f4f5f7;--sa-assist-surface-3:#e8ebf0;--sa-assist-fg:#1a1d23;--sa-assist-fg-soft:#59616e;--sa-assist-border:#d3d8e0;--sa-assist-bubble-user:#e9f1fe;--sa-assist-bubble-user-border:#9dbcee;--sa-assist-bubble-assistant:#f4f5f7;--sa-assist-input:#ffffff;--sa-assist-input-border:#c9cfd9;--sa-assist-danger:#b3261e;--sa-assist-btn:#f4f5f7;--sa-assist-btn-border:#d3d8e0;--sa-assist-accent:#1f6feb;width:min(360px,calc(100cqw - 28px));height:460px;min-width:min(280px,calc(100cqw - 28px));min-height:min(320px,calc(100% - 76px));max-width:calc(100cqw - 28px);max-height:calc(100% - 76px);position:relative;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;background:var(--sa-assist-surface);color:var(--sa-assist-fg);border:1px solid var(--sa-assist-border);border-radius:max(var(--dsw-radius-lg,12px),14px);box-shadow:0 10px 30px color-mix(in srgb,var(--dsw-alias-label-primary) 16%,transparent);animation:sa-fade .18s cubic-bezier(.2,.8,.2,1)}
+.sa-assist-panel[data-sa-assist-theme="dark"]{--sa-assist-surface:#1e2024;--sa-assist-surface-2:#25282d;--sa-assist-surface-3:#30343a;--sa-assist-fg:#eceef2;--sa-assist-fg-soft:#a9b1bd;--sa-assist-border:#3c424b;--sa-assist-bubble-user:#2a3a52;--sa-assist-bubble-user-border:#4d6f9f;--sa-assist-bubble-assistant:#2a2d33;--sa-assist-input:#22252a;--sa-assist-input-border:#464d57;--sa-assist-danger:#ff8b7f;--sa-assist-btn:#2a2d33;--sa-assist-btn-border:#40464f;--sa-assist-accent:#8ab4ff;color-scheme:dark;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.sa-assist-head{flex:0 0 auto;display:flex;align-items:center;flex-wrap:nowrap;gap:8px;padding:9px 12px;border-bottom:1px solid var(--sa-assist-border);font-size:14px;line-height:1.5;min-width:0}
+.sa-assist-head strong{font-size:15px;font-weight:650;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sa-assist-hint{color:var(--sa-assist-fg-soft);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
+.sa-assist-head .sa-btn{width:28px;height:28px;min-width:28px;min-height:28px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;padding:0;flex:0 0 auto;line-height:1;border-radius:max(var(--dsw-radius-sm,6px),8px)}
+.sa-assist-head .sa-btn svg{display:block;width:16px;height:16px;pointer-events:none}
+.sa-assist-log{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--sa-assist-surface);scrollbar-gutter:stable}
 .sa-assist-empty{font-size:14px;line-height:1.7}
 .sa-assist-msg{display:flex;flex-direction:column;gap:3px;min-width:0}
 .sa-assist-msg.user{align-items:flex-end}
 .sa-assist-msg.assistant{align-items:flex-start}
-.sa-assist-who{font-size:12px;line-height:1.4;color:var(--dsw-alias-label-caption)}
-.sa-assist-bubble{max-width:86%;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2);font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-sizing:border-box}
-.sa-assist-msg.user .sa-assist-bubble{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-brand-primary)}
-.sa-assist-msg.assistant .sa-assist-bubble{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}
-.sa-assist-error{flex:0 0 auto;margin:0 12px 6px;font-size:13px;line-height:1.6;color:var(--dsw-alias-state-error-primary,var(--dsw-alias-label-primary))}
-.sa-assist-compose{flex:0 0 auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay)}
+.sa-assist-who{font-size:12px;line-height:1.4;color:var(--sa-assist-fg-soft)}
+.sa-assist-bubble{max-width:86%;padding:8px 10px;border:1px solid var(--sa-assist-border);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--sa-assist-bubble-assistant);color:var(--sa-assist-fg);font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-sizing:border-box}
+.sa-assist-msg.user .sa-assist-bubble{background:var(--sa-assist-bubble-user);border-color:var(--sa-assist-bubble-user-border)}
+.sa-assist-msg.assistant .sa-assist-bubble{background:var(--sa-assist-bubble-assistant);border-color:var(--sa-assist-border)}
+.sa-assist-error{flex:0 0 auto;margin:0 12px 6px;font-size:13px;line-height:1.6;color:var(--sa-assist-danger)}
+.sa-assist-compose{flex:0 0 auto;display:flex;flex-direction:column;gap:8px;padding:10px 12px 12px;border-top:1px solid var(--sa-assist-border);background:var(--sa-assist-surface-2)}
 .sa-assist-input{width:100%;min-height:64px;max-height:132px;resize:none;box-sizing:border-box;line-height:1.6}
 .sa-assist-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
 .sa-assist-actions .sa-muted{font-size:12px;margin-right:auto}
 .sa-assist-actions .sa-btn{min-height:32px;padding:4px 14px}
+/* v2-G（2026-11-22）：面板内部的按钮 / 输入框 / 次要文字 / 会话条也吃面板变量。
+   不这么做的话，深色面板里会露出宿主浅色主题的 .sa-btn / .sa-input / .sa-muted（白底黑字、对比崩）。
+   选择器统一带 .sa-assist-panel 前缀，只为浮层面板生效，主界面其它 .sa-btn 一点不改。 */
+.sa-assist-panel .sa-btn{background:var(--sa-assist-btn);border-color:var(--sa-assist-btn-border);color:var(--sa-assist-fg)}
+.sa-assist-panel .sa-btn:hover{background:var(--sa-assist-surface-3)}
+.sa-assist-panel .sa-btn.primary{border-color:var(--sa-assist-accent);color:var(--sa-assist-fg);box-shadow:inset 0 0 0 1px var(--sa-assist-accent)}
+.sa-assist-panel .sa-muted{color:var(--sa-assist-fg-soft)}
+.sa-assist-panel .sa-input{background:var(--sa-assist-input);border-color:var(--sa-assist-input-border);color:var(--sa-assist-fg)}
+.sa-assist-panel .sa-input::placeholder{color:var(--sa-assist-fg-soft)}
+/* 聚焦描边要留着（.sa-input:focus-visible 在原文件更靠前、同权重，会被上面的 border-color 盖掉）。 */
+.sa-assist-panel .sa-input:focus-visible{border-color:var(--sa-assist-accent)}
+.sa-assist-panel .sa-spinner{border-color:var(--sa-assist-border);border-top-color:var(--sa-assist-fg-soft)}
+.sa-assist-panel .sa-assist-proposal{border-color:var(--sa-assist-accent)}
+.sa-assist-panel .sa-assist-proposal .sa-btn.primary{border-color:var(--sa-assist-accent);color:var(--sa-assist-accent)}
+.sa-assist-panel .sa-assist-proposal[data-resolved="true"]{border-color:var(--sa-assist-border)}
+.sa-assist-panel .sa-asst-sessions,.sa-assist-panel .sa-asst-list{background:var(--sa-assist-surface-2);border-bottom-color:var(--sa-assist-border)}
+.sa-assist-panel .sa-asst-item:hover,.sa-assist-panel .sa-asst-item[data-active="true"]{background:var(--sa-assist-surface-3)}
+.sa-assist-panel .sa-asst-item-title{color:var(--sa-assist-fg)}
+.sa-assist-panel .sa-asst-item-meta,.sa-assist-panel .sa-asst-list-empty,.sa-assist-panel .sa-asst-list-foot,.sa-assist-panel .sa-assist-summary-line{color:var(--sa-assist-fg-soft)}
+.sa-assist-panel .sa-asst-sessions .sa-asst-cur-sub{color:var(--sa-assist-fg-soft)}
+/* 左上角缩放手柄（v2-G 补丁，2026-11-23）：14px 直角三角，cursor:nwse-resize。
+   面板锚右下角（.sa-assist 是 flex-end/flex-end），手柄放左上才能往左/上拖变大——
+   原来贴右下时鼠标一往右下就出屏幕边界。三角只有 8px、从 2px 处起画，不压标题文字；
+   顶部图标按钮在 head 右侧，与左上角手柄天然不冲突。 */
+.sa-assist-resize{position:absolute;left:0;top:0;width:14px;height:14px;display:flex;align-items:flex-start;justify-content:flex-start;padding:2px 0 0 2px;box-sizing:border-box;cursor:nwse-resize;touch-action:none;color:var(--sa-assist-fg-soft);background:transparent;z-index:3}
+.sa-assist-resize::after{content:'';width:8px;height:8px;border-left:2px solid currentColor;border-top:2px solid currentColor;border-top-left-radius:2px;opacity:.55}
+.sa-assist-resize:hover::after{opacity:1}
 /* 掌握度预览的「确认修改 / 取消」（v2-B 卡，2026-11-20）。
    只在助手发出的预览消息下面出现一行按钮：**预览不落库，点了确认才发第二个请求**。
    刻意不加任何「处理中」式的可见状态文案（沿用 A1 精神：界面不替用户下结论）。 */
@@ -3218,6 +3253,28 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-assist-batch-row .sa-muted{margin-left:auto;font-size:12px;white-space:nowrap}
 .sa-assist-batch-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .sa-assist-batch-actions .sa-muted{font-size:12px;line-height:1.5;margin-right:auto}
+/* 多会话（v2-C 卡，2026-11-21）：全局会话列表 + 新建/改名/归档。
+   刻意不按主界面 4 大页签分，就是一个全局列表。归档=archived 标记位，默认隐藏、可切回。 */
+.sa-asst-sessions{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-overlay);font-size:13px;line-height:1.5}
+.sa-asst-sessions .sa-asst-cur{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.sa-asst-sessions .sa-asst-cur .sa-asst-cur-sub{font-weight:400;color:var(--dsw-alias-label-caption);font-size:12px}
+.sa-asst-sessions .sa-btn{min-height:26px;padding:1px 9px;font-size:12px}
+.sa-asst-list{flex:0 0 auto;max-height:230px;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);display:flex;flex-direction:column;gap:2px;padding:6px 8px}
+.sa-asst-list-empty{font-size:13px;color:var(--dsw-alias-label-caption);padding:4px 2px}
+.sa-asst-item{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:max(var(--dsw-radius-sm,6px),8px);cursor:pointer;border:1px solid transparent}
+.sa-asst-item:hover{background:var(--dsw-alias-bg-layer-2)}
+.sa-asst-item[data-active="true"]{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary)}
+.sa-asst-item[data-archived="true"]{opacity:.62}
+.sa-asst-item-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;line-height:1.5}
+.sa-asst-item-meta{flex:0 0 auto;font-size:11px;color:var(--dsw-alias-label-caption);white-space:nowrap}
+.sa-asst-item-acts{flex:0 0 auto;display:flex;gap:4px;opacity:0;transition:opacity .15s ease}
+.sa-asst-item:hover .sa-asst-item-acts,.sa-asst-item:focus-within .sa-asst-item-acts{opacity:1}
+.sa-asst-item-acts .sa-btn{min-height:22px;padding:0 7px;font-size:11px}
+.sa-asst-rename{flex:1 1 auto;min-width:0;display:flex;gap:4px}
+.sa-asst-rename input{flex:1 1 auto;min-width:0;font-size:13px;padding:2px 6px;box-sizing:border-box}
+.sa-asst-list-foot{display:flex;align-items:center;gap:8px;padding:5px 8px 2px;font-size:12px;color:var(--dsw-alias-label-caption)}
+.sa-asst-list-foot .sa-btn{min-height:24px;padding:1px 9px;font-size:12px;margin-left:auto}
+.sa-assist-summary-line{font-size:12px;color:var(--dsw-alias-label-caption);line-height:1.5;padding:2px 0}
 @media print{.sa-assist{display:none !important}}
 `;
 
@@ -7048,6 +7105,26 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     let navHistory = [];
     let navIndex = -1;
     let navTabMemory = 'today';
+    // v2-E（2026-11-22）：专注学习模式的开关快照。`focusReading` 是 KnowledgeTab 里的 state，
+    // 浮层的 buildAssistantContext 看不到它，所以学 navTabMemory 的做法在模块内存里记一份：
+    // 进入专注置真，退出（Esc / 收起 / 切课程 / 切走页签导致组件卸载）一律置假；拿不到就当 false。
+    let studyModeMemory = false;
+    // v2-G（2026-11-22）：浮层聊天面板的深浅主题与「用户拖过的大小」。与 navTabMemory 同款做法：
+    // 只活在模块内存里，**不落盘、不写学习台 JSON**（刷新页面 / 重启 DSH 即回默认 light + 360×460）。
+    // 面板配色本来就是自己一套（--sa-assist-*，不跟宿主主题走），这两个变量就是它唯一的记忆。
+    let assistThemeMemory = 'light';
+    const ASSIST_SIZE_DEFAULT = Object.freeze({ w: 360, h: 460 });
+    const ASSIST_SIZE_MIN = Object.freeze({ w: 280, h: 320 });
+    let assistSizeMemory = { w: ASSIST_SIZE_DEFAULT.w, h: ASSIST_SIZE_DEFAULT.h };
+
+    /** 把一次拖拽算出的边长夹进 [min, max]；拿不到数字就退回 min（宁可小，也不撑破外层）。 */
+    function clampAssistSize(value, min, max) {
+      const lo = Math.max(1, Math.round(Number(min) || 0));
+      const hi = Math.max(lo, Math.round(Number(max) || lo));
+      const num = Number(value);
+      if (!Number.isFinite(num)) return lo;
+      return Math.min(hi, Math.max(lo, Math.round(num)));
+    }
 
     function navSnapshot(tab) {
       return {
@@ -8478,14 +8555,21 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      * 字号（2026-10-30）：这里全部用 em，基准交给外层 .sa-reading 的 calc(--dsh-content-font-size
      * × --sa-read-scale)。原来写死 16/15/14px，专注阅读里调 A+/A− 时只有正文动、标题与表格不动。
      */
+    /**
+     * 一组成员行 → `<ul>` 或 `<ol>`（首行是数字就用 ol）。
+     *
+     * 2026-11-22（v2-F）：从 `analysisBlockNodes` 里提到模块顶层 —— 浮层气泡也要渲染列表，
+     * 复用同一份标记，别复制第二份「ul/ol + li 前缀」规则。第三个参数是行内渲染器，
+     * 默认仍是 `analysisInline`（详解正文一个字都没变）；气泡传 `mixedTextNodes`，
+     * 这样列表项里的裸公式（`- q=ne`）也能排版。
+     */
+    const listNode = (items, key, inline = analysisInline) => {
+      const tag = /^\d/u.test(items[0].raw) ? 'ol' : 'ul';
+      return h(tag, { key, style: { margin: '6px 0 0', paddingLeft: 20, fontSize: '1em', lineHeight: 1.65 } },
+        items.map((item, index) => h('li', { key: `${key}-li${index}` }, ...inline(item.text, `${key}-li${index}`))));
+    };
     const analysisBlockNodes = (text, keyPrefix) => {
       const nodes = [];
-      /** 一组成员行 → `<ul>` 或 `<ol>`（首行是数字就用 ol）。 */
-      const listNode = (items, key) => {
-        const tag = /^\d/u.test(items[0].raw) ? 'ol' : 'ul';
-        return h(tag, { key, style: { margin: '6px 0 0', paddingLeft: 20, fontSize: '1em', lineHeight: 1.65 } },
-          items.map((item, index) => h('li', { key: `${key}-li${index}` }, ...analysisInline(item.text, `${key}-li${index}`))));
-      };
       let afterHeading = false;
       // 2026-11-12：先按空行切段；再把「整行就是一条公式」的行**单独成段**。
       // 以前它们和上下文同处一段，段内换行按 pre-wrap 显示 ——：
@@ -8807,6 +8891,85 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     };
 
     /**
+     * 浮层聊天气泡的排版（v2-F，2026-11-22）。
+     *
+     * 起因：气泡把助手回复**当纯文本直出**，于是 `**加粗**`、`\(q=ne\)`、`\times10^{-19}`、
+     * `\text{C}` 全以源码露在屏幕上（用户真机冒烟 v2-E 时截图报的）。这里只做「接上现成的
+     * 排版器」这一件事，**不新造 markdown/公式解析器**：
+     *   - 切段用 `analysisParagraphs`；普通段落走 `mixedTextNodes`（行内 Markdown + 裸公式）；
+     *   - 列表段落用仓库已有的 `isListLine` / `LIST_LINE_PATTERN` / `listNode`（行内换 `mixedTextNodes`）；
+     *   - 分级标题复用 `HEADING_STYLE`，与详解正文同一套字号口径。
+     *
+     * 唯一一处「预处理」是把模型常用的 MathJax 分隔符 `\(…\)` / `\[…\]` 换成排版器本来就认的
+     * `$…$` / `$$…$$` —— 这是**换记号、不是解析**：换完仍由 analysisInline / latexNodes 排版。
+     * 必须排在切段之前，否则跨空行的 `\[…\]` 会被切成两半、配不成对。
+     *
+     * 安全口径同 :7148-7149：先切分、再建 React 节点，任何一段都走文本节点，
+     * 不动「直接写 HTML」那类口子，所以回复里出现 `<script>` 也只是字面量。
+     */
+    const ASSISTANT_PARA_STYLE = { margin: '6px 0 0', fontSize: '1em', lineHeight: 1.65, whiteSpace: 'pre-wrap' };
+    const BARE_LATEX_COMMAND = /\\[A-Za-z]+/u;
+    const renderAssistantText = (text, keyPrefix = 'asst') => {
+      const raw = String(text ?? '');
+      // `\[…\]` 先换（可跨行），再换 `\(…\)`；顺序反了会把 `\[` 当成 `\(` 读到。
+      // 用字符串拼接而不是模板串：`$$` 与 `${}` 挨在一起太容易数错一个 `$`。
+      const source = raw
+        .replace(/\\\[([\s\S]*?)\\\]/gu, (_, body) => ('$$' + body + '$$'))
+        .replace(/\\\(([\s\S]*?)\\\)/gu, (_, body) => ('$' + body + '$'));
+      const parts = analysisParagraphs(source);
+      if (parts.length === 0) return [raw];
+      const nodes = [];
+      parts.forEach((part, partIndex) => {
+        const key = `${keyPrefix}-${partIndex}`;
+        const lines = part.split('\n').map((line) => line.trim()).filter((line) => line !== '');
+        if (lines.length === 0) return;
+        // ① 整段只有一行分级标题：复用详解正文的 HEADING_STYLE（不另立字号规则）
+        const heading = lines.length === 1 ? /^(#{1,6})\s+(.*)$/u.exec(lines[0]) : null;
+        if (heading !== null) {
+          nodes.push(h('div', { key, style: HEADING_STYLE(heading[1].length) }, ...mixedTextNodes(heading[2], `${key}-h`)));
+          return;
+        }
+        // ② 没有列表行 → 普通段落（pre-wrap 保留段内换行，与详解正文 :8617-8620 一致）
+        if (!lines.some(isListLine)) {
+          // 段里还留着**没有 `$` 包着的**裸 LaTeX 命令（`e=1.6\times10^{-19}`）：
+          // 这种只能整段交给 mathInlineNodes 排一次（与引文/易错的既有口径 :8810-8814 相同），
+          // 否则 `\times` 会被当成普通文字原样露出来。带 `$` 的段落照常走混排，粗体等不受影响。
+          const paragraphNodes = BARE_LATEX_COMMAND.test(part) && !part.includes('$')
+            ? mathInlineNodes(part, `${key}-tex`)
+            : mixedTextNodes(part, key);
+          nodes.push(h('p', { key, style: ASSISTANT_PARA_STYLE }, ...paragraphNodes));
+          return;
+        }
+        // ③ 有列表行：连续列表行成一组，其余行并段 —— 与详解正文 :8623-8647 同一套走法
+        let buffer = [];
+        const flushParagraph = () => {
+          if (buffer.length === 0) return;
+          const textPart = buffer.join('\n');
+          const flushKey = `${key}-p${nodes.length}`;
+          nodes.push(h('p', { key: flushKey, style: ASSISTANT_PARA_STYLE }, ...mixedTextNodes(textPart, flushKey)));
+          buffer = [];
+        };
+        for (let i = 0; i < lines.length; i += 1) {
+          const line = lines[i];
+          if (isListLine(line)) {
+            flushParagraph();
+            const items = [];
+            while (i < lines.length && isListLine(lines[i])) {
+              items.push({ raw: lines[i], text: lines[i].replace(LIST_LINE_PATTERN, '') });
+              i += 1;
+            }
+            nodes.push(listNode(items, `${key}-list${nodes.length}`, mixedTextNodes));
+            i -= 1;
+          } else {
+            buffer.push(line);
+          }
+        }
+        flushParagraph();
+      });
+      return nodes.length === 0 ? [raw] : nodes;
+    };
+
+    /**
      * 教材页正文卡（2026-10-27 晚）：默认「排版」，可切「原文」。
      * 两处用到（资料页的正文卡、知识点页「看原页」），所以抽成组件，别复制两份。
      *
@@ -8959,8 +9122,11 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         focusReturnRef.current = {page,top:page.scrollTop,left:page.scrollLeft,trigger:event?.currentTarget,
           readerTop:Math.max(0,page.getBoundingClientRect().top-pane.getBoundingClientRect().top)};
         setFocusReading(true);
+        studyModeMemory = true;
       };
-      const exitFocusReading = () => setFocusReading(false);
+      const exitFocusReading = () => { studyModeMemory = false; setFocusReading(false); };
+      // 卸载（切走页签 / 面板重挂载）时把快照清掉，避免「已退出专注、浮层还套着人设」
+      useEffect(() => () => { studyModeMemory = false; }, []);
 
       // 行内格式（2026-11-17 D 卡）：点 marks 索引里的一条 → 尽量滚动到正文中对应的 <mark>。
       // 找不到（正文还没渲染出来、或被筛掉）就静默返回，不报错。
@@ -9182,7 +9348,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         if (!pane || !saved) return;
         pane.scrollTop=saved.readerTop; pane.focus?.({preventScroll:true});
         const onKey = event => {
-          if (event.key==='Escape') {event.preventDefault();setFocusReading(false);return;}
+          if (event.key==='Escape') {event.preventDefault();studyModeMemory=false;setFocusReading(false);return;}
           if (event.key!=='Tab' || typeof pane.querySelectorAll!=='function') return;
           const items=[...pane.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]')].filter(el=>el.tabIndex>=0&&el.getClientRects().length);
           const first=items[0],last=items[items.length-1];
@@ -9319,13 +9485,14 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const effectiveCourseId = isTreeView ? treeCourseId : courseId;
       const keep = item => effectiveCourseId === '' || (String(item?.courseId ?? '').trim() || '__none__') === effectiveCourseId;
       const chooseTreeCourse = id => {
+        studyModeMemory = false;
         setFocusReading(false); setFullBrowser(false); setBrowserCollapsed(false);
         setTreeCourseId(id); setCourseId(id); setSelected(null); setOpenPath(null); setDetail(null);
         setKpQuery(''); setKpFilter('all'); setKpMastery([]); setMarkNote(''); setMarkError('');
       };
       const selectForReading = (id, options = {}) => {
         setSelected(id); setFullBrowser(false); setBrowserCollapsed(id !== null);
-        if (id === null) setFocusReading(false);
+        if (id === null) { studyModeMemory = false; setFocusReading(false); }
         setLectureHint(null);
         // 2026-10-29 用户定：点知识点＝右侧换成「这个知识点自己的内容」（详解/例题/来历），
         // 之前打开着的章讲义要跟着收掉，否则两张卡叠在一起（章讲义在上、该点详解在下）没法读。
@@ -10233,10 +10400,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
           [courseName(selectedNode.courseId), selectedNode.chapter, selectedNode.section, selectedNode.subsection, reviewedText]
             .filter((part) => typeof part === 'string' && part !== '').join(' · ')),
-        h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 2 } },
-          selectedEvidence.total === 0
-            ? '还没有任何题目或资料页支持它（未验证）'
-            : `有 ${selectedEvidence.total} 条依据（题目 ${selectedEvidence.questions} / 资料页 ${selectedEvidence.pages}）· 点开能看题干和原文`),
         h('div', { className: 'sa-dock', style: { marginTop: 8, flexWrap: 'wrap' } },
           h('span', { className: 'sa-muted' }, '掌握度'),
           ...MASTERY_LABELS.map((label, level) => h('button', {
@@ -10367,12 +10530,13 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         typeof selectedNode.note === 'string' && selectedNode.note !== ''
           ? h('div', { className: 'sa-muted', style: { marginTop: 6 } }, selectedNode.note)
           : null,
+        analysisBlock,
+        // 证据块放详情卡最末尾（详解正文之后）：先看详解，再看支撑它的题目/资料页
         evidenceRows(selectedNode.evidence, 'sel').length === 0
           ? null
           : h('div', { style: { marginTop: 6 } },
             h('div', { className: 'sa-muted' }, '证据'),
             ...evidenceRows(selectedNode.evidence, 'sel')),
-        analysisBlock,
         markError === '' ? null : h('div', { className: 'sa-error', style: { marginTop: 6 } }, markError));
 
       const addNodeCard = h('div', { className: 'sa-card' },
@@ -11924,7 +12088,69 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         }
       }
 
+      // v2-E：只有专注学习模式（「学习搭子」人设）才带这个字段；非专注不出现，
+      // 保持与 v2-A / v2-D 逐字一致（不多出字段）。拿不到就当 false，绝不抛错。
+      if (studyModeMemory === true) context.studyMode = true;
+
       return context;
+    }
+
+    /**
+     * 学习助手浮层头部的图标（v2-D 卡，2026-11-22）。
+     *
+     * **零依赖**：手写 SVG，不引图标库（引库要么整库内联撞 EDR，要么多一个 npm 依赖）。
+     * 颜色一律 `currentColor`，尺寸由 CSS 的 `.sa-assist-head .sa-btn svg` 统一收口；
+     * `aria-hidden` 让读屏只念按钮的 `aria-label`，不会把图标再念一遍。
+     */
+    function AssistHeadIcon(props = {}) {
+      const name = props?.name;
+      const size = Number(props?.size) || 16;
+      const common = {
+        viewBox: '0 0 24 24',
+        width: size,
+        height: size,
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.8,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': true,
+        focusable: 'false',
+        style: { display: 'block' },
+      };
+      if (name === 'plus') {
+        return h('svg', common, h('path', { d: 'M12 5v14' }), h('path', { d: 'M5 12h14' }));
+      }
+      if (name === 'list') {
+        return h('svg', common,
+          h('path', { d: 'M4 6h16' }),
+          h('path', { d: 'M4 12h16' }),
+          h('path', { d: 'M4 18h16' }),
+        );
+      }
+      // v2-G（2026-11-22）：深浅主题按钮的两个图标。都是手写路径，风格与上面两个一致
+      // （同一 viewBox / stroke / 1.8 线宽），不引入任何图标库。
+      // moon = 月牙（浅色面板显示，点一下转深色）；sun = 太阳（深色面板显示，点一下转浅色）。
+      if (name === 'moon') {
+        return h('svg', common,
+          h('path', { d: 'M20.3 14.6a8.3 8.3 0 1 1-9.6-11.1 6.7 6.7 0 0 0 9.6 11.1z' }),
+        );
+      }
+      if (name === 'sun') {
+        return h('svg', common,
+          h('circle', { cx: 12, cy: 12, r: 4.1 }),
+          h('path', { d: 'M12 2.7v2.4' }),
+          h('path', { d: 'M12 18.9v2.4' }),
+          h('path', { d: 'M2.7 12h2.4' }),
+          h('path', { d: 'M18.9 12h2.4' }),
+          h('path', { d: 'M5.6 5.6l1.7 1.7' }),
+          h('path', { d: 'M16.7 16.7l1.7 1.7' }),
+          h('path', { d: 'M18.4 5.6l-1.7 1.7' }),
+          h('path', { d: 'M7.3 16.7l-1.7 1.7' }),
+        );
+      }
+      // 缺省：向下箭头（收起）
+      return h('svg', common, h('path', { d: 'M5.5 8.5l6.5 6.5 6.5-6.5' }));
     }
 
     /**
@@ -11951,6 +12177,196 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const [busy, setBusy] = useState(false);
       const [failure, setFailure] = useState('');
       const logRef = useRef(null);
+
+      // v2-C（2026-11-21）多会话：一个全局会话列表，与主界面 4 大页签无关。
+      // conversationId 带进 /assistant/reply 才会落盘；不带则维持 MVP「不落盘」。
+      const [conversationId, setConversationId] = useState('');
+      const [sessions, setSessions] = useState([]);
+      const [sessionsShown, setSessionsShown] = useState(false);
+      const [includeArchived, setIncludeArchived] = useState(false);
+      const [renamingId, setRenamingId] = useState('');
+      const [renameDraft, setRenameDraft] = useState('');
+      const [sessionError, setSessionError] = useState('');
+      const [hasSummary, setHasSummary] = useState(false);
+
+      // v2-G（2026-11-22）：面板自己一套深浅主题 + 用户拖过的大小。
+      // 初值都从模块记忆里取（关掉再打开、切页签重挂载，仍是上次那套），改完立刻写回。
+      const [theme, setTheme] = useState(() => assistThemeMemory);
+      const [size, setSize] = useState(() => ({ w: assistSizeMemory.w, h: assistSizeMemory.h }));
+      const panelRef = useRef(null);
+      const resizeStopRef = useRef(null);
+
+      /** 深/浅切换：先写模块记忆再改 state。按钮纯图标（月亮=转深色 / 太阳=转浅色）。 */
+      const toggleTheme = () => {
+        const next = theme === 'dark' ? 'light' : 'dark';
+        assistThemeMemory = next;
+        setTheme(next);
+      };
+
+      /** 摘掉拖拽期间挂在 document 上的两个监听（松手/卸载都走这里，防止 mousemove 泄漏）。 */
+      const stopResize = () => {
+        if (typeof resizeStopRef.current !== 'function') return;
+        const cleanup = resizeStopRef.current;
+        resizeStopRef.current = null;
+        cleanup();
+      };
+
+      // 组件卸载（收起面板、切页签）时必须清监听：否则拖到一半卸载会留下悬空的 mousemove。
+      useEffect(() => () => { stopResize(); }, []);
+
+      /**
+       * 左上角手柄按下：记起点 + 当前尺寸，挂 document 的 mousemove/mouseup。
+       * 面板是右下角对齐的（.sa-assist 的 align-items/justify-content:flex-end），
+       * 手柄却挪到了左上角，所以**往左拖 = 变宽、往上拖 = 变高**：
+       * newW = startW - dx，newH = startH - dy。右下角当锚点，放大不会把面板顶出边界。
+       * 上限按父容器实测：宽扣左右 padding 28px，高再扣上下 padding 与底部 38px 圆按钮 + 10px gap
+       * （合计 76px），不把 .sa-root 撑破；拿不到父容器就退回保守值，CSS 的 max/min 还会再兜一层。
+       */
+      const startResize = (event) => {
+        if (event === null || event === undefined) return;
+        if (Number(event.button) > 0) return;
+        const panel = panelRef.current;
+        if (!panel || typeof document === 'undefined') return;
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        const startX = Number(event.clientX) || 0;
+        const startY = Number(event.clientY) || 0;
+        const rect = typeof panel.getBoundingClientRect === 'function' ? panel.getBoundingClientRect() : null;
+        const startW = rect !== null && rect.width > 0 ? rect.width : size.w;
+        const startH = rect !== null && rect.height > 0 ? rect.height : size.h;
+        const boxEl = panel.parentElement;
+        const box = boxEl && typeof boxEl.getBoundingClientRect === 'function' ? boxEl.getBoundingClientRect() : null;
+        const maxW = box !== null && box.width > 0 ? box.width - 28 : 640;
+        const maxH = box !== null && box.height > 0 ? box.height - 76 : 760;
+        const onMove = (ev) => {
+          const dx = (Number(ev?.clientX) || 0) - startX;
+          const dy = (Number(ev?.clientY) || 0) - startY;
+          const next = {
+            w: clampAssistSize(startW - dx, ASSIST_SIZE_MIN.w, maxW),
+            h: clampAssistSize(startH - dy, ASSIST_SIZE_MIN.h, maxH),
+          };
+          assistSizeMemory = next;
+          setSize(next);
+        };
+        const onUp = () => {
+          // 松手时尺寸已经逐帧写进 assistSizeMemory 了，这里只负责摘监听。
+          stopResize();
+        };
+        stopResize();
+        resizeStopRef.current = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      };
+
+      /** 拉一次会话列表（归档是否一起列由 includeArchived 决定）。只读，失败只提示不打断。 */
+      const refreshSessions = (withArchived) => {
+        const flag = withArchived === true;
+        fetch(`${API}/assistant/session/list${flag ? '?includeArchived=1' : ''}`)
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) return;
+            setSessions(Array.isArray(result.sessions) ? result.sessions : []);
+          })
+          .catch(() => { /* 列表拉不到不影响问答 */ });
+      };
+
+      /** 展开面板时把会话列表拉一次（只拉一次，opening 后不重复抖动）。 */
+      useEffect(() => {
+        if (open !== true) return;
+        refreshSessions(includeArchived);
+      }, [open, includeArchived]);
+
+      /** 新开会话：清空本地对话并置空 conversationId（下一次发送会新建一条落盘会话）。 */
+      const startNewSession = () => {
+        setConversationId('');
+        setMessages([]);
+        setDraft('');
+        setFailure('');
+        setSessionError('');
+        setHasSummary(false);
+      };
+
+      /** 切到某个历史会话：从磁盘读回全文（含 summary 提示），并置 conversationId。 */
+      const openSession = (id) => {
+        if (busy) return;
+        const sid = String(id ?? '').trim();
+        if (sid === '') return;
+        fetch(`${API}/assistant/session/get?id=${encodeURIComponent(sid)}`)
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true || result.session === undefined) {
+              throw new Error('会话读不出来，可能已损坏。');
+            }
+            return result.session;
+          })
+          .then((session) => {
+            const list = Array.isArray(session.messages) ? session.messages : [];
+            setMessages(list.map((item) => ({
+              role: item.role === 'user' ? 'user' : 'assistant',
+              content: typeof item.content === 'string' ? item.content : '',
+              action: item.action !== null && typeof item.action === 'object' ? item.action : null,
+              actionState: null,
+              batchSelected: null,
+              batchExpanded: false,
+            })));
+            // 摘要行：有 summary 就在最前面插一条不可编辑的说明行（④ 拍板：显示小字「更早的对话已摘要」）
+            setHasSummary(typeof session.summary === 'string' && session.summary.trim() !== '');
+            setConversationId(sid);
+            setSessionsShown(false);
+            setSessionError('');
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
+
+      /** 改名：置 titleCustom=true（服务端拍板），成功后就地更新列表条目。 */
+      const commitRename = (id) => {
+        const sid = String(id ?? '').trim();
+        const title = renameDraft.trim();
+        if (sid === '' || title === '') { setRenamingId(''); return; }
+        fetch(`${API}/assistant/session/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ id: sid, title }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) throw new Error('改名没成功，稍后再试。');
+            return result;
+          })
+          .then(() => {
+            setRenamingId('');
+            setRenameDraft('');
+            refreshSessions(includeArchived);
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
+
+      /** 归档 / 取消归档：只改标记位（服务端不删磁盘），成功后刷新列表。 */
+      const toggleArchive = (id, archived) => {
+        const sid = String(id ?? '').trim();
+        if (sid === '') return;
+        fetch(`${API}/assistant/session/archive`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ id: sid, archived: archived === true }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) throw new Error('操作没成功，稍后再试。');
+            return result;
+          })
+          .then(() => {
+            // 归档了当前正在看的会话 → 切回「新会话」，避免显示已藏起来的会话
+            if (archived === true && sid === conversationId) {
+              setConversationId('');
+              setMessages([]);
+            }
+            refreshSessions(includeArchived);
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
 
       // 新消息进来 / 展开面板 / 从「思考中」回到回答时，把对话区滚到底。
       // 假 DOM 里没有 scrollHeight 数字，直接跳过，别让整页挂掉。
@@ -11981,13 +12397,32 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const context = buildAssistantContext(panelTab, getKnowledgeTitle);
         const payload = { messages: history.map((item) => ({ role: item.role, content: item.content })) };
         if (Object.keys(context).length > 0) payload.context = context;
-        fetch(`${API}/assistant/reply`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
-          // MVP 不落盘：只发当前这段历史。conversationId / persist 留给下一版，
-          // 这一版前端也刻意不带，免得让人误以为已经在服务端存了一份。
-          body: JSON.stringify(payload),
-        })
+        // v2-C：带上 conversationId 才落盘。没有就先建一条空会话（拿到 id 再发），
+        // 这样首条消息发送时后端就有会话可追加 + 自动命名。
+        const ensureSession = conversationId !== ''
+          ? Promise.resolve(conversationId)
+          : fetch(`${API}/assistant/session/new`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+              body: JSON.stringify({}),
+            })
+              .then(async (response) => {
+                const result = await response.json().catch(() => null);
+                if (result === null || result.ok !== true || result.session === undefined) {
+                  throw new Error('新建会话没成功，稍后再试。');
+                }
+                return String(result.session.id);
+              });
+        ensureSession
+          .then((sid) => {
+            setConversationId(sid);
+            payload.conversationId = sid;
+            return fetch(`${API}/assistant/reply`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+              body: JSON.stringify(payload),
+            });
+          })
           .then(async (response) => {
             const result = await response.json().catch(() => null);
             if (result === null) throw nonJsonError(response);
@@ -12016,6 +12451,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               batchSelected: batch === null ? null : (Array.isArray(batch.nodes) ? batch.nodes.map((item) => item.nodeId) : []),
               batchExpanded: false,
             }]));
+            // 会话已落盘/更新：刷新列表（首条消息后标题也会变成自动命名）
+            refreshSessions(includeArchived);
           })
           .catch((error) => {
             setFailure(String(error?.message ?? error));
@@ -12263,6 +12700,107 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         );
       };
 
+      /**
+       * 会话条（收起列表时）：显示当前会话标题 + 「我的会话」按钮在位（按钮在 head 里）。
+       * 没有 conversationId 就是「新会话」。
+       */
+      const renderSessionBarCurrent = () => {
+        const current = conversationId === ''
+          ? null
+          : sessions.find((item) => item.id === conversationId) ?? null;
+        const title = current !== null ? current.title : (messages.length === 0 ? '新会话' : '当前会话');
+        return h('div', { className: 'sa-asst-sessions', 'data-sa-asst-barbar': true },
+          h('span', { className: 'sa-asst-cur' },
+            title,
+            current !== null && current.messageCount > 0
+              ? h('span', { className: 'sa-asst-cur-sub' }, ` · ${current.messageCount} 条`)
+              : null,
+          ),
+          sessionError !== ''
+            ? h('span', { className: 'sa-muted', style: { color: 'var(--dsw-alias-state-error-primary)' } }, sessionError)
+            : null,
+        );
+      };
+
+      /**
+       * 会话列表（展开时）：全局列表（不按主界面 4 大页签分）。
+       * 每行可点开、改名（titleCustom）、归档/取消归档。归档项只在 includeArchived 时出现。
+       */
+      const renderSessionList = () => {
+        const rows = sessions.map((item) => {
+          const renaming = renamingId === item.id;
+          return h('div', {
+            key: `sa-asst-item-${item.id}`,
+            className: 'sa-asst-item',
+            'data-active': item.id === conversationId,
+            'data-archived': item.archived === true,
+          },
+            renaming
+              ? h('span', { className: 'sa-asst-rename' },
+                  h('input', {
+                    type: 'text',
+                    value: renameDraft,
+                    autoFocus: true,
+                    'aria-label': '会话新标题',
+                    onChange: (event) => setRenameDraft(String(event?.target?.value ?? '')),
+                    onKeyDown: (event) => {
+                      if (event.key === 'Enter') { event.preventDefault(); commitRename(item.id); }
+                      else if (event.key === 'Escape') { setRenamingId(''); setRenameDraft(''); }
+                    },
+                  }),
+                  h('button', { className: 'sa-btn primary', type: 'button', onClick: () => commitRename(item.id) }, '存'),
+                  h('button', { className: 'sa-btn', type: 'button', onClick: () => { setRenamingId(''); setRenameDraft(''); } }, '取消'),
+                )
+              : h('span', {
+                  className: 'sa-asst-item-title',
+                  title: '点开这条会话',
+                  onClick: () => openSession(item.id),
+                }, item.title),
+            renaming
+              ? null
+              : h('span', { className: 'sa-asst-item-meta' },
+                  `${item.messageCount} 条`),
+            renaming
+              ? null
+              : h('span', { className: 'sa-asst-item-acts' },
+                  h('button', {
+                    className: 'sa-btn', type: 'button', title: '改名',
+                    onClick: (event) => { event.stopPropagation(); setRenamingId(item.id); setRenameDraft(item.title); },
+                  }, '改名'),
+                  item.archived === true
+                    ? h('button', {
+                        className: 'sa-btn', type: 'button', title: '取消归档，放回列表',
+                        onClick: (event) => { event.stopPropagation(); toggleArchive(item.id, false); },
+                      }, '取消归档')
+                    : h('button', {
+                        className: 'sa-btn', type: 'button', title: '归档（只隐藏，不删磁盘，可切回）',
+                        onClick: (event) => { event.stopPropagation(); toggleArchive(item.id, true); },
+                      }, '归档'),
+                ),
+          );
+        });
+        return h('div', { className: 'sa-asst-list', 'data-sa-asst-list': true },
+          h('div', { className: 'sa-asst-list-foot' },
+            h('button', { className: 'sa-btn', type: 'button', onClick: startNewSession }, '＋ 新会话'),
+            h('label', { style: { marginLeft: 'auto', cursor: 'pointer' } },
+              h('input', {
+                type: 'checkbox',
+                checked: includeArchived,
+                onChange: (event) => setIncludeArchived(event?.target?.checked === true),
+                style: { marginRight: '4px' },
+              }),
+              '显示已归档',
+            ),
+          ),
+          rows.length === 0
+            ? h('div', { className: 'sa-asst-list-empty' }, '还没有会话，发一句话就会自动建一条。')
+            : rows,
+          sessionError !== ''
+            ? h('div', { className: 'sa-asst-list-empty', style: { color: 'var(--dsw-alias-state-error-primary)' } }, sessionError)
+            : null,
+        );
+      };
+
       return h('div', { className: 'sa-assist' },
         open
           ? h('div', {
@@ -12270,24 +12808,51 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               role: 'dialog',
               'aria-label': '学习助手',
               'data-sa-assist-panel': true,
+              // v2-G：主题标记挂在面板根上，深色那一套 --sa-assist-* 由 CSS 按这个属性覆盖。
+              'data-sa-assist-theme': theme,
+              ref: panelRef,
+              // 宽高由 state 给（拖拽改），CSS 里只留 min/max 兜底；这里不写任何颜色。
+              style: { width: `${size.w}px`, height: `${size.h}px` },
             },
               h('div', { className: 'sa-assist-head' },
                 h('strong', null, '学习助手'),
                 h('span', { className: 'sa-assist-hint' }, '粘贴题目或段落直接问'),
-                h('span', { className: 'sa-spacer' }),
                 h('button', {
                   className: 'sa-btn',
                   type: 'button',
-                  disabled: busy || messages.length === 0,
-                  onClick: clear,
-                }, '清空'),
+                  title: '新会话',
+                  'aria-label': '新会话',
+                  onClick: startNewSession,
+                }, h(AssistHeadIcon, { name: 'plus' })),
                 h('button', {
                   className: 'sa-btn',
                   type: 'button',
-                  title: '收起面板（对话不会丢，刷新才清空）',
+                  title: '我的会话',
+                  'aria-label': '我的会话',
+                  'aria-expanded': sessionsShown,
+                  onClick: () => { setSessionsShown((v) => v !== true); },
+                }, h(AssistHeadIcon, { name: 'list' })),
+                h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  // v2-G：纯图标深浅切换（无文字）。浅色面板显示月亮=去深色，深色面板显示太阳=回浅色。
+                  title: theme === 'dark' ? '切换浅色' : '切换深色',
+                  'aria-label': theme === 'dark' ? '切换浅色' : '切换深色',
+                  'data-sa-assist-theme-toggle': theme,
+                  onClick: toggleTheme,
+                }, h(AssistHeadIcon, { name: theme === 'dark' ? 'sun' : 'moon' })),
+                h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  title: '收起面板',
+                  'aria-label': '收起面板',
                   onClick: () => setOpen(false),
-                }, '收起'),
+                }, h(AssistHeadIcon, { name: 'chevron-down' })),
               ),
+              // 会话切换条（v2-C）：全局列表 + 归档开关。归档的默认隐藏，点开关可切回。
+              sessionsShown
+                ? renderSessionList()
+                : renderSessionBarCurrent(),
               h('div', {
                 className: 'sa-assist-log',
                 ref: logRef,
@@ -12295,15 +12860,26 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                 'aria-live': 'polite',
                 'data-sa-assist-log': true,
               },
+                // 摘要行（④ 拍板）：这个会话的早期消息已被摘要，显示一行小字提示
+                hasSummary
+                  ? h('div', { className: 'sa-assist-summary-line', 'data-sa-asst-summary': true },
+                      '（更早的对话已摘要）')
+                  : null,
                 messages.length === 0 && busy !== true
                   ? h('div', { className: 'sa-muted sa-assist-empty' },
-                      '把要问的题目、看不懂的段落或课件文字贴进来，我给出解答。对话只存在这层界面里，刷新或关掉就清空。')
+                      '把要问的题目、看不懂的段落或课件文字贴进来，我给出解答。对话会存进「我的会话」，随时切回。')
                   : messages.map((item, index) => h('div', {
                       key: `sa-assist-${index}`,
                       className: `sa-assist-msg ${item.role === 'user' ? 'user' : 'assistant'}`,
                     },
                       h('div', { className: 'sa-assist-who' }, item.role === 'user' ? '我' : '助手'),
-                      h('div', { className: 'sa-assist-bubble' }, item.content),
+                      h('div', { className: 'sa-assist-bubble' }, item.role === 'user'
+                        // v2-F（2026-11-22）：助手回复走渲染器（Markdown/公式不再裸露）；
+                        // 用户自己的话**保持纯文本**：`mixedTextNodes` 会把落单的 `$` 整个剥掉
+                        // （:8342-8343 为「截断留半个 $」设计），贴一段「价格 $5」「变量 $x」就会
+                        // 少一个字符；渲染是给模型输出做的，不该改用户原话。
+                        ? item.content
+                        : renderAssistantText(item.content, `sa-assist-${index}`)),
                       // 改掌握度预览的确认行（v2-B 卡）：只有后端回了 proposedAction 才出现。
                       // 文案只说状态、不替用户下结论：pending=还没落库，done=已落库，cancelled=已取消。
                       // v2-B2（2026-11-21）：范围批量（`set-mastery-batch`）走可勾选清单那一套，
@@ -12368,6 +12944,15 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                   }, busy ? '思考中…' : '发送'),
                 ),
               ),
+              // v2-G 补丁（2026-11-23）：左上角拖拽手柄。放在面板最外层、压住面板左上角（z-index:3），
+              // 面板锚右下角，往左/上拖才在屏幕内变大；不带文字/图标语义（无障碍上当装饰元素处理）。
+              h('div', {
+                className: 'sa-assist-resize',
+                onMouseDown: startResize,
+                title: '拖动调整面板大小',
+                'aria-hidden': true,
+                'data-sa-assist-resize': true,
+              }),
             )
           : null,
         h('button', {
@@ -12968,6 +13553,10 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         plainMathNodes,
         plainMathLineNodes,
         mixedTextNodes,
+        // 浮层气泡排版（v2-F，2026-11-22）：纯函数，测试直接验「**粗体** / 公式 / 列表」三种产出，
+        // 不必靠重启宿主看气泡；组件里只多一次调用，渲染口径全在这个函数里。
+        renderAssistantText,
+        listNode,
         backtickNodes,
         MATH_INLINE_STYLE,
         latexRender,

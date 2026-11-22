@@ -6,8 +6,11 @@
  *   1. **绝不真打网络**：整体桩 `deps.assistantChat` 或只换网络层的 `deps.assistantFetch`，
  *      默认的 magpie 通道在这份测试里一次都不会被真的调用。
  *   2. **密钥不泄露**：从临时凭据文件读出来的假密钥，不能出现在响应、日志、detail 里。
- *   3. **MVP 不落盘**：每个成功用例前后对数据目录做全量快照，必须一字不差、不多一个文件。
- *   4. **预留字段只收不用**：`conversationId` / `persist` 带着也照常工作，但不产生任何文件。
+ *   3. **MVP 不落盘**：不带 `conversationId` 时，每个成功用例前后对数据目录做全量快照，
+ *      必须一字不差、不多一个文件。
+ *   4. **落盘开关是 conversationId**（v2-C，2026-11-21）：不带 conversationId 一律不落盘；
+ *      `persist` 是遗留字段、已不生效（带着也不会唤落盘）。带 conversationId 的落盘用例见
+ *      tests/http-assistant-session.test.js。
  *   5. **参数错误一律 400 `bad-request`**，且**不调用通道**（别让一次错参数白花额度）。
  *   6. **通道失败一律 502 `assistant-unavailable`**，detail 只留错误类型 / HTTP 码，
  *      不含用户原文全文。
@@ -229,15 +232,16 @@ test('POST /assistant/reply：正常多轮 → 200 reply，整段历史原样转
   }
 });
 
-test('POST /assistant/reply：conversationId / persist 带着也照常工作，但不产生任何文件', async () => {
+test('POST /assistant/reply：不带 conversationId 时（即使带遗留 persist:true）不产生任何文件', async () => {
   const server = await startServer({
     assistantChat: async () => ({ content: '收到' }),
   });
   try {
     const before = await snapshotDir(server.dir);
+    // v2-C（2026-11-21）起：conversationId 才是落盘开关；persist 是遗留字段、已不生效。
+    // 不带 conversationId → 仍维持 MVP 不落盘（persist:true 也唤不醒它）。
     const response = await jsonRequest(`${server.baseUrl}/assistant/reply`, {
       messages: [{ role: 'user', content: '你好' }],
-      conversationId: 'conv-abc-123',
       persist: true,
     });
     assert.equal(response.status, 200);
@@ -246,8 +250,8 @@ test('POST /assistant/reply：conversationId / persist 带着也照常工作，�
     assert.equal(result.reply, '收到');
 
     const after = await snapshotDir(server.dir);
-    assert.deepEqual(after, before, 'persist:true 这一版也不落盘');
-    assert.equal(after.some(([name]) => /assistant|conversation|chat/i.test(name)), false, '不许出现聊天记录文件');
+    assert.deepEqual(after, before, '不带 conversationId 一律不落盘');
+    assert.equal(after.some(([name]) => /助手会话/.test(name)), false, '不许出现 助手会话/ 目录');
   } finally {
     await server.close();
   }
