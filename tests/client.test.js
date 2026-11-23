@@ -2991,7 +2991,7 @@ test('mind zoom: fit, clamp, SVG geometry and per-course restoration',()=>{
  f.find(n=>n.type==='button'&&text(n)==='适应窗口').props.onClick();f=render();svg=f.find(n=>n.type==='svg');assert.ok(svg.props.width<=box.clientWidth&&svg.props.height<=box.clientHeight);
  f.find(n=>n.type==='button'&&text(n)==='100%').props.onClick();f=render();assert.equal(f.find(n=>n.type==='svg').props.width,w);
 });
-test('lecture entry: 点章名读该章讲义，展开/收起只归左边的箭头管（2026-10-29）',()=>{
+test('lecture entry: 点章名＝展开该层并读该章讲义，箭头仍专管展开/收起（2026-11-23 方案 C）',()=>{
  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
  // 章标签走大纲（`第${no}章 ${title}`），讲义表走 资料分析.json 的 lectures
  const docs={courses:{courses:[{id:'a',name:'A'}]},
@@ -3001,17 +3001,26 @@ test('lecture entry: 点章名读该章讲义，展开/收起只归左边的箭�
  const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
  // 讲义入口＝章名本身（左边那排「讲义 A/B/C」小按钮已删），按 title 认章按钮/章行
  const chapterBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('在右侧读'));
- const arrowBtn=f=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-arrow-btn'));
+ // 章层那颗箭头（按 aria-label 认「第1章 A」，别拿课程行的箭头充数）
+ const chapArrow=f=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-arrow-btn')
+   &&String(n.props?.['aria-label']??'').includes('第1章 A'));
  lib.resetKnowledgeUi();lib.readKnowledgeUi({treeCourseId:'a',courseId:'a'});
  function render(){probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));}
  const layout=f=>f.find(n=>n.props?.className==='sa-learning-layout');
  let f=render();
  assert.equal(layout(f).props['data-full-browser'],'false');
  assert.ok(chapterBtn(f),'紧凑目录里章名就是讲义入口');
- const expanded=arrowBtn(f).props['aria-expanded'];
+ assert.equal(chapArrow(f).props['aria-expanded'],false,'初始：章层是收起的');
  chapterBtn(f).props.onClick();f=render();
  assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'点章名要在右侧挂上该章讲义（沿用上次选过的档）');
- assert.equal(arrowBtn(f).props['aria-expanded'],expanded,'点章名不许顺手把左边展开状态也改了');
+ assert.equal(chapArrow(f).props['aria-expanded'],true,'方案 C：点章名要顺手把这一层展开（不再只读讲义）');
+ chapterBtn(f).props.onClick();f=render();
+ assert.equal(chapArrow(f).props['aria-expanded'],true,'已展开的章再点章名保持展开，不折叠（用户选①）');
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'再点一次仍读着这份讲义');
+ // 左箭头仍专管展开/收起：点一下收起来，讲义不动
+ chapArrow(f).props.onClick({stopPropagation(){}});f=render();
+ assert.equal(chapArrow(f).props['aria-expanded'],false,'左箭头照旧是纯 toggle：点一下收起');
+ assert.ok(f.some(n=>n.props?.title==='a/第01章-C.md'),'收层不该把右侧讲义收掉');
  // 完整浏览（树卡）里点章行同样要退回分栏阅读，否则正文渲染进被 CSS 藏起来的阅读栏
  f.find(n=>n.type==='button'&&text(n)==='展开完整目录').props.onClick();f=render();
  assert.equal(layout(f).props['data-full-browser'],'true');
@@ -3078,24 +3087,26 @@ test('lecture entry: 版本切换行在讲义正文上方，高亮跟着当前�
  assert.ok(f.some(n=>n.props?.title==='a/第01章-A.md'),'正文要换成 A 那份');
 });
 
-test('lecture entry: 没有讲义的章点了给说明卡（数电第 5–8 章还没生成）',()=>{
+test('lecture entry（方案 C）：无讲义的章点章名只展开，不弹「还没生成」说明卡',()=>{
  const probe=statefulClient(),lib=probe.half.DESCRIPTORS.internals;
  const docs={courses:{courses:[{id:'a',name:'A'}]},
   knowledgeNetwork:{nodes:[{id:'a1',name:'First point',courseId:'a',chapter:'第1章 A',section:'1.1'}]},
   knowledgeOutline:{courses:[{courseId:'a',chapters:[{no:1,title:'A',sections:[{no:'1.1',title:'S',subs:[]}]},
    {no:2,title:'B',sections:[{no:'2.1',title:'T',subs:[]}]}]}]},
   knowledgeAnalysis:{courses:[{courseId:'a',lectures:[{no:1,styles:[{key:'C',file:'a/第01章-C.md'}]}]}]}};
- const text=n=>(n.children||[]).filter(x=>typeof x==='string').join('');
- const deep=n=>{let s='';(function walk(x){if(typeof x==='string'){s+=x;return;}if(!x||typeof x!=='object')return;(x.children||[]).forEach(walk);})(n);return s;};
+ const chapArrow=f=>f.find(n=>n.type==='button'&&String(n.props?.className??'').includes('sa-compact-arrow-btn')
+   &&String(n.props?.['aria-label']??'').includes('第2章 B'));
  lib.resetKnowledgeUi();lib.readKnowledgeUi({treeCourseId:'a',courseId:'a'});
  const render=()=>{probe.begin();return probe.flat(lib.knowledgeTab({docs,initialView:'tree'}));};
  let f=render();
+ assert.equal(chapArrow(f).props['aria-expanded'],false,'初始：第2章是收起的');
  f.find(n=>n.type==='button'&&String(n.props?.title??'').includes('第2章 B')).props.onClick();f=render();
- const hint=f.find(n=>String(n.props?.className??'').includes('sa-lecture-empty'));
- assert.ok(hint,'没讲义的章要给说明卡');
- assert.ok(deep(hint).includes('还没生成'),'说明卡要讲清「还没生成」，别让人以为点了没反应');
- assert.ok(deep(hint).includes('第2章 B'),'说明卡标题要是章名');
+ assert.equal(chapArrow(f).props['aria-expanded'],true,'方案 C：无讲义的章点章名只展开，别让人以为点了没反应');
+ assert.ok(!f.some(n=>String(n.props?.className??'').includes('sa-lecture-empty')),
+   '不弹「讲义还没生成」空卡（2026-10-29 那张卡在章名路径上已取消）');
  assert.ok(!f.some(n=>n.props?.title==='a/第01章-C.md'),'不能顺手把别的章的讲义顶上来');
+ // 空卡组件本身不删：知识点详情卡里的章讲义入口仍走旧行为（只有有讲义时才出现，留作兜底）
+ assert.ok(fs.readFileSync(CLIENT_FILE,'utf8').includes('sa-lecture-empty'),'sa-lecture-empty 组件仍保留');
 });
 
 test('lecture entry: 列表/图视图的详情卡用章名当讲义入口（不写「读本章讲义」）',()=>{

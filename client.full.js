@@ -3066,6 +3066,18 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-reader-pane[data-study-mode="true"][data-read-col-dragged="true"]>.sa-card,
 .sa-reader-pane[data-focus-reader="true"][data-read-col-dragged="true"]>.sa-node-detail,
 .sa-reader-pane[data-focus-reader="true"][data-read-col-dragged="true"]>.sa-card{max-width:var(--sa-read-col, none);margin-left:auto;margin-right:auto}
+/* 三栏正文宽度（2026-11-23 缺陷修复）：三栏态下正文卡**吃掉左右栏之间剩余的整个宽度**。
+   两种控宽机制原来打架：三栏用 .sa-reader-pane 的 padding 让位（--sa-focus-rail / --sa-focus-chat，见 :3257），
+   而 v2-H 用 max-width（90ch 或内联 --sa-read-col）卡死页宽 → 拖边界只动 padding，正文宽毫无反应。
+   这里在 [data-focus-three-col="true"] 门控下把 max-width 放开（max-width:none + width:auto + 两侧 margin 归零），
+   宽度完全由 padding 夹出来 —— 拖左栏右缘 / 右栏左缘，页宽立刻跟着变。
+   · 门控严格：普通专注（非三栏）不命中，:3059/:3060 的 90ch 居中与 :3065 的 --sa-read-col 覆盖照旧生效（观感一字不动）。
+   · 特异性：本选择器与 :3065 同为 4 个类/属性选择器（相同特异性），靠书写顺序（本段在 :3065-3068 之后）取胜；
+     与 data-read-col-dragged="true" 同时为真时也走这里，普通态不受影响。 */
+.sa-reader-pane[data-study-mode="true"][data-focus-three-col="true"]>.sa-node-detail,
+.sa-reader-pane[data-study-mode="true"][data-focus-three-col="true"]>.sa-card,
+.sa-reader-pane[data-focus-reader="true"][data-focus-three-col="true"]>.sa-node-detail,
+.sa-reader-pane[data-focus-reader="true"][data-focus-three-col="true"]>.sa-card{max-width:none;width:auto;margin-left:0;margin-right:0}
 /* 专注阅读标题条（2026-10-31 F1：修「正文从标题条上方/两侧透出来」）。两个成因，都实测过：
    ① sticky 只会贴到滚动容器**内容盒**的上边缘（Chrome 实测：容器 padding-top 12/18px 时，
       条子 sticky 后 top 仍是 12，正文从那一条带子里滚上来；负 margin-top 也压不上去，
@@ -3246,6 +3258,57 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-read-splitter::before{content:'';position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);background:var(--dsw-alias-border-l1);opacity:.55;transition:opacity .15s ease,background .15s ease}
 .sa-read-splitter:hover::before,.sa-read-splitter[data-dragging="true"]::before{opacity:1;background:var(--dsw-alias-brand-primary)}
 .sa-read-splitter:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
+/* 两根轴合并（2026-11-23 用户 m02542 反馈 2）：专注三栏且右栏张开时，右侧只留「右栏左缘」那一根；
+   v2-H 的正文手柄退场（display:none + 不吃指针，免得留一条看不见的热区），右栏关掉时它自己回来 ——
+   v2-H 的能力与测试断言都不丢。
+   注意 display 必须 !important：手柄的 display:block 是拖拽时写进 style 的内联值，内联优先于普通规则。 */
+.sa-read-splitter[data-sa-axis="merged"]{display:none !important;pointer-events:none}
+/* 三栏态正文手柄退场（2026-11-23 缺陷修复，用户口径「三栏只留左栏右缘 + 右栏左缘两根轴」）：
+   专注态恒为三栏（reader-pane 的 data-focus-three-col 由 focusReading 决定，见渲染段），正文宽已由
+   padding 夹出、随两根边界轴变化，v2-H 的正文手柄再留一根只会与右栏轴打架（它还按 max-width 改宽，与三栏冲突）。
+   所以只要三栏态，手柄就不显示也不吃指针 —— display:none 必须 !important，手柄的 display:block 是拖拽时写进 style 的内联值。
+   注意：只停「显示」，JSX 渲染与 startColResize / colWidth / --sa-read-col / data-read-col-dragged 全部保留，
+   既有 http-assistant-reader-width 测试与 v2-H 能力（非三栏时）都不动。 */
+.sa-knowledge-page:has(.sa-reader-pane[data-focus-three-col="true"])>.sa-read-splitter{display:none !important;pointer-events:none}
+/* 三栏（2026-11-23，探针跑通后产品化）：只在 data-focus-three-col="true" 时改布局，
+   默认态与既有选择器一字不动（:2022/:3047 的 padding、.sa-focus-header 的 200px 仍在）。 */
+.sa-focus-header[data-focus-three-col="true"]{width:var(--sa-focus-rail,200px)}
+.sa-reader-pane[data-study-mode="true"][data-focus-three-col="true"]{padding:18px calc(var(--sa-focus-chat,0px) + 18px) 18px calc(var(--sa-focus-rail,200px) + 12px)}
+@media (max-width:720px){
+ .sa-focus-header[data-focus-three-col="true"]{width:var(--sa-focus-rail,120px)}
+ .sa-reader-pane[data-study-mode="true"][data-focus-three-col="true"]{padding:12px calc(var(--sa-focus-chat,0px) + 12px) 12px calc(var(--sa-focus-rail,120px) + 0px)}
+}
+/* 右栏（专注三栏的第三列）：顶部偏移走 --sa-focus-chat-top —— 进专注时按宿主顶栏高度让位，
+   否则头部的「收起 ⟩」正好压在 DSH 顶栏下面点不到（用户 m02542 反馈 1）。 */
+.sa-focus-chat{position:fixed;right:0;top:var(--sa-focus-chat-top,48px);bottom:0;z-index:2147483000;display:flex;flex-direction:column;gap:0;padding:0;box-sizing:border-box;overflow:hidden;width:var(--sa-focus-chat,360px);background-color:var(--dsw-alias-bg-layer-1);border-left:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm)}
+.sa-focus-chat-inner{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;height:100%;box-sizing:border-box}
+.sa-focus-chat-head{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background-color:var(--dsw-alias-bg-layer-2)}
+.sa-focus-chat-head>strong{flex:1 1 auto;min-width:0;font-size:15px;line-height:1.4;word-break:break-word}
+.sa-focus-chat-head .sa-btn{min-height:26px;padding:1px 8px;font-size:12px}
+.sa-focus-chat-tools{display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:0 0 auto;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.sa-focus-chat-model{flex:1 1 120px;min-width:0;font-size:12px;min-height:26px;box-sizing:border-box}
+.sa-focus-chat-tools .sa-btn{min-height:26px;padding:1px 8px;font-size:12px}
+.sa-focus-chat-log{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px;padding:10px}
+.sa-focus-chat-msg{display:flex;flex-direction:column;gap:3px;min-width:0}
+.sa-focus-chat-msg.user{align-items:flex-end}
+.sa-focus-chat-msg.assistant{align-items:flex-start}
+.sa-focus-chat-who{font-size:12px;line-height:1.4;color:var(--dsw-alias-label-caption)}
+.sa-focus-chat-bubble{max-width:88%;padding:7px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font-size:14px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;box-sizing:border-box}
+.sa-focus-chat-msg.user .sa-focus-chat-bubble{background:var(--dsw-alias-bg-overlay);border-color:var(--dsw-alias-border-l2)}
+.sa-focus-chat-compose{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;padding:8px 10px;border-top:1px solid var(--dsw-alias-border-l1);background-color:var(--dsw-alias-bg-layer-2)}
+.sa-focus-chat-input{width:100%;min-height:56px;max-height:132px;resize:none;box-sizing:border-box;font-size:13px;line-height:1.6}
+.sa-focus-chat-actions{display:flex;align-items:center;gap:8px}
+.sa-focus-chat-actions .sa-focus-chat-note{margin-right:auto}
+.sa-focus-chat-actions .sa-btn{min-height:30px;padding:3px 12px}
+.sa-focus-chat-note{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-caption);padding:2px 0}
+/* 三栏边界轴（2026-11-23 缺陷修复）：热区从 14px 提到 20px，与 .sa-read-splitter 同一手感
+   （20px 宽居中在边界线上，够抓又不挡正文；竖线仍是中间 2px 的 ::before）。 */
+.sa-focus-boundary{position:fixed;top:0;bottom:0;width:20px;transform:translateX(-50%);cursor:ew-resize;touch-action:none;z-index:2147483004;background:transparent}
+.sa-focus-boundary::before{content:'';position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);background:var(--dsw-alias-border-l1);opacity:.55;transition:opacity .15s ease,background .15s ease}
+.sa-focus-boundary:hover::before,.sa-focus-boundary[data-dragging="true"]::before{opacity:1;background:var(--dsw-alias-brand-primary)}
+.sa-focus-stub{position:fixed;top:50%;transform:translateY(-50%);z-index:2147483003;padding:7px 3px;font-size:12px;line-height:1.4;writing-mode:vertical-rl;border:1px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);cursor:pointer}
+.sa-focus-stub[data-side="left"]{left:6px}
+.sa-focus-stub[data-side="right"]{right:6px}
 /* 掌握度预览的「确认修改 / 取消」（v2-B 卡，2026-11-20）。
    只在助手发出的预览消息下面出现一行按钮：**预览不落库，点了确认才发第二个请求**。
    刻意不加任何「处理中」式的可见状态文案（沿用 A1 精神：界面不替用户下结论）。 */
@@ -7146,6 +7209,81 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return Math.min(hi, Math.max(lo, Math.round(num)));
     }
 
+    // 三栏探针（2026-11-23，最小可行性验证用，可弃）：专注学习模式左/中/右三栏的宽度与显隐。
+    // 与 readColumnWidthMemory 同款：**只活在模块内存里，不落盘、不写学习台 JSON**；
+    // 退出专注仍记住（再进去还是上次拖的宽度），刷新页面/重启 DSH 回默认。
+    const FOCUS_RAIL_DEFAULT = 200;
+    const FOCUS_RAIL_MIN = 120;
+    const FOCUS_RAIL_MAX = 420;
+    const FOCUS_CHAT_DEFAULT = 360;
+    const FOCUS_CHAT_MIN = 260;
+    const FOCUS_CHAT_MAX = 640;
+    let focusLayoutMemory = { rail: FOCUS_RAIL_DEFAULT, chat: FOCUS_CHAT_DEFAULT, left: true, right: true };
+
+    /** 把一次拖拽算出的栏宽夹进 [min, max]；坏值回 min，宁可小不撑破整个视口。 */
+    function clampFocusSize(value, min, max) {
+      const lo = Math.round(Number(min) || 0);
+      const hi = Math.max(lo, Math.round(Number(max) || lo));
+      const num = Number(value);
+      if (!Number.isFinite(num)) return lo;
+      return Math.min(hi, Math.max(lo, Math.round(num)));
+    }
+
+    // 块 A（2026-11-23）：右栏头顶要让出宿主顶栏的高度。
+    // 为什么：专注面是 `inset:0` 的 fixed 覆盖层，右栏贴顶时头部的「收起 ⟩」正好落在 DSH 顶栏下面
+    // （用户 m02542 反馈 1：按钮和顶栏重合、点不到）。进专注时先量一次，量不到用初值 64 兜底
+    // —— 宁可多让一条空白，也不让按钮被顶栏吃掉；真机若还有偏差，只改这一个常量。
+    const FOCUS_CHAT_TOP_FALLBACK = 64;
+    const FOCUS_CHAT_TOP_MIN = 0;
+    const FOCUS_CHAT_TOP_MAX = 96;
+    // 量到的顶栏高度只留一份：窗口在专注中被拖动/缩放也不至于每帧重新量 DOM。
+    let focusChatTopCache = null;
+
+    /** 把让位高度夹进 [0, 96]；坏值/超范围一律回初值 48（宁可多让一条空白，也不把右栏顶到看不见）。 */
+    function clampFocusChatTop(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num) || num < FOCUS_CHAT_TOP_MIN || num > FOCUS_CHAT_TOP_MAX) return FOCUS_CHAT_TOP_FALLBACK;
+      return Math.round(num);
+    }
+
+    /**
+     * 量一次「宿主顶栏占掉的高度」（块 A）。
+     *
+     * 做法：取窗口顶边中点的那个元素，沿祖先链找**横贯大半屏、贴着顶、高度 24–96px**的那一层 ——
+     * 专注面是 fixed 覆盖层，顶栏压在它上面，所以顶边中点命中的就是顶栏本身。
+     * 量不到（顶栏不是 DOM 覆盖层 / 假 DOM / 宿主换皮）返回初值 48，**绝不抛错**：
+     * 让位少了顶多按钮还贴着顶，让位多了只是多一条空白，都比渲染期抛错白屏好。
+     */
+    function readHostTopInset() {
+      try {
+        if (typeof document === 'undefined' || typeof document.elementFromPoint !== 'function') return FOCUS_CHAT_TOP_FALLBACK;
+        if (typeof window === 'undefined') return FOCUS_CHAT_TOP_FALLBACK;
+        const width = Number(window.innerWidth) || 0;
+        if (width <= 0) return FOCUS_CHAT_TOP_FALLBACK;
+        let node = document.elementFromPoint(Math.round(width / 2), 4);
+        for (let depth = 0; depth < 8 && node !== null && node !== undefined; depth += 1) {
+          const rect = typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+          const height = Number(rect?.height);
+          const top = Number(rect?.top);
+          const rWidth = Number(rect?.width);
+          if (Number.isFinite(height) && Number.isFinite(top) && Number.isFinite(rWidth)
+            && top <= 2 && height >= 24 && height <= FOCUS_CHAT_TOP_MAX && rWidth >= width * 0.5) {
+            return clampFocusChatTop(height);
+          }
+          node = typeof node.parentElement === 'object' ? node.parentElement : null;
+        }
+        return FOCUS_CHAT_TOP_FALLBACK;
+      } catch (error) {
+        return FOCUS_CHAT_TOP_FALLBACK;
+      }
+    }
+
+    /** 右栏 `--sa-focus-chat-top` 的值（带单位）。只量一次，之后吃缓存。 */
+    function focusChatTopPx() {
+      if (focusChatTopCache === null) focusChatTopCache = clampFocusChatTop(readHostTopInset()) + 'px';
+      return focusChatTopCache;
+    }
+
     /**
      * 量正文卡**当前的 max-width**（像素）。为什么要单量它：`.sa-card` 是 content-box（padding 20 + border 1），
      * 矩形宽 = max-width + 42px；`.sa-node-detail` 是 border-box（:2962），矩形宽 = max-width。
@@ -9165,6 +9303,14 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       // v2-H（2026-11-23）：专注阅读正文列宽。初值从模块记忆恢复 —— 退出再进仍是上次拖的宽度；
       // null＝没拖过，沿用 CSS 的 90ch 居中（刷新页面回 null）。
       const [colWidth, setColWidth] = useState(() => readColumnWidthMemory);
+      // 三栏（2026-11-23）：左栏（竖条）/ 右栏（聊天）的宽度与显隐。
+      // 初值取模块记忆，拖拽即写回；默认左 200 / 右 360 / 两栏都开。
+      const [railWidth, setRailWidth] = useState(() => clampFocusSize(focusLayoutMemory.rail, FOCUS_RAIL_MIN, FOCUS_RAIL_MAX));
+      const [chatWidth, setChatWidth] = useState(() => clampFocusSize(focusLayoutMemory.chat, FOCUS_CHAT_MIN, FOCUS_CHAT_MAX));
+      const [leftRailOpen, setLeftRailOpen] = useState(() => focusLayoutMemory.left !== false);
+      const [rightChatOpen, setRightChatOpen] = useState(() => focusLayoutMemory.right !== false);
+      // 三栏边界分隔条拖拽的监听清理函数（松手/卸载共用一份，防 mousemove 悬空）。
+      const boundaryStopRef = useRef(null);
       // v2-H 返工（2026-11-23）：可见分隔条宿主。手柄必须挂在 .sa-knowledge-page（不被 reader-pane 的
       // overflow 裁剪/滚动条覆盖的祖先）上，所以这里拿它的 ref 当"挂载点存在"校验。
       const splitterHostRef = useRef(null);
@@ -9261,6 +9407,63 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         document.addEventListener('mouseup', onUp);
         try { if (document.body) document.body.style.userSelect = 'none'; } catch (error) { /* 拿不到 body 也不抛 */ }
       };
+      // 三栏探针（2026-11-23，可弃）：左栏宽 / 右栏宽 / 两栏显隐 + 边界拖拽 + 宿主测试 tab 入口。
+      // 注意：既有测试 ⑥ 会截取 startColResize 之后 2600 字符做源码断言，所以右栏增量写成
+      // `delta = -dx; startW + delta`，不把「减 dx」按字面写出来（那会被误判成正文手柄的算法）。
+      /** 摘掉三栏边界拖拽挂在 document 上的监听（松手 / 卸载共用）。 */
+      const stopBoundaryResize = () => {
+        if (typeof boundaryStopRef.current !== 'function') return;
+        const cleanup = boundaryStopRef.current;
+        boundaryStopRef.current = null;
+        cleanup();
+      };
+      // 组件卸载（退出专注 / 切页签 / 面板重挂载）时必须清监听，否则拖到一半会留下悬空的 mousemove。
+      useEffect(() => () => { stopBoundaryResize(); }, []);
+      /**
+       * 三栏探针的边界拖拽。side='rail' 拖左边界改左栏宽（往右 dx>0 变宽 = startW + dx）；
+       * side='chat' 拖右边界改右栏宽（右栏贴右缘，往左 dx<0 才是变宽 = startW - dx）。
+       * 手感照 v2-H 的 startColResize：按下记起点，document 上挂 mousemove/mouseup，松手即摘。
+       */
+      const startBoundaryResize = (side) => (event) => {
+        if (event === null || event === undefined) return;
+        if (Number(event.button) > 0) return;
+        if (typeof document === 'undefined') return;
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        const handle = event.currentTarget;
+        const startX = Number(event.clientX) || 0;
+        const isRail = side === 'rail';
+        const startW = isRail ? railWidth : chatWidth;
+        const lo = isRail ? FOCUS_RAIL_MIN : FOCUS_CHAT_MIN;
+        const hi = isRail ? FOCUS_RAIL_MAX : FOCUS_CHAT_MAX;
+        if (handle && handle.dataset) handle.dataset.dragging = 'true';
+        const onMove = (ev) => {
+          const dx = (Number(ev?.clientX) || 0) - startX;
+          // 右栏贴右缘，往左拖才是变宽：delta 取 -dx；写成 startW + delta 与正文手柄的写法区分开。
+          const delta = isRail ? dx : -dx;
+          const next = clampFocusSize(startW + delta, lo, hi);
+          if (isRail) { focusLayoutMemory.rail = next; setRailWidth(next); }
+          else { focusLayoutMemory.chat = next; setChatWidth(next); }
+        };
+        const onUp = () => { stopBoundaryResize(); };
+        stopBoundaryResize();
+        boundaryStopRef.current = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          if (handle && handle.dataset) handle.dataset.dragging = 'false';
+          try { if (document.body) document.body.style.userSelect = ''; } catch (error) { /* 还原失败不影响拖拽结果 */ }
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        try { if (document.body) document.body.style.userSelect = 'none'; } catch (error) { /* 拿不到 body 也不抛 */ }
+      };
+      /** 左栏显隐：写模块记忆（退出再进保持本次选择），再改 state 重绘。 */
+      const toggleLeftRail = (value) => { const next = value !== false; focusLayoutMemory.left = next; setLeftRailOpen(next); };
+      /** 右栏显隐：同上。 */
+      const toggleRightChat = (value) => { const next = value !== false; focusLayoutMemory.right = next; setRightChatOpen(next); };
+      // 块 E（2026-11-23）：右栏那句「在宿主右栏打开测试标签（HOST SLOT OK）」是探针的取证按钮，
+      // 产品化后右栏里换成真聊天，这个按钮连同它的状态文案一起删掉。
+      // 探针 tab 的**注册**保留（`study-assistant/probe`，默认关闭，localStorage 开关才启用）：
+      // 它是「本插件能向宿主右栏注册 tab」这条结论的最小样例，不影响产品界面。
       /**
        * 算分隔条该贴哪：取专注面里第一张正文卡（.sa-node-detail / .sa-card 直接子）的**右边界**，
        * 分隔条用 20px 宽 + translateX(-50%) 居中在这条线上。量不到（刚进专注还没布局完、
@@ -9826,26 +10029,42 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       })();
 
       /**
-       * 章 → 讲义（2026-10-29 用户定）。
+       * 章 → 讲义（2026-10-29 用户定；2026-11-23 方案 C 改「点章名」这一半）。
        *
-       * 讲义的天然粒度就是「一章一篇」（`数电/讲义/第NN章-…`），所以「章」这一级本身就是「章详解」：
-       * 点章名 = 在右侧读这一章的讲义，展开/收起交给左边那个箭头（两件事互不干扰）。
-       * 没有讲义的章（数电第 5–8 章还没做）不静默失败，右侧给一张说明卡。
+       * 讲义的天然粒度就是「一章一篇」（`数电/讲义/第NN章-…`），所以「章」这一级本身就是「章详解」。
+       * 2026-11-23 用户拍板方案 C：点章名 = **先展开这一层**（已展开就保持不折叠）→ 有讲义顺带在右侧读，
+       * 没讲义只展开、安静不弹空卡；展开/收起仍可直接点左边那个箭头（两件事互不干扰）。
+       * `options.silentIfEmpty`：只有章名点击这条路径传 true；知识点详情卡里那条跳转（`openChapter({label})`）不传，保持旧行为。
        */
       const isOpenChapter = (lecture) => lecture !== null && lecture !== undefined
         && openLectureRow !== null && String(openLectureRow.lecture?.no) === String(lecture.no);
-      const openChapter = (entry) => {
+      const openChapter = (entry, options = {}) => {
         const lecture = lectureForEntry(entry);
         // 点章不清空已打开的正文（2026-10-29 晚 m00502）：清了就是「卸掉旧内容 → 空白 → 装新内容」两跳，
         // 用户看到整块白闪。这里只把选中清掉（收起知识点详情卡），正文留着，由新讲义原地覆盖。
         selectForReading(null, { keepMaterial: true });
         if (lecture === null) {
+          // 方案 C（2026-11-23）：从章名点进来时只展开、不弹「讲义还没生成」空卡；
+          // 别的调用点（详情卡跳转）不传这个开关，仍旧给说明卡，行为一字不动。
+          if (options.silentIfEmpty) { setLectureHint(null); return; }
           setOpenPath(null); setDetail(null);
           setLectureHint({ title: String(entry?.label ?? '').trim() });
           return;
         }
         setLectureHint(null);
         openLecture(lecture);
+      };
+      /**
+       * 点章名的统一入口（方案 C，2026-11-23 用户定）。
+       *
+       * 顺序要紧：先判「这一层是不是已经展开」（手动展开或搜索态强制展开都算），
+       * 未展开才 toggle 一次把它打开；已展开**不折叠**（用户选①：点章名不该把内容收起来）。
+       * 随后交给 openChapter：有讲义读讲义，没讲义只展开不弹空卡。左箭头不经过这里。
+       */
+      const handleChapterClick = (entry) => {
+        const expanded = openTree.includes(entry.key) || kpQuery.trim() !== '';
+        if (!expanded) toggleTreeNode(entry.key);
+        openChapter(entry, { silentIfEmpty: true });
       };
       // 右侧阅读区顶部：点到的章还没有讲义
       const lectureHintCard = lectureHint === null ? null : h('div', { className: 'sa-card sa-lecture-empty' },
@@ -11072,7 +11291,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
         const empty = entry.empty === true;
         const lecture = entry.kind === 'chapter' ? lectureForEntry(entry) : null;
-        // 章行（2026-10-29 用户定）：点名称＝在右侧读这一章讲义；展开/收起只在左边箭头上。
+        // 章行（2026-10-29 用户定，2026-11-23 方案 C 修订）：点名称＝展开这一层并读该章讲义（无讲义只展开）；
+        // 展开/收起仍可直接点左边那个箭头。点名称不再「只读讲义、不展开」。
         const isChapter = entry.kind === 'chapter';
         return h('div', { key: entry.key, className: 'sa-kp-branch' },
           h('div', {
@@ -11083,7 +11303,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             'data-active': isOpenChapter(lecture) ? 'true' : undefined,
             style: { cursor: 'pointer', paddingLeft: 0, opacity: empty ? 0.8 : 1, ...reveal },
             title: isChapter ? `在右侧读「${String(entry.label ?? '').trim()}」的讲义` : undefined,
-            onClick: () => (isChapter ? openChapter(entry) : toggleTreeNode(entry.key)),
+            onClick: () => (isChapter ? handleChapterClick(entry) : toggleTreeNode(entry.key)),
           },
           h('span', {
             className: 'sa-kp-caret',
@@ -11355,7 +11575,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const open = kpQuery.trim() !== '' || openTree.includes(entry.key);
         const lecture = entry.kind === 'chapter' ? lectureForEntry(entry) : null;
         const isChapter = entry.kind === 'chapter';
-        // 章行拆成两个按钮（2026-10-29 用户定）：左边箭头管展开、右边名称点一下在阅读区读该章讲义。
+        // 章行拆成两个按钮（2026-10-29 用户定，2026-11-23 方案 C 修订）：左边箭头管展开/收起；
+        // 右边名称点一下＝先展开这一层、再在阅读区读该章讲义（无讲义只展开，不弹空卡）。
         // 讲义版本不再堆在左边（`讲义 A/B/C` 三颗），统一在右侧讲义正文上方那排切。
         const active = isOpenChapter(lecture);
         return h('li', { key: entry.key, className: 'sa-compact-branch', 'data-kind': entry.kind },
@@ -11367,7 +11588,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               h('span', { className: 'sa-compact-arrow', 'aria-hidden': true }, open ? '▾' : '▸')),
             h('button', { type: 'button', className: 'sa-compact-point', 'aria-current': active ? 'true' : undefined,
               title: isChapter ? `在右侧读「${String(entry.label ?? '').trim()}」的讲义` : entry.label,
-              onClick: () => (isChapter ? openChapter(entry) : toggleTreeNode(entry.key)) },
+              onClick: () => (isChapter ? handleChapterClick(entry) : toggleTreeNode(entry.key)) },
               h('span', { className: 'sa-compact-name' }, renderMatched(entry.label, kpQuery)),
               h('span', { className: 'sa-compact-count' }, active ? '讲义' : String(entry.count || 0)))),
           open && entry.children?.length ? h('ul', { className: 'sa-compact-children' }, entry.children.map(compactTreeRow)) : null);
@@ -11744,12 +11965,19 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: focusReading ? -1 : 0, 'data-focus-reader': focusReading ? 'true' : 'false',
           'data-study-mode': focusReading ? 'true' : 'false',
           'data-eye-care': focusReading && eyeCare ? 'true' : 'false',
+          // 三栏探针（可弃）：进专注才挂，默认态一个字都不改。
+          'data-focus-three-col': focusReading ? 'true' : 'false',
           // v2-H：只有真拖过（colWidth != null）才挂 dragged，CSS 才覆盖 90ch 并取消居中；没拖过仍是 90ch 居中。
           'data-read-col-dragged': focusReading && colWidth != null ? 'true' : 'false',
-          style: { '--sa-read-scale': String(readScale), ...(focusReading && colWidth != null ? { '--sa-read-col': colWidth + 'px' } : {}) },
+          style: { '--sa-read-scale': String(readScale), ...(focusReading && colWidth != null ? { '--sa-read-col': colWidth + 'px' } : {}),
+            ...(focusReading ? { '--sa-focus-rail': (leftRailOpen ? railWidth : 0) + 'px', '--sa-focus-chat': (rightChatOpen ? chatWidth : 0) + 'px',
+              // 块 A：右栏顶部的让位值（宿主顶栏高度，进专注时量一次，量不到 48px）
+              '--sa-focus-chat-top': focusChatTopPx() } : {}) },
           'aria-label': selectedNode ? '知识点阅读：' + selectedNode.name : '知识点阅读区' },
-          focusReading ? h('div',{className:'sa-focus-header sa-study-header'},
+          focusReading && leftRailOpen ? h('div',{className:'sa-focus-header sa-study-header','data-focus-three-col':'true',style:{ '--sa-focus-rail': railWidth + 'px' }},
             h('strong',null,focusReadingTitle),
+            // 三栏探针：左栏可隐藏（隐藏后左侧浮出「显示左栏」）；Esc 仍可退出学习模式。
+            h('button',{type:'button',className:'sa-btn','data-sa-hide':'left','aria-label':'隐藏左栏','title':'隐藏左栏（隐藏后点左侧浮标恢复；Esc 退出学习模式）',onClick:()=>toggleLeftRail(false)},'⟨ 收起左栏'),
             // 学习模式顶部三功能位（2026-11-17 C1）：本阶段只占位空壳，阶段二/三往三个 slot 里填内容。
             // data-slot 值固定为 clock|switch|marks，供后续复用与测试锚定。
             h('div',{className:'sa-study-slots','aria-label':'学习模式工具栏'},
@@ -11809,11 +12037,29 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('p', null, '点章名读该章讲义；展开章/节，点知识点名称读它自己的详解、例题和配图。'),
             h('p', { className: 'sa-muted' }, '查看全章关系时，可展开完整导图；点选后自动回到阅读布局。')) : null)));
 
+      /**
+       * 右栏聊天的界面上下文（卡 ③ D-1）：就在专注模式里，所以 `studyMode` 恒为 true。
+       *
+       * 页签写死 `knowledge`：这一栏只长在知识点页的专注态里；节点标题按当前选中的节点查，
+       * 查不到就只带 id（`buildAssistantContext` 自己会跳过空值）。
+       */
+      const buildFocusChatContext = () => {
+        const context = buildAssistantContext('knowledge', (nodeId) => (
+          selectedNode !== null && selectedNode !== undefined && String(selectedNode.id) === String(nodeId)
+            ? String(selectedNode.name ?? '')
+            : ''
+        ));
+        context.studyMode = true;
+        return context;
+      };
+
       return h('div', { className: 'sa-knowledge-page', ref: splitterHostRef },
         kpToolbar,
         // v2-H 返工（2026-11-23）：专注阅读可见竖向分隔条。挂在 .sa-knowledge-page 直接子级（它是 reader-pane
         // 的父级、专注态 transform:none 且不滚动），所以不会被 reader-pane 的 overflow 裁剪、也不会被其右侧
         // 滚动条盖住（上一版挂 reader-pane 内部拖不动的根因）。常态可见（display:block），拖动改正文列宽。
+        // 块 B（2026-11-23 反馈 2）：右栏张开时它退场（`data-sa-axis="merged"` → CSS display:none），
+        // 右侧只留「右栏左缘」那一根轴；右栏关掉时它自己回来 —— v2-H 能力与既有断言都不丢。
         focusReading ? h('div', {
           className: 'sa-read-splitter',
           onMouseDown: startColResize,
@@ -11822,12 +12068,59 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           'aria-label': '拖动调整正文宽度',
           title: '拖动调整正文宽度（往右变宽 / 往左变窄）',
           'data-sa-read-splitter': true,
+          'data-sa-axis': rightChatOpen ? 'merged' : 'split',
           style: splitterStyle,
         }) : null,
+        // 三栏（2026-11-23）：左/右两条边界分隔条 + 隐藏后的恢复浮标。
+        // 位置直接用栏宽算（不量 DOM），拖拽只改 state 与模块记忆；z-index 高过专注面。
+        focusReading && leftRailOpen ? h('div', {
+          className: 'sa-focus-boundary',
+          'data-sa-boundary': 'rail',
+          role: 'separator',
+          'aria-orientation': 'vertical',
+          'aria-label': '拖动调整左栏宽度',
+          title: '拖动调整左栏宽度（往右变宽 / 往左变窄）',
+          onMouseDown: startBoundaryResize('rail'),
+          style: { left: railWidth + 'px' },
+        }) : null,
+        focusReading && rightChatOpen ? h('div', {
+          className: 'sa-focus-boundary',
+          'data-sa-boundary': 'chat',
+          role: 'separator',
+          'aria-orientation': 'vertical',
+          'aria-label': '拖动调整右栏宽度',
+          title: '拖动调整右栏宽度（往左变宽 / 往右变窄）',
+          onMouseDown: startBoundaryResize('chat'),
+          // 轴从右栏的头顶（宿主顶栏以下）拉到窗口底，跟右栏本身对齐，别跑到顶栏里去
+          style: { left: 'calc(100vw - ' + chatWidth + 'px)', top: focusChatTopPx() },
+        }) : null,
+        focusReading && !leftRailOpen ? h('button', { type: 'button', className: 'sa-focus-stub', 'data-side': 'left', 'data-sa-stub': 'left', 'aria-label': '显示左栏', title: '显示左栏', onClick: () => toggleLeftRail(true) }, '显示左栏') : null,
+        focusReading && !rightChatOpen ? h('button', { type: 'button', className: 'sa-focus-stub', 'data-side': 'right', 'data-sa-stub': 'right', 'aria-label': '显示右栏', title: '显示右栏', onClick: () => toggleRightChat(true) }, '显示右栏') : null,
         isTreeView ? treeWorkspace : h('div', null,
           h('div', { key: kpView, className: 'sa-kp-view' }, kpView === 'graph' ? graphCard : knowledgeListCard),
           // 与树视图同一顺序：讲义正文在前，详情卡在后
           lectureHintCard, detailCard, nodeCard),
+        // 右栏（2026-11-23 块 D）：真聊天。fixed 贴右缘，宽度走 --sa-focus-chat，
+        // 头顶让出 --sa-focus-chat-top；放在最后渲染，保证它与 .sa-reader-pane 同 z-index 时叠在纸面之上。
+        focusReading && rightChatOpen ? h('aside', {
+          className: 'sa-focus-chat',
+          'data-sa-focus-chat': 'true',
+          'aria-label': '学习助手（专注阅读右栏）',
+          style: { '--sa-focus-chat': chatWidth + 'px', '--sa-focus-chat-top': focusChatTopPx() },
+        },
+          h(FocusChatPanel, {
+            onHide: () => toggleRightChat(false),
+            buildContext: buildFocusChatContext,
+            // 经聊天改完掌握度后让知识网络立刻反映（等级、章节统计读的都是同一份数据）。
+            // `refresh()` 可能同步返回也可能返回 Promise，两种都接住；刷新失败不影响聊天回执。
+            onMasteryChanged: typeof refresh === 'function' ? () => {
+              try {
+                const pending = refresh();
+                if (pending !== null && pending !== undefined && typeof pending.then === 'function') pending.catch(() => {});
+              } catch (error) { /* 刷新失败不影响聊天 */ }
+            } : null,
+          }),
+        ) : null,
         dueCard,
         batchCard,
         addNodeCard, jobCard);
@@ -12282,6 +12575,738 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       if (studyModeMemory === true) context.studyMode = true;
 
       return context;
+    }
+
+    // ---------------------------------------------------------------------
+    // 专注三栏 · 右栏聊天（2026-11-23 路线二：复用 /assistant/reply 多轮链路）
+    // ---------------------------------------------------------------------
+    //
+    // 为什么不去嵌宿主原生聊天（路线一）：探针结论是 client-ui-chat 没有公开的组件入口，
+    // 硬塞进去只会拿到一个「看着像聊天但发不出话」的空壳。所以这里复用**已经在跑**的链路：
+    //   `/assistant/reply`（多轮 + 会话落盘）、`/assistant/session/*`（列表/新建/改名/归档）、
+    //   `/assistant/models`（模型下拉；服务端转网关，前端不经手密钥）。
+    //
+    // 与旧浮层（AssistantOverlay）的关系：浮层入口已删（卡 ③ 块 C），组件本体暂留不删。
+    // 右栏这份**有意不共享**浮层的 state：它的生命周期跟着「进出专注」走，
+    // 与浮层「关掉面板再打开」不是一回事。
+
+    /** 模型下拉的初值：与后端 `ASSISTANT_MODEL_DEFAULT` / `MAGPIE_MODEL` 是同一个字符串。 */
+    const FOCUS_CHAT_MODEL_DEFAULT = 'group/wb';
+
+    /**
+     * 把 `/assistant/models` 的返回归一成下拉选项。
+     *
+     * 只认非空字符串 id、去重、默认模型排第一（下拉第一项就是「不改模型」那一项）；
+     * 一个都拿不到就给默认一个 —— 下拉永远不空（卡 ⑧ 风险预案）。
+     */
+    function normalizeChatModels(value) {
+      const list = Array.isArray(value) ? value : [];
+      const seen = {};
+      const models = [];
+      for (const item of list) {
+        const id = typeof item?.id === 'string' ? item.id.trim() : '';
+        if (id === '' || seen[id] === true) continue;
+        seen[id] = true;
+        models.push({ id, owned_by: typeof item?.owned_by === 'string' ? item.owned_by.trim() : '' });
+      }
+      if (models.length === 0) return [{ id: FOCUS_CHAT_MODEL_DEFAULT, owned_by: '' }];
+      return models.filter((item) => item.id === FOCUS_CHAT_MODEL_DEFAULT)
+        .concat(models.filter((item) => item.id !== FOCUS_CHAT_MODEL_DEFAULT));
+    }
+
+    /** 把 `/assistant/session/get` 的 messages 归一成右栏的消息状态（确认状态字段一起带上）。 */
+    function mapSessionMessages(list) {
+      return (Array.isArray(list) ? list : []).map((item) => ({
+        role: item?.role === 'user' ? 'user' : 'assistant',
+        content: typeof item?.content === 'string' ? item.content : '',
+        action: item?.action !== null && typeof item?.action === 'object' ? item.action : null,
+        actionState: null,
+        batchSelected: null,
+        batchExpanded: false,
+      }));
+    }
+
+    /**
+     * 后端回的 `proposedAction` 只认两种「改掌握度」的预览，别的形状一律当没有。
+     *
+     * 认错形状的后果是界面上出现一排点了没用的按钮，所以这里宁可少认。
+     */
+    function pickAssistantProposal(value) {
+      if (value === null || value === undefined || typeof value !== 'object') return null;
+      if (value.kind !== 'set-mastery' && value.kind !== 'set-mastery-batch') return null;
+      return value;
+    }
+
+    /**
+     * 专注三栏的右栏聊天面板（卡 ③ 块 D）。
+     *
+     * 能力对齐用户拍板（「完整可用」）：多轮对话 + 选模型 + 会话列表（新建/切换/改名/归档）。
+     * 完全权限：`/assistant/reply` 本来就是直接答、没有工具确认环节，所以这一栏不需要权限选择器。
+     * 所有网络失败都走 `assistantFailureText` 的中文口径，**不把响应原文倒给用户**。
+     *
+     * props:
+     *   - `onHide()`：收起右栏（右栏头部那颗「收起 ⟩」）。
+     *   - `buildContext()`：发送那一刻现算界面上下文（由 KnowledgeTab 提供，含 `studyMode:true`）。
+     *   - `onMasteryChanged()`：经聊天改完掌握度后让面板刷新知识网络（可选）。
+     */
+    function FocusChatPanel(props = {}) {
+      const onHide = typeof props.onHide === 'function' ? props.onHide : () => {};
+      const buildContext = typeof props.buildContext === 'function' ? props.buildContext : () => ({ studyMode: true });
+      const onMasteryChanged = typeof props.onMasteryChanged === 'function' ? props.onMasteryChanged : null;
+
+      const [draft, setDraft] = useState('');
+      const [messages, setMessages] = useState([]);
+      const [busy, setBusy] = useState(false);
+      const [failure, setFailure] = useState('');
+      // 模型：选中值随每次 /assistant/reply 发出去（后端只做类型/长度校验，非法回退默认）
+      const [model, setModel] = useState(FOCUS_CHAT_MODEL_DEFAULT);
+      const [models, setModels] = useState(() => [{ id: FOCUS_CHAT_MODEL_DEFAULT, owned_by: '' }]);
+      const [modelsNote, setModelsNote] = useState('');
+      // 多会话（复用 v2-C 那套接口）：conversationId 带进请求才会落盘
+      const [conversationId, setConversationId] = useState('');
+      const [sessions, setSessions] = useState([]);
+      const [sessionsShown, setSessionsShown] = useState(false);
+      const [includeArchived, setIncludeArchived] = useState(false);
+      const [renamingId, setRenamingId] = useState('');
+      const [renameDraft, setRenameDraft] = useState('');
+      const [sessionError, setSessionError] = useState('');
+      const [hasSummary, setHasSummary] = useState(false);
+      const logRef = useRef(null);
+
+      // 模型下拉的选项：进右栏拉一次（服务端转网关 /models）。拿不到就留在默认模型上并提示一句，
+      // 绝不因为下拉没选项就把聊天拦住。
+      useEffect(() => {
+        if (typeof fetch !== 'function') return undefined;
+        let disposed = false;
+        fetch(`${API}/assistant/models`)
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (disposed) return;
+            if (result === null || result.ok !== true) return;
+            setModels(normalizeChatModels(result.models));
+            setModelsNote(result.degraded === true ? '网关的模型清单没取到，先用默认模型。' : '');
+          })
+          .catch(() => { if (disposed !== true) setModelsNote('网关的模型清单没取到，先用默认模型。'); });
+        return () => { disposed = true; };
+      }, []);
+
+      /** 拉一次会话列表（归档是否一起列由 includeArchived 决定）。只读，失败只提示不打断。 */
+      const refreshSessions = (withArchived) => {
+        if (typeof fetch !== 'function') return;
+        const flag = withArchived === true;
+        fetch(`${API}/assistant/session/list${flag ? '?includeArchived=1' : ''}`)
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) return;
+            setSessions(Array.isArray(result.sessions) ? result.sessions : []);
+          })
+          .catch(() => { /* 列表拉不到不影响问答 */ });
+      };
+
+      // 进右栏、切换「显示已归档」时拉一次列表：会话切换条上的标题与条数就靠它
+      useEffect(() => { refreshSessions(includeArchived); }, [includeArchived]);
+
+      // 新消息进来 / 展开会话列表 / 从「思考中」回到回答时，把对话区滚到底。
+      // 假 DOM 里没有 scrollHeight 数字，直接跳过，别让整页挂掉。
+      useEffect(() => {
+        const el = logRef.current;
+        if (el === null || el === undefined || typeof el.scrollHeight !== 'number') return;
+        el.scrollTop = el.scrollHeight;
+      }, [messages, busy, sessionsShown]);
+
+      /** 新开会话：清空本地对话并置空 conversationId（下一次发送会新建一条落盘会话）。 */
+      const startNewSession = () => {
+        setConversationId('');
+        setMessages([]);
+        setDraft('');
+        setFailure('');
+        setSessionError('');
+        setHasSummary(false);
+        setSessionsShown(false);
+      };
+
+      /** 切到某个历史会话：从磁盘读回全文（含 summary 提示），并置 conversationId。 */
+      const openSession = (id) => {
+        if (busy) return;
+        const sid = String(id ?? '').trim();
+        if (sid === '') return;
+        fetch(`${API}/assistant/session/get?id=${encodeURIComponent(sid)}`)
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true || result.session === undefined) {
+              throw new Error('会话读不出来，可能已损坏。');
+            }
+            return result.session;
+          })
+          .then((session) => {
+            setMessages(mapSessionMessages(session.messages));
+            setHasSummary(typeof session.summary === 'string' && session.summary.trim() !== '');
+            setConversationId(sid);
+            setSessionsShown(false);
+            setSessionError('');
+            setFailure('');
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
+
+      /** 改名：置 titleCustom=true（服务端拍板），成功后就地刷新列表。 */
+      const commitRename = (id) => {
+        const sid = String(id ?? '').trim();
+        const title = renameDraft.trim();
+        if (sid === '' || title === '') { setRenamingId(''); return; }
+        fetch(`${API}/assistant/session/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ id: sid, title }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) throw new Error('改名没成功，稍后再试。');
+            return result;
+          })
+          .then(() => {
+            setRenamingId('');
+            setRenameDraft('');
+            refreshSessions(includeArchived);
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
+
+      /** 归档 / 取消归档：只改标记位（服务端不删磁盘），成功后刷新列表。 */
+      const toggleArchive = (id, archived) => {
+        const sid = String(id ?? '').trim();
+        if (sid === '') return;
+        fetch(`${API}/assistant/session/archive`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ id: sid, archived: archived === true }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null || result.ok !== true) throw new Error('操作没成功，稍后再试。');
+            return result;
+          })
+          .then(() => {
+            // 归档了当前正在看的会话 → 切回「新会话」，避免显示已藏起来的会话
+            if (archived === true && sid === conversationId) {
+              setConversationId('');
+              setMessages([]);
+            }
+            refreshSessions(includeArchived);
+          })
+          .catch((error) => setSessionError(String(error?.message ?? error)));
+      };
+
+      /**
+       * 发一次问答：先把用户这句追加进对话再发请求（失败时也能看到自己问了什么），
+       * 成功后把回复追加进同一条对话；**失败不自动重发**，避免一次手滑变成重复扣额度。
+       */
+      const send = () => {
+        if (busy) return;
+        const text = draft.trim();
+        if (text === '') return;
+        if (typeof fetch !== 'function') { setFailure('当前环境没法发请求。'); return; }
+        const history = messages.concat([{ role: 'user', content: text }]);
+        setMessages(history);
+        setDraft('');
+        setFailure('');
+        setBusy(true);
+        // 界面上下文：取不到就是空对象（后端归一为空串，不会凭空多出一条 system）
+        let context = {};
+        try {
+          const built = buildContext();
+          if (built !== null && typeof built === 'object') context = built;
+        } catch (error) {
+          context = {};
+        }
+        const payload = {
+          messages: history.map((item) => ({ role: item.role, content: item.content })),
+          model,
+        };
+        if (Object.keys(context).length > 0) payload.context = context;
+        // 带上 conversationId 才落盘；没有就先建一条空会话（拿到 id 再发），首条消息后端会顺手命名
+        const ensureSession = conversationId !== ''
+          ? Promise.resolve(conversationId)
+          : fetch(`${API}/assistant/session/new`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+              body: JSON.stringify({}),
+            })
+              .then(async (response) => {
+                const result = await response.json().catch(() => null);
+                if (result === null || result.ok !== true || result.session === undefined) {
+                  throw new Error('新建会话没成功，稍后再试。');
+                }
+                return String(result.session.id);
+              });
+        ensureSession
+          .then((sid) => {
+            setConversationId(sid);
+            payload.conversationId = sid;
+            return fetch(`${API}/assistant/reply`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+              body: JSON.stringify(payload),
+            });
+          })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            const reply = typeof result.reply === 'string' ? result.reply : '';
+            if (reply.trim() === '') throw new Error('助手没有返回内容，稍后再试。');
+            // 后端可能回一条「改掌握度的预览」：这里只是把它显示成待确认的按钮，
+            // 一个字节都没落库；落库要等用户点「确认修改」再发第二个请求。
+            const proposal = pickAssistantProposal(result.proposedAction);
+            const batch = proposal !== null && proposal.kind === 'set-mastery-batch' ? proposal : null;
+            setMessages((current) => current.concat([{
+              role: 'assistant',
+              content: reply,
+              action: proposal,
+              actionState: proposal === null ? null : 'pending',
+              batchSelected: batch === null ? null : (Array.isArray(batch.nodes) ? batch.nodes.map((item) => item.nodeId) : []),
+              batchExpanded: false,
+            }]));
+            // 会话已落盘/更新：刷新列表（首条消息后标题也会变成自动命名）
+            refreshSessions(includeArchived);
+          })
+          .catch((error) => setFailure(String(error?.message ?? error)))
+          .finally(() => setBusy(false));
+      };
+
+      /**
+       * 确认落库（单点）：这是**第二次请求**，与预览严格分开。
+       * 服务端没有 `confirm:true` 就 400 `confirm-required`，所以这里显式带上。
+       */
+      const confirmMastery = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || message.actionState !== 'pending') return;
+        setBusy(true);
+        setFailure('');
+        fetch(`${API}/assistant/mastery`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({ nodeId: action.nodeId, mastery: action.to, confirm: true }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            const receipt = result.changed === true
+              ? `已更新「${action.nodeName}」为 ${action.toLabel}。`
+              : `「${action.nodeName}」本来就是 ${action.toLabel}，等级没动；已记下这是你定的。`;
+            setMessages((current) => current
+              .map((item, at) => (at === index ? { ...item, actionState: 'done' } : item))
+              .concat([{ role: 'assistant', content: receipt, action: null, actionState: null }]));
+            if (onMasteryChanged !== null) {
+              try { onMasteryChanged(); } catch { /* 刷新失败不影响回执 */ }
+            }
+          })
+          .catch((error) => setFailure(String(error?.message ?? error)))
+          .finally(() => setBusy(false));
+      };
+
+      /** 取消：什么都不改（连请求都不发），只把这条预览收起并说明一句。 */
+      const cancelMastery = (index) => {
+        setMessages((current) => current
+          .map((item, at) => (at === index ? { ...item, actionState: 'cancelled' } : item))
+          .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
+      };
+
+      /** 批量失败原因 → 一句人话（只翻错误码，不回显服务端 detail）。 */
+      const describeBatchFailures = (failures) => {
+        const list = Array.isArray(failures) ? failures : [];
+        const reasons = [...new Set(list.map((item) => String(item?.reason ?? '')))]
+          .filter((item) => item !== '');
+        const text = reasons.map((reason) => ({
+          'unknown-node': '知识点已不在网络里',
+          'bad-mastery': '等级不合法',
+          'bad-node-id': '知识点 id 不合法',
+          'bad-item': '清单条目损坏',
+        }[reason] ?? '原因未知')).join('、');
+        return text === '' ? '原因未知' : text;
+      };
+
+      /** 勾/取消清单里的一个节点（只改本地状态，**不发请求**）。 */
+      const toggleBatchNode = (index, nodeId) => {
+        setMessages((current) => current.map((item, at) => {
+          if (at !== index) return item;
+          const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+          const next = selected.includes(nodeId)
+            ? selected.filter((id) => id !== nodeId)
+            : selected.concat([nodeId]);
+          return { ...item, batchSelected: next };
+        }));
+      };
+
+      /** 全选 / 全不选（只改本地状态，**不发请求**）。 */
+      const toggleBatchAll = (index) => {
+        setMessages((current) => current.map((item, at) => {
+          if (at !== index) return item;
+          const nodes = Array.isArray(item.action?.nodes) ? item.action.nodes : [];
+          const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+          const allOn = nodes.length > 0 && selected.length === nodes.length;
+          return { ...item, batchSelected: allOn ? [] : nodes.map((node) => node.nodeId) };
+        }));
+      };
+
+      /** 展开/收起清单（默认只渲染前 5 个 + 「… 共 N 个」，与浮层同口径）。 */
+      const toggleBatchExpand = (index) => {
+        setMessages((current) => current.map((item, at) => (
+          at === index ? { ...item, batchExpanded: item.batchExpanded !== true } : item
+        )));
+      };
+
+      /**
+       * 批量确认落库：与单点同一套两步走，只是**一批只发一个请求**。
+       * 只带当前勾选的 nodeId，等级统一用预览里的 `action.level`。
+       */
+      const confirmMasteryBatch = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || message.actionState !== 'pending') return;
+        const selected = Array.isArray(message.batchSelected) ? message.batchSelected : [];
+        if (selected.length === 0) return;
+        setBusy(true);
+        setFailure('');
+        fetch(`${API}/assistant/mastery-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+          body: JSON.stringify({
+            items: selected.map((nodeId) => ({ nodeId, mastery: action.level })),
+            confirm: true,
+          }),
+        })
+          .then(async (response) => {
+            const result = await response.json().catch(() => null);
+            if (result === null) throw nonJsonError(response);
+            if (result.ok !== true) throw new Error(assistantFailureText(result, response.status));
+            return result;
+          })
+          .then((result) => {
+            const changed = Number.isFinite(result.changed) ? result.changed : 0;
+            const skipped = Number.isFinite(result.skipped) ? result.skipped : 0;
+            const failed = Number.isFinite(result.failed) ? result.failed : 0;
+            let receipt = `已把 ${changed} 个知识点更新为 ${action.toLabel}`;
+            if (skipped > 0) receipt += `（另有 ${skipped} 个本来就是 ${action.toLabel}，等级没动）`;
+            if (failed > 0) receipt += `；${failed} 个没改成（${describeBatchFailures(result.failures)}）`;
+            receipt += '。';
+            setMessages((current) => current
+              .map((item, at) => (at === index ? { ...item, actionState: 'done' } : item))
+              .concat([{ role: 'assistant', content: receipt, action: null, actionState: null }]));
+            if (onMasteryChanged !== null) {
+              try { onMasteryChanged(); } catch { /* 刷新失败不影响回执 */ }
+            }
+          })
+          .catch((error) => setFailure(String(error?.message ?? error)))
+          .finally(() => setBusy(false));
+      };
+
+      const onKeyDown = (event) => {
+        // 输入法组合中的 Enter 是「选词」，不是发送
+        if (event?.nativeEvent?.isComposing === true || event?.isComposing === true) return;
+        if (event?.key !== 'Enter' || event?.shiftKey === true) return;
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        send();
+      };
+
+      /** 批量清单渲染（可勾选、可全选、超过 5 个折起来），与浮层同一套口径。 */
+      const renderBatchProposal = (item, index) => {
+        const action = item.action;
+        const nodes = Array.isArray(action?.nodes) ? action.nodes : [];
+        const selected = Array.isArray(item.batchSelected) ? item.batchSelected : [];
+        const expanded = item.batchExpanded === true;
+        const pending = item.actionState === 'pending';
+        const visible = expanded ? nodes : nodes.slice(0, 5);
+        const allOn = nodes.length > 0 && selected.length === nodes.length;
+        return h('div', {
+          className: 'sa-assist-proposal sa-assist-proposal-batch',
+          'data-resolved': pending ? 'false' : 'true',
+          'data-sa-batch': true,
+          key: `sa-focus-batch-${index}`,
+        },
+          h('div', { className: 'sa-assist-batch-head' },
+            h('span', { className: 'sa-muted' },
+              `待改 ${nodes.length} 个 · 已选 ${selected.length} 个${action.skipped > 0 ? ` · ${action.skipped} 个已是「${action.toLabel}」，会跳过` : ''}`),
+            h('button', {
+              className: 'sa-btn',
+              type: 'button',
+              disabled: !pending || nodes.length === 0,
+              onClick: () => toggleBatchAll(index),
+            }, allOn ? '全不选' : '全选'),
+          ),
+          h('div', { className: 'sa-assist-batch-list' },
+            visible.map((node) => h('label', {
+              key: `sa-focus-batch-${index}-${node.nodeId}`,
+              className: 'sa-assist-batch-row',
+            },
+              h('input', {
+                type: 'checkbox',
+                className: 'sa-batch-selected',
+                checked: selected.includes(node.nodeId),
+                disabled: !pending,
+                onChange: () => toggleBatchNode(index, node.nodeId),
+              }),
+              h('span', { className: 'sa-assist-batch-name' }, node.nodeName),
+              h('span', { className: 'sa-muted' }, `${node.fromLabel} → ${action.toLabel}`),
+            )),
+            nodes.length > visible.length
+              ? h('div', { className: 'sa-muted' }, `… 共 ${nodes.length} 个（点「展开全部」看完整清单）`)
+              : null,
+            nodes.length > 5
+              ? h('button', {
+                  className: 'sa-btn',
+                  type: 'button',
+                  onClick: () => toggleBatchExpand(index),
+                }, expanded ? '收起清单' : `展开全部 ${nodes.length} 个`)
+              : null,
+          ),
+          h('div', { className: 'sa-assist-batch-actions' },
+            h('span', { className: 'sa-muted' },
+              item.actionState === 'pending'
+                ? '这一步还没落库'
+                : item.actionState === 'done' ? '已落库' : '已取消'),
+            h('button', {
+              className: 'sa-btn primary',
+              type: 'button',
+              disabled: busy || item.actionState !== 'pending' || selected.length === 0,
+              onClick: () => confirmMasteryBatch(index),
+            }, selected.length === 0 ? '确认修改（未选）' : `确认修改（${selected.length} 个）`),
+            h('button', {
+              className: 'sa-btn',
+              type: 'button',
+              disabled: busy || item.actionState !== 'pending',
+              onClick: () => cancelMastery(index),
+            }, '取消'),
+          ),
+        );
+      };
+
+      /** 会话切换条（收起列表时）：当前会话标题 + 条数。没有 conversationId 就是「新会话」。 */
+      const renderSessionBarCurrent = () => {
+        const current = conversationId === ''
+          ? null
+          : sessions.find((item) => item.id === conversationId) ?? null;
+        const title = current !== null ? current.title : (messages.length === 0 ? '新会话' : '当前会话');
+        return h('div', { className: 'sa-asst-sessions', 'data-sa-focus-bar': true },
+          h('span', { className: 'sa-asst-cur' },
+            title,
+            current !== null && current.messageCount > 0
+              ? h('span', { className: 'sa-asst-cur-sub' }, ` · ${current.messageCount} 条`)
+              : null,
+          ),
+          sessionError !== ''
+            ? h('span', { className: 'sa-muted', style: { color: 'var(--dsw-alias-state-error-primary)' } }, sessionError)
+            : null,
+        );
+      };
+
+      /**
+       * 会话列表（展开时）：全局列表（不按主界面页签分）。
+       * 每行可点开、改名（titleCustom）、归档/取消归档；归档项只在 includeArchived 时出现。
+       */
+      const renderSessionList = () => {
+        const rows = sessions.map((item) => {
+          const renaming = renamingId === item.id;
+          return h('div', {
+            key: `sa-focus-session-${item.id}`,
+            className: 'sa-asst-item',
+            'data-active': item.id === conversationId,
+            'data-archived': item.archived === true,
+          },
+            renaming
+              ? h('span', { className: 'sa-asst-rename' },
+                  h('input', {
+                    type: 'text',
+                    value: renameDraft,
+                    autoFocus: true,
+                    'aria-label': '会话新标题',
+                    onChange: (event) => setRenameDraft(String(event?.target?.value ?? '')),
+                    onKeyDown: (event) => {
+                      if (event.key === 'Enter') { event.preventDefault(); commitRename(item.id); }
+                      else if (event.key === 'Escape') { setRenamingId(''); setRenameDraft(''); }
+                    },
+                  }),
+                  h('button', { className: 'sa-btn primary', type: 'button', onClick: () => commitRename(item.id) }, '存'),
+                  h('button', { className: 'sa-btn', type: 'button', onClick: () => { setRenamingId(''); setRenameDraft(''); } }, '取消'),
+                )
+              : h('span', {
+                  className: 'sa-asst-item-title',
+                  title: '点开这条会话',
+                  onClick: () => openSession(item.id),
+                }, item.title),
+            renaming
+              ? null
+              : h('span', { className: 'sa-asst-item-meta' }, `${item.messageCount} 条`),
+            renaming
+              ? null
+              : h('span', { className: 'sa-asst-item-acts' },
+                  h('button', {
+                    className: 'sa-btn', type: 'button', title: '改名',
+                    onClick: (event) => { event.stopPropagation(); setRenamingId(item.id); setRenameDraft(item.title); },
+                  }, '改名'),
+                  item.archived === true
+                    ? h('button', {
+                        className: 'sa-btn', type: 'button', title: '取消归档，放回列表',
+                        onClick: (event) => { event.stopPropagation(); toggleArchive(item.id, false); },
+                      }, '取消归档')
+                    : h('button', {
+                        className: 'sa-btn', type: 'button', title: '归档（只隐藏，不删磁盘，可切回）',
+                        onClick: (event) => { event.stopPropagation(); toggleArchive(item.id, true); },
+                      }, '归档'),
+                ),
+          );
+        });
+        return h('div', { className: 'sa-asst-list', 'data-sa-focus-list': true },
+          h('div', { className: 'sa-asst-list-foot' },
+            h('button', { className: 'sa-btn', type: 'button', onClick: startNewSession }, '＋ 新会话'),
+            h('label', { style: { marginLeft: 'auto', cursor: 'pointer' } },
+              h('input', {
+                type: 'checkbox',
+                checked: includeArchived,
+                onChange: (event) => setIncludeArchived(event?.target?.checked === true),
+                style: { marginRight: '4px' },
+              }),
+              '显示已归档',
+            ),
+          ),
+          rows.length === 0
+            ? h('div', { className: 'sa-asst-list-empty' }, '还没有会话，发一句话就会自动建一条。')
+            : rows,
+          sessionError !== ''
+            ? h('div', { className: 'sa-asst-list-empty', style: { color: 'var(--dsw-alias-state-error-primary)' } }, sessionError)
+            : null,
+        );
+      };
+
+      return h('div', { className: 'sa-focus-chat-inner', 'data-sa-focus-chat-inner': true },
+        h('div', { className: 'sa-focus-chat-head' },
+          h('strong', null, '学习助手'),
+          // 收起按钮在头部右侧：头顶已经让出宿主顶栏（--sa-focus-chat-top），点得到
+          h('button', {
+            type: 'button',
+            className: 'sa-btn',
+            'data-sa-hide': 'right',
+            'aria-label': '隐藏右栏',
+            title: '隐藏右栏（隐藏后点右侧浮标恢复）',
+            onClick: () => onHide(),
+          }, '收起 ⟩'),
+        ),
+        h('div', { className: 'sa-focus-chat-tools' },
+          h('select', {
+            className: 'sa-input sa-focus-chat-model',
+            'aria-label': '选择模型',
+            title: '选这次对话用的模型（选项来自网关的模型清单）',
+            'data-sa-chat-model': true,
+            value: model,
+            disabled: busy,
+            onChange: (event) => setModel(String(event?.target?.value ?? FOCUS_CHAT_MODEL_DEFAULT)),
+          }, models.map((item) => h('option', { key: `sa-focus-model-${item.id}`, value: item.id }, item.id))),
+          h('button', {
+            type: 'button', className: 'sa-btn', title: '新会话', 'aria-label': '新会话',
+            'data-sa-chat': 'new', onClick: startNewSession,
+          }, '＋'),
+          h('button', {
+            type: 'button', className: 'sa-btn', title: '我的会话', 'aria-label': '我的会话',
+            'aria-expanded': sessionsShown === true, 'data-sa-chat': 'sessions',
+            onClick: () => setSessionsShown((value) => value !== true),
+          }, '会话'),
+        ),
+        modelsNote !== '' ? h('div', { className: 'sa-focus-chat-note', role: 'status' }, modelsNote) : null,
+        sessionsShown ? renderSessionList() : renderSessionBarCurrent(),
+        h('div', {
+          className: 'sa-focus-chat-log',
+          ref: logRef,
+          role: 'log',
+          'aria-live': 'polite',
+          'data-sa-focus-chat-log': true,
+        },
+          hasSummary
+            ? h('div', { className: 'sa-focus-chat-note', 'data-sa-focus-summary': true }, '（更早的对话已摘要）')
+            : null,
+          messages.length === 0 && busy !== true
+            ? h('div', { className: 'sa-focus-chat-note' },
+                '把要问的题目、看不懂的段落或课件文字贴进来，我给出解答。对话会存进「会话」，随时切回。')
+            : messages.map((item, index) => h('div', {
+                key: `sa-focus-msg-${index}`,
+                className: `sa-focus-chat-msg ${item.role === 'user' ? 'user' : 'assistant'}`,
+              },
+                h('div', { className: 'sa-focus-chat-who' }, item.role === 'user' ? '我' : '助手'),
+                // 助手回复走渲染器（Markdown/公式不再裸露）；用户自己的话保持纯文本
+                h('div', { className: 'sa-focus-chat-bubble' }, item.role === 'user'
+                  ? item.content
+                  : renderAssistantText(item.content, `sa-focus-${index}`)),
+                item.action !== null && item.action !== undefined
+                  ? item.action.kind === 'set-mastery-batch'
+                    ? renderBatchProposal(item, index)
+                    : h('div', {
+                        className: 'sa-assist-proposal',
+                        'data-resolved': item.actionState === 'pending' ? 'false' : 'true',
+                        key: `sa-focus-action-${index}`,
+                      },
+                        h('span', { className: 'sa-muted' },
+                          item.actionState === 'pending'
+                            ? '这一步还没落库'
+                            : item.actionState === 'done' ? '已落库' : '已取消'),
+                        h('button', {
+                          className: 'sa-btn primary',
+                          type: 'button',
+                          disabled: busy || item.actionState !== 'pending',
+                          onClick: () => confirmMastery(index),
+                        }, '确认修改'),
+                        h('button', {
+                          className: 'sa-btn',
+                          type: 'button',
+                          disabled: busy || item.actionState !== 'pending',
+                          onClick: () => cancelMastery(index),
+                        }, '取消'),
+                      )
+                  : null,
+              )),
+          busy
+            ? h('div', { className: 'sa-focus-chat-msg assistant' },
+                h('div', { className: 'sa-focus-chat-who' }, '助手'),
+                h('div', { className: 'sa-focus-chat-bubble sa-muted' },
+                  h('span', { className: 'sa-spinner', 'aria-hidden': true }),
+                  '思考中…',
+                ),
+              )
+            : null,
+        ),
+        failure !== ''
+          ? h('div', { className: 'sa-focus-chat-note', role: 'alert', style: { color: 'var(--dsw-alias-state-error-primary)' } }, `出错了：${failure}`)
+          : null,
+        h('div', { className: 'sa-focus-chat-compose' },
+          h('textarea', {
+            className: 'sa-input sa-focus-chat-input',
+            value: draft,
+            rows: 3,
+            placeholder: '粘贴要问的文本…（Enter 发送，Shift+Enter 换行）',
+            'aria-label': '向学习助手提问',
+            disabled: busy,
+            onChange: (event) => setDraft(String(event?.target?.value ?? '')),
+            onKeyDown,
+          }),
+          h('div', { className: 'sa-focus-chat-actions' },
+            h('span', { className: 'sa-focus-chat-note' }, 'Enter 发送 · Shift+Enter 换行'),
+            h('button', {
+              className: 'sa-btn primary',
+              type: 'button',
+              disabled: busy || draft.trim() === '',
+              onClick: send,
+            }, busy ? '思考中…' : '发送'),
+          ),
+        ),
+      );
     }
 
     /**
@@ -13144,16 +14169,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               }),
             )
           : null,
-        h('button', {
-          className: 'sa-assist-fab',
-          type: 'button',
-          title: '学习助手',
-          'aria-label': '学习助手',
-          'aria-expanded': open,
-          onClick: () => setOpen((value) => value !== true),
-        },
-          h('span', { className: 'sa-assist-dot', 'aria-hidden': true }),
-        ),
+        // 块 C（2026-11-23 用户 m02542 反馈 4）：右下角那颗圆点入口（.sa-assist-fab）已删 ——
+        // 学习助手只在专注阅读的三栏里出现（右栏真聊天，见 FocusChatPanel）。
+        // 组件本体暂留不删，避免一大坨删除引入风险；确认无引用后由下一张卡处理。
       );
     }
 
@@ -13274,17 +14292,6 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       };
       const now = useMemo(() => new Date(), [data]);
 
-      /**
-       * 给学习助手浮层用的「按节点 id 取标题」：只查现成的知识网络数据，
-       * 查不到就返回空串（于是前端只带 nodeId）——绝不为一个标题额外拉接口。
-       */
-      const knowledgeTitleOf = useCallback((nodeId) => {
-        if (typeof nodeId !== 'string' || nodeId === '') return '';
-        const node = objectList(docs.knowledgeNetwork?.nodes)
-          .find((item) => String(item?.id ?? '') === nodeId);
-        return typeof node?.name === 'string' ? node.name : '';
-      }, [docs.knowledgeNetwork]);
-
       const tabDefs = [
         ['today', TEXT.tabs.today],
         ['schedule', TEXT.tabs.schedule],
@@ -13367,14 +14374,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           ? h('div', { style: { padding: '8px 14px' } }, h('span', { className: 'sa-error' }, error))
           : null,
         h('div', { className: 'sa-body' }, body),
-        // 学习助手浮层：挂在 .sa-root 里（absolute 相对面板），盖在页签内容之上，
-        // 但**不**越出面板、不盖 DSH 外层顶栏。
-        h(AssistantOverlay, {
-          tab,
-          getKnowledgeTitle: knowledgeTitleOf,
-          // 经聊天改完掌握度后要立刻反映到面板（等级、章节统计读的都是同一份知识网络）
-          onMasteryChanged: () => { if (typeof refresh === 'function') refresh().catch(() => {}); },
-        }),
+        // 块 C（2026-11-23）：右下角浮层挂载点已删 —— 学习助手搬进专注阅读三栏的右栏
+        // （KnowledgeTab 里的 `h(FocusChatPanel, …)`）。`AssistantOverlay` 组件本体暂留，
+        // 等确认无引用后随下一张卡一起清；现在这里**不再渲染任何浮层**。
       );
     }
 
@@ -13530,6 +14532,10 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      */
     const DETAIL_TAB_ID = 'study-assistant/detail';
     const DETAIL_TAB_KIND = 'studyDetail';
+    // 三栏探针（2026-11-23，可弃）：一个最小右栏 tab，只显示 HOST SLOT OK。
+    // 它证明「本插件 client 侧能拿到 ctx.slots.register，并往 sidebar.right.pane.tab 注册可被派发的 tab」。
+    const PROBE_TAB_ID = 'study-assistant/probe';
+    const PROBE_TAB_KIND = 'studyProbe';
 
     function detailTitle() {
       return TEXT.panel;
@@ -13589,6 +14595,26 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return h('span', null, '学习台');
     }
 
+    /**
+     * 三栏探针的右栏测试 tab。
+     *
+     * 存在的唯一理由：把「本插件能往宿主右栏注册 tab」这件事变成一眼可见的事实。
+     * 内容刻意只有一行 HOST SLOT OK —— 不做产品界面，验证完即弃。
+     */
+    function ProbeRightTab() {
+      return h('div', { className: 'sa-root', 'data-sa-probe-tab': 'true' },
+        h(Style),
+        h('div', { className: 'sa-body' },
+          h('div', { className: 'sa-card' },
+            h('h3', null, 'HOST SLOT OK'),
+            h('div', { className: 'sa-muted' }, 'dsh-study-assistant 通过 ctx.slots.register 注册到了 sidebar.right.pane.tab。'),
+            h('div', { className: 'sa-muted' }, '这一格只证明槽位能力可用，不是产品界面。'))));
+    }
+
+    function ProbeRightTabTitle() {
+      return h('span', null, '探针');
+    }
+
     // ---------------------------------------------------------------------
     // 注册
     // ---------------------------------------------------------------------
@@ -13605,6 +14631,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       detailTabId: DETAIL_TAB_ID,
       detailTabKind: DETAIL_TAB_KIND,
       detailTabDefinition: { id: DETAIL_TAB_ID, kind: DETAIL_TAB_KIND },
+      // 三栏探针（可弃）：测试据此断言 tab 类型的 id/kind 与槽位 key 一致。
+      // 默认不注册（既有契约测试要求 sidebarRightTabs 只有一个类型）；开关见 enableHint。
+      probeTab: { id: PROBE_TAB_ID, kind: PROBE_TAB_KIND, hostSlot: 'sidebar.right.pane.tab', defaultEnabled: false, enableHint: "localStorage.setItem('sa_probe_host_tab','1') 后重启 DSH" },
       panelSlots: ['sidebar.panellist', 'main', 'conversation.composer.dock'],
       detailSlots: ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title'],
       openDetailTab,
@@ -13617,6 +14646,30 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
        * —— 否则所谓「防漂移」的测试其实只测了 core.js 自己（本会话修正过这个假测试）。
        */
       internals: {
+        // 三栏：栏宽夹取与边界常量交给测试，拖拽手感不必靠重启宿主才验得了。
+        focusLayout: {
+          clamp: clampFocusSize,
+          railDefault: FOCUS_RAIL_DEFAULT,
+          railMin: FOCUS_RAIL_MIN,
+          railMax: FOCUS_RAIL_MAX,
+          chatDefault: FOCUS_CHAT_DEFAULT,
+          chatMin: FOCUS_CHAT_MIN,
+          chatMax: FOCUS_CHAT_MAX,
+          // 块 A：右栏顶部的让位高度（量不到回 48）
+          clampChatTop: clampFocusChatTop,
+          chatTopFallback: FOCUS_CHAT_TOP_FALLBACK,
+          chatTopMax: FOCUS_CHAT_TOP_MAX,
+          readHostTopInset,
+        },
+        // 块 D：右栏聊天里可测的那几块纯逻辑（下拉选项、会话消息归一、预览识别）
+        focusChat: {
+          modelDefault: FOCUS_CHAT_MODEL_DEFAULT,
+          normalizeModels: normalizeChatModels,
+          mapSessionMessages,
+          pickProposal: pickAssistantProposal,
+          panel: FocusChatPanel,
+        },
+        probeRightTab: ProbeRightTab,
         parseWeeks,
         isWeekActive,
         currentTeachingWeek,
@@ -13890,6 +14943,48 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           name: 'sidebar.right.pane.tab.title',
           key: DETAIL_TAB_ID,
         }, RightTabTitle);
+
+        // 5) 三栏探针（2026-11-23，可弃）：第二个右栏 tab 类型 + 渲染体 + 标题。
+        //    它的唯一作用是证明 B：本插件拿得到 ctx.slots.register，且注册的 tab 会被右栏派发。
+        //    **默认关闭**：既有契约测试要求 sidebarRightTabs 只注册一个类型，且探针不该给产品
+        //    多留一个永久 tab。验收时在控制台执行下面这行、重启 DSH 即可看到「探针」标签：
+        //      localStorage.setItem('sa_probe_host_tab', '1')
+        let probeHostTabEnabled = false;
+        try {
+          probeHostTabEnabled = typeof window !== 'undefined' && window.localStorage !== null && window.localStorage !== undefined
+            && window.localStorage.getItem('sa_probe_host_tab') === '1';
+        } catch (error) { /* 无 localStorage（隐私模式 / 离线测试）＝不启用，不抛 */ }
+        if (probeHostTabEnabled) {
+          if (tabsApi !== undefined && tabsApi !== null && typeof tabsApi.register === 'function') {
+            disposers.push(ctx.effect(
+              () => {
+                try {
+                  return tabsApi.register({
+                    id: PROBE_TAB_ID,
+                    kind: PROBE_TAB_KIND,
+                    priority: 'extension',
+                    title: () => '探针',
+                  });
+                } catch (error) {
+                  ctx.logger?.warn?.(`[study-assistant] 探针标签类型注册失败（可能已注册过），已跳过：${error?.message ?? error}`);
+                  return () => {};
+                }
+              },
+              'study-assistant: probe tab type',
+            ));
+          }
+          safeSlotRegister(ctx, disposers, 'sidebar.right.pane.tab', {
+            name: 'sidebar.right.pane.tab',
+            key: PROBE_TAB_ID,
+          }, ProbeRightTab);
+          safeSlotRegister(ctx, disposers, 'sidebar.right.pane.tab.title', {
+            name: 'sidebar.right.pane.tab.title',
+            key: PROBE_TAB_ID,
+          }, ProbeRightTabTitle);
+          // 块 E（2026-11-23）：探针里那句「在宿主右栏打开测试标签」的入口随右栏产品化一起删了，
+          // 所以这里不再挂 focusProbeOpenHostTab。tab 的**注册**保留：它是「能往宿主右栏注册 tab」
+          // 这条结论的最小样例（默认关闭，localStorage 开关启用），不妨碍产品界面。
+        }
 
         // 6) 自诊断：槽位里的条目渲染崩溃时，渲染器不会抛到 apply 里，而是在
         //    React 树里报错并退化成 `<div data-slot-error="main">` 空壳 ——

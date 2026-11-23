@@ -278,3 +278,78 @@ test('回归保护：整个测试期间 _工具/作业台状态.json 的 sha256 
   const stateAfter = await hashFile(REAL_STATE_FILE);
   assert.equal(stateAfter, stateBefore, '学习台插件不得改动已有作业台的状态文件');
 });
+
+/**
+ * 2026-11-23 K09：轮转曾按「文件名字典序」判新旧。
+ * 字典序里 '2'(0x32) < 'b'(0x62)，于是人手工留的 `名字.bak-20261028-190404` 会把插件自己写的
+ * `名字.20261122-233211` 全挤到队头，而删除从队头开始 → 最新那份被当成最旧删掉。
+ * 这两条用例把「混命名」和「老式名占满窗口」两个场景钉死。
+ */
+test('轮转：目录里混着老式 .bak- 名字时，留下的仍是最新的 keep 份', async () => {
+  const { dir, store, cleanup } = await makeStore();
+  try {
+    const file = DOC_FILES.tasks;
+    const backupDir = path.join(dir, BACKUP_DIR);
+    await fs.mkdir(backupDir, { recursive: true });
+
+    // 预置 10 份「人手工留的旧档」：.bak-202610xx-120000，字典序全排在 .2026… 之后
+    const legacyNames = [];
+    for (let i = 0; i < 10; i += 1) {
+      const name = `${file}.bak-202610${String(10 + i).padStart(2, '0')}-120000`;
+      legacyNames.push(name);
+      await fs.writeFile(path.join(backupDir, name), '{"legacy":true}\n', 'utf8');
+    }
+
+    // 连写 12 次，now 每次 +1 秒 → 新式备份名确定为 …100000 … …100011（不用 sleep）
+    for (let i = 0; i < 12; i += 1) {
+      const read = await store.readDocument('tasks');
+      const written = await store.writeDocument('tasks', {
+        ...read.doc,
+        tasks: [{ id: `t${i}`, title: `第 ${i} 版` }],
+      }, { expectedHash: read.hash, backupKeep: 10, now: new Date(2026, 10, 23, 10, 0, i) });
+      assert.equal(written.ok, true, `第 ${i} 次写失败：${written.reason}`);
+    }
+
+    const entries = await fs.readdir(backupDir);
+    const modern = entries
+      .filter((n) => n.startsWith(`${file}.`) && /^\d{8}-\d{6}$/u.test(n.slice(file.length + 1)))
+      .sort();
+
+    assert.equal(modern.length, 10, `应保留 10 份，实际 ${modern.length}`);
+    assert.equal(modern[0], `${file}.20261123-100002`, '留下的应是第 3 次写之后的 10 份');
+    assert.equal(modern.at(-1), `${file}.20261123-100011`);
+    assert.ok(modern.includes(`${file}.20261123-100011`), '最新那份被当成最旧删了');
+    assert.equal(entries.filter((n) => legacyNames.includes(n)).length, 10, '人工 .bak- 备份被插件删了');
+
+    // 留下来的必须是「写前版」，不是本次写入后的内容
+    const latest = JSON.parse(await fs.readFile(path.join(backupDir, `${file}.20261123-100011`), 'utf8'));
+    assert.equal(latest.tasks[0].title, '第 10 版');
+  } finally {
+    await cleanup();
+  }
+});
+
+test('轮转：老式 .bak- 已占满 keep 时，本次写入的备份必须活下来', async () => {
+  const { dir, store, cleanup } = await makeStore();
+  try {
+    const file = DOC_FILES.tasks;
+    const backupDir = path.join(dir, BACKUP_DIR);
+    await fs.mkdir(backupDir, { recursive: true });
+    for (let i = 0; i < 10; i += 1) {
+      await fs.writeFile(path.join(backupDir, `${file}.bak-202610${String(10 + i).padStart(2, '0')}-120000`), '{"legacy":true}\n', 'utf8');
+    }
+
+    const read = await store.readDocument('tasks');
+    const written = await store.writeDocument('tasks', { ...read.doc, tasks: [] }, {
+      expectedHash: read.hash,
+      backupKeep: 10,
+      now: new Date(2026, 10, 23, 10, 0, 0),
+    });
+    assert.equal(written.ok, true);
+
+    const entries = await fs.readdir(backupDir);
+    assert.ok(entries.includes(`${file}.20261123-100000`), '老式名占满窗口时，新备份被立刻删掉了');
+  } finally {
+    await cleanup();
+  }
+});
