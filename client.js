@@ -3058,6 +3058,14 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-knowledge-page:has([data-study-mode="true"]){animation:none!important;transform:none!important}
 .sa-reader-pane[data-focus-reader="true"]>.sa-node-detail,.sa-reader-pane[data-focus-reader="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
 .sa-reader-pane[data-study-mode="true"]>.sa-node-detail,.sa-reader-pane[data-study-mode="true"]>.sa-card{max-width:90ch;margin-left:auto;margin-right:auto}
+/* v2-H（2026-11-23）：用户拖过正文宽度后，用内联 --sa-read-col 覆盖上面的 90ch 限宽。
+   2026-11-23 用户反馈「一拖就贴左」→ 修正为始终居中（margin-left/right 都 auto），只改宽度不改对齐。
+   只在 data-read-col-dragged="true"（真拖过一次）时生效；未拖动仍是 :3059/:3060 的 90ch 居中，默认观感一字不动。
+   左侧 200px 竖条 .sa-focus-header 不动，改的只是正文列的 max-width。 */
+.sa-reader-pane[data-study-mode="true"][data-read-col-dragged="true"]>.sa-node-detail,
+.sa-reader-pane[data-study-mode="true"][data-read-col-dragged="true"]>.sa-card,
+.sa-reader-pane[data-focus-reader="true"][data-read-col-dragged="true"]>.sa-node-detail,
+.sa-reader-pane[data-focus-reader="true"][data-read-col-dragged="true"]>.sa-card{max-width:var(--sa-read-col, none);margin-left:auto;margin-right:auto}
 /* 专注阅读标题条（2026-10-31 F1：修「正文从标题条上方/两侧透出来」）。两个成因，都实测过：
    ① sticky 只会贴到滚动容器**内容盒**的上边缘（Chrome 实测：容器 padding-top 12/18px 时，
       条子 sticky 后 top 仍是 12，正文从那一条带子里滚上来；负 margin-top 也压不上去，
@@ -3232,6 +3240,12 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 .sa-assist-resize{position:absolute;left:0;top:0;width:14px;height:14px;display:flex;align-items:flex-start;justify-content:flex-start;padding:2px 0 0 2px;box-sizing:border-box;cursor:nwse-resize;touch-action:none;color:var(--sa-assist-fg-soft);background:transparent;z-index:3}
 .sa-assist-resize::after{content:'';width:8px;height:8px;border-left:2px solid currentColor;border-top:2px solid currentColor;border-top-left-radius:2px;opacity:.55}
 .sa-assist-resize:hover::after{opacity:1}
+/* v2-H 返工（2026-11-23）：专注阅读可见分隔条。挂在 .sa-knowledge-page 直接子级（不被 reader-pane 的 overflow 裁剪），
+   fixed 贴视口，left 由 JS 按正文卡右边界算；常态可见、20px 热区、中间一条 2px 竖线。 */
+.sa-read-splitter{position:fixed;top:0;bottom:0;width:20px;transform:translateX(-50%);cursor:ew-resize;touch-action:none;z-index:2147483003;background:transparent}
+.sa-read-splitter::before{content:'';position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-50%);background:var(--dsw-alias-border-l1);opacity:.55;transition:opacity .15s ease,background .15s ease}
+.sa-read-splitter:hover::before,.sa-read-splitter[data-dragging="true"]::before{opacity:1;background:var(--dsw-alias-brand-primary)}
+.sa-read-splitter:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
 /* 掌握度预览的「确认修改 / 取消」（v2-B 卡，2026-11-20）。
    只在助手发出的预览消息下面出现一行按钮：**预览不落库，点了确认才发第二个请求**。
    刻意不加任何「处理中」式的可见状态文案（沿用 A1 精神：界面不替用户下结论）。 */
@@ -7116,6 +7130,65 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
     const ASSIST_SIZE_DEFAULT = Object.freeze({ w: 360, h: 460 });
     const ASSIST_SIZE_MIN = Object.freeze({ w: 280, h: 320 });
     let assistSizeMemory = { w: ASSIST_SIZE_DEFAULT.w, h: ASSIST_SIZE_DEFAULT.h };
+    // v2-H（2026-11-23）：专注阅读正文列宽。null＝自动（沿用 CSS 的 90ch 居中，默认观感一字不动）；
+    // 数字＝用户拖过之后的像素宽度。和 assistSizeMemory 同款：**只活在模块内存里，不落盘、不写学习台 JSON**。
+    // 退出专注仍记住（再进去还是上次拖的宽度），刷新页面 / 重启 DSH 回 null＝90ch 居中。
+    let readColumnWidthMemory = null;
+    const READ_COLUMN_DEFAULT_CH = 90; // 现状上限（见 :3059/:3060 的 90ch），量不到真实列宽时按它换算起点
+    const READ_COLUMN_MIN = 360;       // 最窄像素宽：再窄正文就挤成一条，读不下去
+
+    /** 把一次拖拽算出的列宽夹进 [READ_COLUMN_MIN, 屏宽让位后的上限]；坏值（NaN/负数）一律回最窄，宁可小不撑破。 */
+    function clampReadColumn(value, max) {
+      const lo = READ_COLUMN_MIN;
+      const hi = Math.max(lo, Math.round(Number(max) || lo));
+      const num = Number(value);
+      if (!Number.isFinite(num)) return lo;
+      return Math.min(hi, Math.max(lo, Math.round(num)));
+    }
+
+    /**
+     * 量正文卡**当前的 max-width**（像素）。为什么要单量它：`.sa-card` 是 content-box（padding 20 + border 1），
+     * 矩形宽 = max-width + 42px；`.sa-node-detail` 是 border-box（:2962），矩形宽 = max-width。
+     * 拖拽起点若直接拿矩形宽当 max-width，`.sa-card` 会凭空多长 42px —— 分隔条跑在光标前面、拖起来发飘。
+     * 统一按 max-width 折算，两种卡都是 1:1 跟手。量不到（max-width:none / 刚进专注没布局）回 0，调用方退回矩形宽。
+     */
+    function measureReadCardMaxWidth(pane) {
+      try {
+        if (!pane || !pane.children || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return 0;
+        const kids = pane.children;
+        for (let i = 0; i < kids.length; i += 1) {
+          const kid = kids[i];
+          const cls = typeof kid?.className === 'string' ? kid.className.split(/\s+/) : [];
+          if (cls.indexOf('sa-node-detail') < 0 && cls.indexOf('sa-card') < 0) continue;
+          const maxWidth = parseFloat(window.getComputedStyle(kid).maxWidth);
+          if (Number.isFinite(maxWidth) && maxWidth > 0) return maxWidth;
+        }
+        return 0;
+      } catch (error) {
+        return 0; // 拿不到 computed style 就当没有：起点退回矩形宽，绝不抛错打断拖拽
+      }
+    }
+
+    /** 量专注面里第一张正文卡（`.sa-node-detail` / `.sa-card` 直接子节点）的真实像素宽。
+        这是 measureReadCardMaxWidth 拿不到 max-width 时的兜底口径；量不到回 0，调用方退回 90ch 换算。 */
+    function measureReadPaneColumnWidth(pane) {
+      try {
+        if (!pane || typeof pane.getBoundingClientRect !== 'function') return 0;
+        const kids = pane.children;
+        if (!kids || typeof kids.length !== 'number') return 0;
+        for (let i = 0; i < kids.length; i += 1) {
+          const kid = kids[i];
+          const cls = typeof kid?.className === 'string' ? kid.className.split(/\s+/) : [];
+          if (cls.indexOf('sa-node-detail') < 0 && cls.indexOf('sa-card') < 0) continue;
+          const rect = typeof kid.getBoundingClientRect === 'function' ? kid.getBoundingClientRect() : null;
+          const width = Number(rect?.width);
+          if (Number.isFinite(width) && width > 0) return width;
+        }
+        return 0;
+      } catch (error) {
+        return 0; // 量不到就当没有：起点退回换算值，绝不抛错打断拖拽
+      }
+    }
 
     /** 把一次拖拽算出的边长夹进 [min, max]；拿不到数字就退回 min（宁可小，也不撑破外层）。 */
     function clampAssistSize(value, min, max) {
@@ -9089,6 +9162,14 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const [browserCollapsed, setBrowserCollapsed] = useState(false);
       const readerRef = useRef(null);
       const [focusReading, setFocusReading] = useState(false);
+      // v2-H（2026-11-23）：专注阅读正文列宽。初值从模块记忆恢复 —— 退出再进仍是上次拖的宽度；
+      // null＝没拖过，沿用 CSS 的 90ch 居中（刷新页面回 null）。
+      const [colWidth, setColWidth] = useState(() => readColumnWidthMemory);
+      // v2-H 返工（2026-11-23）：可见分隔条宿主。手柄必须挂在 .sa-knowledge-page（不被 reader-pane 的
+      // overflow 裁剪/滚动条覆盖的祖先）上，所以这里拿它的 ref 当"挂载点存在"校验。
+      const splitterHostRef = useRef(null);
+      // 分隔条内联样式：left 由 computeSplitterStyle 按正文卡右边界算，focusReading 之外 display:none。
+      const [splitterStyle, setSplitterStyle] = useState({ left: '0px', display: 'none' });
       const focusReturnRef = useRef(null);
       // 正文字号倍率（2026-10-29）：专注阅读里的 A−/A+ 只改这个倍率，基准仍然是 DSH「内容字号」
       const [readScale, setReadScale] = useState(() => clampReadScale(restoredUi.readScale));
@@ -9125,6 +9206,99 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         studyModeMemory = true;
       };
       const exitFocusReading = () => { studyModeMemory = false; setFocusReading(false); };
+      // v2-H（2026-11-23）：专注阅读右侧列宽拖拽。手感照 v2-G 浮层手柄（startResize :12225 / stopResize :12207）：
+      // 按下记起点 + 当前列宽，document 上挂 mousemove/mouseup，松手与卸载都走 stopColResize 摘监听（不泄漏）。
+      const colResizeStopRef = useRef(null);
+      /** 摘掉拖拽期间挂在 document 上的监听（松手 / 卸载共用一份 cleanup，防止 mousemove 悬空）。 */
+      const stopColResize = () => {
+        if (typeof colResizeStopRef.current !== 'function') return;
+        const cleanup = colResizeStopRef.current;
+        colResizeStopRef.current = null;
+        cleanup();
+      };
+      // 组件卸载（退出专注、切页签、面板重挂载）时必须清监听：拖到一半卸载会留下悬空的 mousemove。
+      useEffect(() => () => { stopColResize(); }, []);
+
+      /**
+       * 右侧分隔条按下：左侧 200px 竖条不动，只把正文列往右铺/往左收 —— 往右拖 dx>0 变宽，newW = startW + dx。
+       * 起点优先量正文卡当前 **max-width**（见 measureReadCardMaxWidth：`.sa-card` 是 content-box，矩形宽比
+       * max-width 多 42px，直接用矩形宽会让正文比鼠标跑得快）；量不到退回矩形宽 / 记忆值 / 90ch 换算。
+       * 上限＝屏宽 − 左侧让位（宽屏 212 / 窄屏 132，跟随 :3146/:3147 响应式）− 右侧 18px 内边距 − 手柄 12px 余量。
+       */
+      const startColResize = (event) => {
+        if (event === null || event === undefined) return;
+        if (Number(event.button) > 0) return;
+        const pane = readerRef.current;
+        if (!pane || typeof document === 'undefined') return;
+        if (typeof event.preventDefault === 'function') event.preventDefault();
+        const handle = event.currentTarget;
+        const startX = Number(event.clientX) || 0;
+        const viewW = typeof window !== 'undefined' && Number(window.innerWidth) > 0 ? Number(window.innerWidth) : 0;
+        const leftPad = viewW > 0 && viewW <= 720 ? 132 : 212;
+        const maxW = Math.max(READ_COLUMN_MIN, viewW - leftPad - 36);
+        let startW = measureReadCardMaxWidth(pane);
+        if (!(startW > 0)) startW = measureReadPaneColumnWidth(pane);
+        if (!(startW > 0)) {
+          startW = readColumnWidthMemory != null
+            ? readColumnWidthMemory
+            : Math.min(maxW, Math.round(measureReadColumnWidth(dshContentFontSize()) * READ_COLUMN_DEFAULT_CH / 80));
+        }
+        if (handle && handle.dataset) handle.dataset.dragging = 'true';
+        const onMove = (ev) => {
+          const next = clampReadColumn(startW + ((Number(ev?.clientX) || 0) - startX), maxW);
+          readColumnWidthMemory = next;
+          setColWidth(next);
+        };
+        const onUp = () => { stopColResize(); };
+        stopColResize();
+        colResizeStopRef.current = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          if (handle && handle.dataset) handle.dataset.dragging = 'false';
+          try { if (document.body) document.body.style.userSelect = ''; } catch (error) { /* 还原失败不影响拖拽结果 */ }
+        };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        try { if (document.body) document.body.style.userSelect = 'none'; } catch (error) { /* 拿不到 body 也不抛 */ }
+      };
+      /**
+       * 算分隔条该贴哪：取专注面里第一张正文卡（.sa-node-detail / .sa-card 直接子）的**右边界**，
+       * 分隔条用 20px 宽 + translateX(-50%) 居中在这条线上。量不到（刚进专注还没布局完、
+       * 或正文卡不存在）就兜底贴视口右侧 innerWidth-30，至少能看见、能拖。
+       */
+      const computeSplitterStyle = () => {
+        const host = splitterHostRef.current;
+        const pane = readerRef.current;
+        if (!host || !pane) return { left: '0px', display: 'none' };
+        let right = 0;
+        const kids = pane.children || [];
+        for (let i = 0; i < kids.length; i += 1) {
+          const k = kids[i];
+          const cls = typeof k?.className === 'string' ? k.className.split(/\s+/) : [];
+          if (cls.indexOf('sa-node-detail') < 0 && cls.indexOf('sa-card') < 0) continue;
+          const r = typeof k.getBoundingClientRect === 'function' ? k.getBoundingClientRect() : null;
+          const w = Number(r?.width);
+          if (Number.isFinite(w) && w > 0) { right = r.right; break; }
+        }
+        if (!(right > 0)) right = window.innerWidth - 30; // 量不到就贴右侧兜底
+        return { left: Math.round(right) + 'px', display: 'block' };
+      };
+      // 分隔条位置跟随：进出专注、拖动改列宽（colWidth）、字号倍率（readScale，正文卡宽随之变）都要重算。
+      // 三个时机都算一遍 —— 同步一次（拖动当帧就跟手）、rAF 一次、60ms 一次（进专注时布局从 grid 变 fixed，
+      // 卡宽要等一帧才稳定），挂在 window resize 上覆盖面板伸缩。
+      useEffect(() => {
+        if (!focusReading) { setSplitterStyle({ left: '0px', display: 'none' }); return undefined; }
+        const recompute = () => setSplitterStyle(computeSplitterStyle());
+        recompute();
+        const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(recompute) : null;
+        const t = setTimeout(recompute, 60);
+        window.addEventListener('resize', recompute);
+        return () => {
+          if (raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
+          clearTimeout(t);
+          window.removeEventListener('resize', recompute);
+        };
+      }, [focusReading, colWidth, readScale]);
       // 卸载（切走页签 / 面板重挂载）时把快照清掉，避免「已退出专注、浮层还套着人设」
       useEffect(() => () => { studyModeMemory = false; }, []);
 
@@ -11570,7 +11744,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         h('section', { className: 'sa-reader-pane', ref: readerRef, tabIndex: focusReading ? -1 : 0, 'data-focus-reader': focusReading ? 'true' : 'false',
           'data-study-mode': focusReading ? 'true' : 'false',
           'data-eye-care': focusReading && eyeCare ? 'true' : 'false',
-          style: { '--sa-read-scale': String(readScale) },
+          // v2-H：只有真拖过（colWidth != null）才挂 dragged，CSS 才覆盖 90ch 并取消居中；没拖过仍是 90ch 居中。
+          'data-read-col-dragged': focusReading && colWidth != null ? 'true' : 'false',
+          style: { '--sa-read-scale': String(readScale), ...(focusReading && colWidth != null ? { '--sa-read-col': colWidth + 'px' } : {}) },
           'aria-label': selectedNode ? '知识点阅读：' + selectedNode.name : '知识点阅读区' },
           focusReading ? h('div',{className:'sa-focus-header sa-study-header'},
             h('strong',null,focusReadingTitle),
@@ -11633,8 +11809,21 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('p', null, '点章名读该章讲义；展开章/节，点知识点名称读它自己的详解、例题和配图。'),
             h('p', { className: 'sa-muted' }, '查看全章关系时，可展开完整导图；点选后自动回到阅读布局。')) : null)));
 
-      return h('div', { className: 'sa-knowledge-page' },
+      return h('div', { className: 'sa-knowledge-page', ref: splitterHostRef },
         kpToolbar,
+        // v2-H 返工（2026-11-23）：专注阅读可见竖向分隔条。挂在 .sa-knowledge-page 直接子级（它是 reader-pane
+        // 的父级、专注态 transform:none 且不滚动），所以不会被 reader-pane 的 overflow 裁剪、也不会被其右侧
+        // 滚动条盖住（上一版挂 reader-pane 内部拖不动的根因）。常态可见（display:block），拖动改正文列宽。
+        focusReading ? h('div', {
+          className: 'sa-read-splitter',
+          onMouseDown: startColResize,
+          role: 'separator',
+          'aria-orientation': 'vertical',
+          'aria-label': '拖动调整正文宽度',
+          title: '拖动调整正文宽度（往右变宽 / 往左变窄）',
+          'data-sa-read-splitter': true,
+          style: splitterStyle,
+        }) : null,
         isTreeView ? treeWorkspace : h('div', null,
           h('div', { key: kpView, className: 'sa-kp-view' }, kpView === 'graph' ? graphCard : knowledgeListCard),
           // 与树视图同一顺序：讲义正文在前，详情卡在后
