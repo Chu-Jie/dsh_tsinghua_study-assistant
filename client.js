@@ -700,6 +700,36 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 读接口（GET）：资料树扫描这类不走 `/state` 的只读接口用它。
+     * 非 JSON 一律按 `nonJsonError` 报（404 基本等于「插件还没重启」）。
+     */
+    async function getStudy(path, query = null) {
+      const suffix = query === null ? '' : `?${new URLSearchParams(query).toString()}`;
+      const response = await fetch(`${API}${path}${suffix}`, { headers: { Accept: 'application/json' } });
+      const result = await response.json().catch(() => null);
+      if (result === null) throw nonJsonError(response);
+      if (result.ok !== true) throw new Error(result.error ?? `HTTP ${response.status}`);
+      return result;
+    }
+
+    /**
+     * 写接口（POST）：`/materials/open`、`/materials/reveal` 这类一次性的动作。
+     *
+     * 与 `mutate` 的区别是**不抛错**：调用方要把 `path-not-allowed` / `spawn-failed`
+     * 翻成用户看得懂的话弹在面板里（卡 ⑥.6：不许静默失败）。
+     */
+    async function postStudy(path, body = {}) {
+      const response = await fetch(`${API}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [REQUEST_HEADER]: '1' },
+        body: JSON.stringify(body ?? {}),
+      });
+      const result = await response.json().catch(() => null);
+      if (result === null) return { ok: false, error: 'not-json', status: response.status };
+      return { status: response.status, ...result };
+    }
+
+    /**
      * 打开知识点时上报一次「学习行为」（v2-B 卡，2026-11-20）。
      *
      * 口径（与任务卡 ⑥ 前端一节对应）：
@@ -2677,6 +2707,30 @@ window.__ModuleLoader__.load({
 .sa-pill.soon{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}
 .sa-pill.later,.sa-pill.unknown{color:var(--dsw-alias-label-secondary)}
 .sa-pill.done{color:var(--dsw-alias-label-secondary)}
+/* 资料页五组四棵树（2026-11-25）：叶子卡片 = 文件名 + 一行详情，右侧「↗」提示点开是打开原件。
+   行距比默认 .sa-row 紧一档，一屏能多扫十几份；选中态用品牌色左边条，不做整行填色。 */
+.sa-mat-tree{display:flex;flex-direction:column}
+.sa-mat-group-row{font-weight:650;border-bottom:1px solid var(--dsw-alias-border-l1);padding-left:2px}
+.sa-mat-dir-row{border-bottom:1px dashed var(--dsw-alias-border-l1)}
+.sa-mat-leaf{align-items:flex-start;gap:8px;padding:7px 8px;border-bottom:0;border-radius:max(var(--dsw-radius-sm,4px),6px)}
+.sa-mat-leaf:hover{background:var(--dsw-alias-bg-layer-2)}
+.sa-mat-leaf.is-selected{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary)}
+.sa-mat-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px}
+.sa-mat-meta{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sa-mat-open-hint{flex:0 0 auto;font-size:14px;opacity:.5}
+.sa-mat-leaf:hover .sa-mat-open-hint{opacity:1;color:var(--dsw-alias-brand-primary)}
+.sa-mat-subject-row{cursor:pointer;padding:10px 4px;border-radius:max(var(--dsw-radius-sm,4px),6px)}
+.sa-mat-subject-row:hover{background:var(--dsw-alias-bg-layer-2)}
+.sa-mat-pages{display:flex;flex-wrap:wrap;gap:6px;padding:6px 0 8px}
+.sa-mat-page-chip{cursor:default;padding:1px 7px;font-size:13px;font-variant-numeric:tabular-nums}
+.sa-mat-pages>button.sa-mat-page-chip{cursor:pointer}
+.sa-mat-pages>button.sa-mat-page-chip:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.sa-mat-detail-name{font-size:17px;font-weight:650;line-height:1.5;word-break:break-all}
+.sa-mat-detail-path{font-size:13px;word-break:break-all;margin-top:2px}
+.sa-mat-detail-meta{font-size:13px;margin-top:6px;font-variant-numeric:tabular-nums}
+/* 文字链（2026-11-25）：不用按钮外框，只留品牌色与下划线，放在按钮旁当「次级入口」 */
+.sa-mat-link{background:transparent;border:0;padding:0 2px;font:inherit;font-size:14px;color:var(--dsw-alias-brand-primary);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.sa-mat-link:hover{opacity:.85}
 .sa-grid{display:grid;grid-template-columns:44px repeat(7,minmax(0,1fr));gap:6px;min-width:620px}
 .sa-cell{min-height:60px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);padding:5px;font-size:14px;overflow:hidden}
 .sa-cell.head{min-height:auto;border:0;text-align:center;color:var(--dsw-alias-label-secondary);padding:2px}
@@ -6729,6 +6783,463 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return out;
     }
 
+    // ══ 资料树（2026-11-25 卡：资料页浏览体验改造）══════════════════════════
+    //
+    // 卡片一行 = 文件名 + 一行尾部详情（大小 · 类型 · 页数 · 取字状态 · 修改时间）。
+    // 树的数据来自后端 `GET /materials/scan`（按学科扫磁盘，本机 6167 个文件），
+    // 不再是 `资料索引.json` 登记过的那 240 条 —— 后者只做「扫描失败时的兜底」。
+    //
+    // 这一段的渲染函数都是**纯函数**（只吃 scan + opts，不碰 React 状态），
+    // 测试和小样页可以直接调用它们验「四组顺序 / 0 组不显示 / >200 折叠 / _OCR 折成一行」。
+
+    /** 单目录一次最多平铺多少条（卡 ⑥.5）。 */
+    const MATERIAL_ROW_LIMIT = 200;
+    /** PPT 点一下 = 打开所在文件夹并选中（卡 ⑥.6）。 */
+    const MATERIAL_PPT_EXTS = Object.freeze(['.ppt', '.pptx', '.potx', '.pptm']);
+    const MATERIAL_STATE_LABELS = Object.freeze({
+      text: { label: '文字层', level: 'soon' },
+      ocr: { label: '已取字', level: 'later' },
+      pending: { label: '未取字', level: 'today' },
+      unindexed: { label: '未登记', level: 'today' },
+    });
+
+    function materialPathBaseName(filePath) {
+      const norm = String(filePath ?? '').replace(/\\/gu, '/');
+      const parts = norm.split('/').filter((part) => part !== '');
+      return parts.length > 0 ? parts[parts.length - 1] : norm;
+    }
+
+    function materialPathExt(filePath) {
+      const name = materialPathBaseName(filePath);
+      const dot = name.lastIndexOf('.');
+      return dot > 0 ? name.slice(dot).toLowerCase() : '';
+    }
+
+    function materialPathDir(filePath) {
+      const norm = String(filePath ?? '').replace(/\\/gu, '/');
+      const parts = norm.split('/').filter((part) => part !== '');
+      return parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+    }
+
+    /** `76 MB` / `19.5 KB` —— 卡 ⑥.4 的第一段。 */
+    function materialSizeText(size) {
+      const bytes = Number(size);
+      if (!Number.isFinite(bytes) || bytes <= 0) return null;
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
+      if (bytes >= 1024 * 1024) return `${Math.round(bytes / 1024 / 1024 * 10) / 10} MB`;
+      return `${Math.round(bytes / 1024 * 10) / 10} KB`;
+    }
+
+    function materialExtText(filePath) {
+      const ext = materialPathExt(filePath);
+      return ext === '' ? '文件' : ext.replace(/^\./u, '').toUpperCase();
+    }
+
+    function materialPagesText(pages) {
+      const count = Number(pages);
+      return Number.isFinite(count) && count > 0 ? `${Math.floor(count)} 页` : null;
+    }
+
+    function materialStateOf(file) {
+      const key = String(file?.state ?? '');
+      return MATERIAL_STATE_LABELS[key] ?? MATERIAL_STATE_LABELS.unindexed;
+    }
+
+    /** 卡 ⑥.4 的「卡片尾部详情」：一行、不换行、超长由 CSS 省略。 */
+    function materialFileMetaLine(file) {
+      // 修改时间只取日期（卡 ⑥.4 写的是 YYYY-MM-DD）：扫描给的是 ISO，索引兜底给的是裸日期，两种都切到 10 位
+      const mtime = typeof file?.mtime === 'string' && file.mtime.length >= 10 ? file.mtime.slice(0, 10) : null;
+      const parts = [
+        materialSizeText(file?.size),
+        materialExtText(file?.path ?? file?.name),
+        materialPagesText(file?.pages),
+        materialStateOf(file).label,
+        mtime,
+      ];
+      return parts.filter((part) => part !== null && part !== '').join(' · ');
+    }
+
+    /** 学科汇总行尾部：`教材 20 · 习题 107 · 讲义 306 …`（0 项不写）。 */
+    function materialSubjectCountText(subject) {
+      const counts = subject?.counts ?? {};
+      const parts = [
+        ['教材', counts.textbook],
+        ['PPT', counts.ppt],
+        ['习题', counts.exercise],
+        ['讲义', counts.lecture],
+        ['其他', counts.other],
+      ].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${label} ${Number(value)}`);
+      const pages = Number(counts.textbookOcrPages) > 0 ? `取字页 ${Number(counts.textbookOcrPages)}` : null;
+      return [...parts, pages].filter((part) => part !== null).join(' · ');
+    }
+
+    /**
+     * 所选文件的详情卡（卡 ⑥.6）：
+     * 「打开原件」= 系统默认程序；「位置」= 资源管理器定位并选中；「看取字结果」= 旧阅读器。
+     */
+    function MaterialFileCard({ file, notice = null, busy = '', onOpen, onReveal, onRead, onClose }) {
+      if (file === null || file === undefined || typeof file.path !== 'string' || file.path === '') return null;
+      const key = file.path;
+      const hasText = String(file.state ?? '') === 'text' || String(file.state ?? '') === 'ocr';
+      return h('div', { className: 'sa-card sa-mat-detail', key: 'material-detail' },
+        h('div', { className: 'sa-dock' },
+          h('h3', { className: 'sa-grow' }, '所选文件'),
+          h('button', { className: 'sa-btn', title: '关掉这张卡片（不会动任何文件）', onClick: () => onClose?.() }, '关闭')),
+        h('div', { className: 'sa-mat-detail-name', title: key }, String(file.name ?? materialPathBaseName(key))),
+        h('div', { className: 'sa-muted sa-mat-detail-path', title: key }, key),
+        h('div', { className: 'sa-muted sa-mat-detail-meta' }, materialFileMetaLine(file)),
+        h('div', { className: 'sa-dock', style: { marginTop: 8, flexWrap: 'wrap' } },
+          h('button', {
+            className: 'sa-btn primary',
+            disabled: busy === `open:${key}`,
+            title: '用系统默认程序打开这份原件（PDF 会整份打开；系统外壳没法跳到指定页）',
+            onClick: () => onOpen?.(file),
+          }, busy === `open:${key}` ? '打开中…' : '打开原件'),
+          h('button', {
+            className: 'sa-btn',
+            disabled: busy === `reveal:${key}`,
+            title: '在资源管理器里定位并选中这份文件',
+            onClick: () => onReveal?.(file),
+          }, '位置'),
+          hasText
+            ? h('button', {
+              className: 'sa-btn',
+              title: '在面板里看这份文件的取字结果（只读）',
+              onClick: () => onRead?.(file, 1),
+            }, '看取字结果')
+            : null),
+        notice === null
+          ? null
+          : h('div', {
+            className: notice.kind === 'error' ? 'sa-error' : 'sa-muted',
+            style: { marginTop: 8, fontSize: 13 },
+          }, String(notice.text ?? '')));
+    }
+
+    /** 卡 ⑥.2：只有 ≤20 个文件的单层目录可以直接展开；其余（组 / 有子目录的节点）一律收起。 */
+    function materialDefaultOpenKeys(scan) {
+      const keys = [];
+      const walk = (node) => {
+        if (node === null || node === undefined) return;
+        const children = objectList(node?.nodes);
+        const fileCount = objectList(node?.files).length + objectList(node?.texts).length;
+        if (children.length === 0 && fileCount > 0 && fileCount <= 20 && String(node?.id ?? '') !== '') {
+          keys.push(`node:${node.id}`);
+        }
+        for (const child of children) walk(child);
+      };
+      for (const group of objectList(scan?.groups)) {
+        for (const section of objectList(group?.sections)) walk(section?.root);
+      }
+      return keys;
+    }
+
+    /** 一份文件属于哪个学科：扫描汇总里有 `subjects[{id,dir}]`，单科结果里有 `{courseId,dir}`。 */
+    function materialSubjectIdForPath(scanData, filePath) {
+      const first = String(filePath ?? '').replace(/\\/gu, '/').split('/')[0] ?? '';
+      if (first === '') return null;
+      const list = Array.isArray(scanData?.subjects) && scanData.subjects.length > 0
+        ? scanData.subjects
+        : (typeof scanData?.dir === 'string' ? [{ id: scanData.courseId, dir: scanData.dir }] : []);
+      const hit = list.find((subject) => String(subject?.dir ?? '') === first);
+      return hit === undefined || hit === null ? null : String(hit.id ?? '') || null;
+    }
+
+    /** 打开/定位失败时给用户的话（卡 ⑥.6：说清原因，别静默）。 */
+    function materialActionErrorText(action, result) {
+      const code = String(result?.error ?? '');
+      const messages = {
+        'path-not-allowed': '这个路径不在允许范围里（可能还没扫描到、已被过滤，或不在工作区内）。',
+        missing: '磁盘上找不到这个文件了（可能刚被移动或改名）。',
+        'not-a-file': '这是一层文件夹，点卡片右侧的「位置」按钮来定位它。',
+        'missing-path': '没有拿到文件路径，刷新一次资料页再试。',
+        'too-many-files': '这个学科的文件太多（超过 2 万），扫描已停止。',
+        'spawn-failed': '系统没能启动打开程序（可能这台机器没给这类文件关联默认程序）。',
+        'open-failed': '系统拒绝了这次打开。',
+        'reveal-failed': '系统没能弹出资源管理器。',
+        'not-json': '面板和插件没连上（接口 404？插件改完要重启 DSH 才生效）。',
+      };
+      const base = messages[code] ?? `操作失败：${code === '' ? '未知原因' : code}`;
+      const detail = typeof result?.detail === 'string' && result.detail !== '' ? `（${result.detail}）` : '';
+      return action === 'reveal' ? `${base}${detail}` : `${base}${detail}`;
+    }
+
+    /** 资料索引里的一条 → 与扫描条目同形的「卡片」。扫描不可用时用它兜底。 */
+    function materialFileFromIndex(item) {
+      const donePages = Array.isArray(item?.ocr?.donePages) ? item.ocr.donePages.length : 0;
+      const pages = Number(item?.ocr?.pages) || donePages || null;
+      const isText = typeof item?.text?.outFile === 'string' && item.text.outFile !== '';
+      const state = isText ? 'text' : item?.ocr?.done === true ? 'ocr' : 'pending';
+      return {
+        path: String(item.path ?? ''),
+        name: materialPathBaseName(item.path),
+        size: null,
+        ext: materialPathExt(item.path),
+        pages,
+        donePages,
+        state,
+        mtime: String(item?.ocr?.updatedAt ?? item?.updatedAt ?? '').slice(0, 10) || null,
+        courseId: String(item?.courseId ?? ''),
+        fromIndex: true,
+      };
+    }
+
+    function materialGroupCountText(group) {
+      const count = Number(group?.count) || 0;
+      const ocr = Number(group?.ocrCount) || 0;
+      if (String(group?.id ?? '') === 'textbook' && ocr > 0) return `${count} 件 + ${ocr} 个取字文件`;
+      return `${count} 件`;
+    }
+
+    function materialFileRow(file, depth, opts) {
+      const selected = typeof opts?.selectedPath === 'string' && opts.selectedPath === file.path;
+      const progress = file?.fromIndex === true && file?.state === 'ocr' && Number(file?.pages) > 0
+        ? `${Number(file.donePages) || 0}/${Number(file.pages)} 页`
+        : null;
+      const meta = progress === null ? materialFileMetaLine(file) : materialFileMetaLine({ ...file, state: 'pending' }).replace('未取字', progress);
+      return h('div', {
+        key: `file:${file.path}`,
+        className: `sa-row sa-mat-leaf${selected ? ' is-selected' : ''}`,
+        style: { cursor: 'pointer', alignItems: 'center', paddingLeft: 12 + depth * 14 },
+        title: `${file.path}\n点一下：用系统默认程序打开（PPT 打开所在文件夹并选中）`,
+        onClick: () => (opts?.onCard ?? opts?.onSelect)?.(file),
+      },
+      h('span', { className: 'sa-grow', style: { minWidth: 0 } },
+        h('span', { className: 'sa-mat-name' }, String(file.name ?? '')),
+        h('div', { className: 'sa-muted sa-mat-meta' }, meta),
+        // 兜底视图（只有资料索引、扫不到磁盘）保留整条相对路径：那时它是唯一能分辨两份同名文件的线索
+        file?.fromIndex === true
+          ? h('div', { className: 'sa-muted sa-mat-meta', style: { fontSize: 13 } }, String(file.path ?? ''))
+          : null),
+      h('span', { className: 'sa-muted sa-mat-open-hint', title: '打开原件' }, '↗'));
+    }
+
+    /** 「取字结果」子节点（作业的 `*_OCR文本` 目录就挂在这里，不进教材 OCR）。 */
+    function materialTextRow(bucket, depth, opts) {
+      const pages = Number(bucket?.count) || 0;
+      return h('div', {
+        key: `text:${bucket?.id ?? bucket?.name}`,
+        className: 'sa-row',
+        style: { paddingLeft: 12 + depth * 14 },
+        title: `${bucket?.name ?? ''}（该次作业的取字结果）`,
+      },
+      h('span', { className: 'sa-grow sa-muted', style: { fontSize: 13 } }, `${bucket?.name ?? ''} · ${pages} 个取字页`),
+      typeof bucket?.idxPath === 'string' && bucket.idxPath !== ''
+        ? h('button', {
+          className: 'sa-btn',
+          style: { padding: '0 6px', fontSize: 13 },
+          onClick: () => opts?.onRead?.({ path: bucket.idxPath, name: materialPathBaseName(bucket.idxPath) }, 1),
+        }, '看取字结果')
+        : null);
+    }
+
+    function materialNodeRows(node, depth, parentId, opts) {
+      const id = String(node?.id ?? '') !== '' ? String(node.id) : `${parentId}/${node?.name ?? ''}`;
+      const key = `node:${id}`;
+      const open = opts?.isOpen?.(key, node) === true;
+      const rows = [h('div', {
+        key: `dir:${key}`,
+        className: 'sa-row sa-mat-dir-row',
+        style: { cursor: 'pointer', paddingLeft: 12 + depth * 14 },
+        title: id,
+        onClick: () => opts?.onToggle?.(key),
+      },
+      h('span', { className: 'sa-grow', style: { minWidth: 0 } }, `${open ? '▾' : '▸'} ${String(node?.name ?? '')}`),
+      h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${Number(node?.count) || 0} 件`))];
+      if (!open) return rows;
+
+      const items = [];
+      for (const file of objectList(node?.files)) items.push({ kind: 'file', file });
+      for (const bucket of objectList(node?.texts)) items.push({ kind: 'text', bucket });
+      for (const child of objectList(node?.nodes)) items.push({ kind: 'dir', node: child });
+
+      const all = opts?.showAll?.(key) === true;
+      const visible = all ? items : items.slice(0, MATERIAL_ROW_LIMIT);
+      for (const item of visible) {
+        if (item.kind === 'file') rows.push(materialFileRow(item.file, depth + 1, opts));
+        else if (item.kind === 'text') rows.push(materialTextRow(item.bucket, depth + 1, opts));
+        else rows.push(...materialNodeRows(item.node, depth + 1, id, opts));
+      }
+      const rest = items.length - visible.length;
+      if (rest > 0) {
+        rows.push(h('div', { key: `more:${key}`, className: 'sa-row', style: { paddingLeft: 12 + (depth + 1) * 14 } },
+          h('button', { className: 'sa-btn', onClick: () => opts?.onShowAll?.(key) }, `还有 ${rest} 个，点这里展开`)));
+      }
+      return rows;
+    }
+
+    /** 教材 OCR 的书：展开只列页码（`第 N 页`），绝不显示 `page0001.md` 这种文件名。 */
+    function materialOcrBookRows(book, opts) {
+      const key = `ocrbook:${book?.id ?? book?.name}`;
+      const open = opts?.isOpen?.(key) === true;
+      const pages = Array.isArray(book?.pages) ? book.pages : [];
+      const rows = [h('div', {
+        key: `ocrbook:${key}`,
+        className: 'sa-row',
+        style: { cursor: 'pointer', paddingLeft: 40 },
+        onClick: () => opts?.onToggle?.(key),
+      },
+      h('span', { className: 'sa-grow' }, `${open ? '▾' : '▸'} ${String(book?.name ?? '')}`),
+      h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${Number(book?.count) || 0} 个取字页`))];
+      if (!open) return rows;
+      if (pages.length === 0) {
+        rows.push(h('div', { key: `none:${key}`, className: 'sa-muted', style: { paddingLeft: 52, fontSize: 13 } },
+          `这一目录里有 ${Number(book?.files) || 0} 个整份文本，不是逐页取字`));
+        return rows;
+      }
+      const all = opts?.showAll?.(key) === true;
+      const visible = all ? pages : pages.slice(0, MATERIAL_ROW_LIMIT);
+      const canJump = typeof book?.idxPath === 'string' && book.idxPath !== '';
+      rows.push(h('div', { key: `pages:${key}`, className: 'sa-mat-pages', style: { paddingLeft: 52 } },
+        ...visible.map((no) => (canJump
+          ? h('button', {
+            key: `p:${key}:${no}`,
+            className: 'sa-pill soon sa-mat-page-chip',
+            title: `看第 ${no} 页的取字结果`,
+            onClick: () => opts?.onRead?.({ path: book.idxPath, name: materialPathBaseName(book.idxPath) }, no),
+          }, String(no))
+          : h('span', { key: `p:${key}:${no}`, className: 'sa-pill soon sa-mat-page-chip', title: `第 ${no} 页（未登记，暂不可读）` }, String(no))))));
+      const rest = pages.length - visible.length;
+      if (rest > 0) {
+        rows.push(h('div', { key: `pm:${key}`, className: 'sa-muted', style: { paddingLeft: 52, fontSize: 13 } },
+          h('button', { className: 'sa-btn', onClick: () => opts?.onShowAll?.(key) }, `还有 ${rest} 页，点这里展开`)));
+      }
+      return rows;
+    }
+
+    function materialOcrRootRows(root, opts) {
+      const key = `ocr:${root?.id ?? root?.name}`;
+      const open = opts?.isOpen?.(key) === true;
+      const pages = Number(root?.pageCount) || 0;
+      const files = Number(root?.count) || 0;
+      // 路径补上学科目录名（卡 ⑥ 界面示例写的是 `离散数学/_OCR`）：扫描给的是相对学科目录的路径，
+      // 只写 `_OCR` 放在七门课里看不出是哪一门。
+      const rel = String(root?.path ?? root?.name ?? '');
+      const subjectDir = String(opts?.subjectDir ?? '');
+      const shown = subjectDir !== '' && rel !== '' && !rel.startsWith(`${subjectDir}/`) ? `${subjectDir}/${rel}` : rel;
+      const rows = [h('div', {
+        key: `ocr:${key}`,
+        className: 'sa-row',
+        style: { cursor: 'pointer', paddingLeft: 24 },
+        title: shown,
+        onClick: () => opts?.onToggle?.(key),
+      },
+      h('span', { className: 'sa-grow' }, `${open ? '▾' : '▸'} ${shown}`),
+      h('span', { className: 'sa-muted', style: { fontSize: 13 } },
+        // `_TEXT` 这类目录放的是整份正文（没有逐页文件），写「0 个取字页」会让人以为取字失败
+        pages > 0
+          ? `${pages} 个取字页${files > pages ? ` · 另 ${files - pages} 件` : ''}`
+          : `${files} 个整份文本`))];
+      if (!open) return rows;
+      for (const book of objectList(root?.books)) rows.push(...materialOcrBookRows(book, opts));
+      return rows;
+    }
+
+    function materialSectionBody(section, opts, depth = 1) {
+      if (String(section?.kind ?? '') === 'ocr') {
+        return objectList(section?.roots).flatMap((root) => materialOcrRootRows(root, opts));
+      }
+      const root = section?.root;
+      const rows = objectList(root?.files).map((file) => materialFileRow(file, depth, opts));
+      for (const node of objectList(root?.nodes)) rows.push(...materialNodeRows(node, depth, '', opts));
+      return rows;
+    }
+
+    /** 一个组（教材 / PPT / 习题 / 讲义 / 其他），组内可能有多个子节（教材原件 + 教材 OCR）。 */
+    function materialGroupRows(group, opts) {
+      const key = `group:${group?.id}`;
+      const open = opts?.isOpen?.(key) === true;
+      const rows = [h('div', {
+        key: `group:${key}:head`,
+        className: 'sa-row sa-mat-group-row',
+        style: { cursor: 'pointer' },
+        onClick: () => opts?.onToggle?.(key),
+      },
+      h('span', { className: 'sa-grow' }, `${open ? '▾' : '▸'} ${String(group?.title ?? '')}`),
+      h('span', { className: 'sa-muted', style: { fontSize: 13 } }, materialGroupCountText(group)))];
+      if (!open) return rows;
+      const sections = objectList(group?.sections);
+      for (const section of sections) {
+        if (sections.length > 1) {
+          const sectionKey = `section:${group?.id}:${section?.id}`;
+          const sectionOpen = opts?.isOpen?.(sectionKey) === true;
+          rows.push(h('div', {
+            key: `section:${sectionKey}`,
+            className: 'sa-row',
+            style: { cursor: 'pointer', paddingLeft: 24 },
+            onClick: () => opts?.onToggle?.(sectionKey),
+          },
+          h('span', { className: 'sa-grow' }, `${sectionOpen ? '▾' : '▸'} ${String(section?.title ?? '')}`),
+          h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${Number(section?.count) || 0} 件`)));
+          if (sectionOpen) rows.push(...materialSectionBody(section, opts, 2));
+          continue;
+        }
+        rows.push(...materialSectionBody(section, opts, 1));
+      }
+      return rows;
+    }
+
+    /** 整棵树（纯函数）：`opts` 见 `MaterialsTab` 里的那一组闭包。0 条的组一律不画（卡 ⑥.1）。 */
+    function renderMaterialGroups(scan, opts = {}) {
+      const groups = objectList(scan?.groups).filter((group) => Number(group?.count) > 0 || Number(group?.ocrCount) > 0);
+      return groups.map((group) => h('div', { key: `group:${group.id}`, className: 'sa-mat-group' }, ...materialGroupRows(group, opts)));
+    }
+
+    /** 在扫描结果里按路径找「卡片」（含 OCR 页、取字结果节点的父目录）。 */
+    function findMaterialFileInScan(scan, wantedPath) {
+      if (typeof wantedPath !== 'string' || wantedPath === '') return null;
+      const walk = (node) => {
+        for (const file of objectList(node?.files)) if (file?.path === wantedPath) return file;
+        for (const child of objectList(node?.nodes)) {
+          const hit = walk(child);
+          if (hit !== null) return hit;
+        }
+        return null;
+      };
+      for (const group of objectList(scan?.groups)) {
+        for (const section of objectList(group?.sections)) {
+          const hit = walk(section?.root);
+          if (hit !== null) return hit;
+        }
+      }
+      return null;
+    }
+
+    /** 要在树里定位某份文件，需要把它的祖先节点全部展开（路径 → 节点 id 链）。 */
+    function materialOpenKeysForPath(scan, wantedPath) {
+      const keys = [];
+      const walk = (node, chain) => {
+        const next = chain.concat(node?.id ?? '');
+        for (const file of objectList(node?.files)) {
+          if (file?.path === wantedPath) return next.slice();
+        }
+        for (const child of objectList(node?.nodes)) {
+          const hit = walk(child, next);
+          if (hit.length > 0) return hit;
+        }
+        return [];
+      };
+      for (const group of objectList(scan?.groups)) {
+        keys.push(`group:${group.id}`);
+        for (const section of objectList(group?.sections)) {
+          if (objectList(group?.sections).length > 1) keys.push(`section:${group.id}:${section.id}`);
+          const chain = walk(section?.root, []);
+          if (chain.length > 0) {
+            for (const id of chain) if (id !== '') keys.push(`node:${id}`);
+            return keys;
+          }
+        }
+      }
+      return keys;
+    }
+
+    /**
+     * 资料页签（2026-11-25 重做）：按学科扫磁盘列出「教材 / PPT / 习题 / 讲义 / 其他」四棵树，
+     * 点卡片 = 用系统默认程序打开原件（PPT 是打开所在文件夹并选中），右侧给「位置」与「看取字结果」。
+     *
+     * 面板里**不再渲染 OCR 正文**（用户原话：「那里面全是代码原文，根本没法阅读」）——
+     * 旧阅读器只在「看取字结果」这个二级入口里出现。
+     */
     function MaterialsTab({ docs = {}, view: initialView = 'files', refresh, onOpenKnowledge, focus = null, onFocusConsumed }) {
       const files = objectList(docs.materials?.files);
       const questions = objectList(docs.questions?.questions);
@@ -6742,11 +7253,20 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const restoredMat = readMaterialsUi();
       const [view, setView] = useState(initialView === 'questions' ? 'questions' : restoredMat.view);
       const [courseId, setCourseId] = useState(restoredMat.courseId);
+      // openPath = 当前**选中**的那份文件（详情卡）；detail = 只有点「看取字结果」才有的正文态。
+      // 两者分开是 2026-11-25 的口径：点卡片不再在面板里渲染正文。
       const [openPath, setOpenPath] = useState(restoredMat.openPath);
       const [detail, setDetail] = useState(null); // { status, data }
       // 资料树：搜索词（只筛文件名 + 科目，纯前端，决策 F2）与展开状态（按学科记，复用 readMaterialsUi）
       const [query, setQuery] = useState('');
       const [expand, setExpand] = useState(() => cloneMaterialsExpand(restoredMat.expand));
+      // 扫描结果（`GET /materials/scan`）：`{ status: idle|loading|ready|error, data }`
+      const [scan, setScan] = useState({ status: 'idle', data: null });
+      const [scanTick, setScanTick] = useState(0);
+      const [notice, setNotice] = useState(null);   // { kind: 'ok' | 'warn' | 'error', text }
+      const [busy, setBusy] = useState('');         // 正在跑的动作（防连点）
+      const [showAll, setShowAll] = useState({});   // 大目录「展开全部」的 key
+      const [pendingLocate, setPendingLocate] = useState(null); // 知识点页交过来的定位目标
 
       const courseName = (id) => courses.find((item) => item.id === id)?.name ?? (id || '未匹配课程');
       const keep = (item) => courseId === '' || item?.courseId === courseId;
@@ -6773,30 +7293,125 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 
       const pill = (text, level) => h('span', { className: `sa-pill ${level}` }, text);
 
-      // 资料树文件夹展开/收起：某学科没有记录 = 默认全展开（老快照没有 expand 也照常显示全部文件）
-      const isGroupOpen = (cid, gid) => {
-        const stored = expand[cid];
-        if (!Array.isArray(stored)) return true;
-        return stored.includes(gid);
+      // 展开状态按「学科」记：`courseId` 空（全部）时用 `@all` 这一格
+      const expandKey = courseId === '' ? '@all' : courseId;
+      const isMaterialOpen = (key, node = null) => {
+        const stored = expand[expandKey];
+        if (Array.isArray(stored)) return stored.includes(key);
+        // 没有记忆时的默认（卡 ⑥.2）：只有 ≤20 个文件的单层目录可直接展开，其余一律收起
+        const fileCount = objectList(node?.files).length + objectList(node?.texts).length;
+        return objectList(node?.nodes).length === 0 && fileCount > 0 && fileCount <= 20;
       };
-      const toggleGroup = (cid, gid, allGids) => {
-        const base = Array.isArray(expand[cid]) ? expand[cid].slice() : allGids.slice();
-        const nextList = base.includes(gid) ? base.filter((x) => x !== gid) : base.concat(gid);
-        const merged = { ...expand, [cid]: nextList };
+      const toggleMaterialKey = (key) => {
+        const base = Array.isArray(expand[expandKey]) ? expand[expandKey].slice() : [];
+        const next = base.includes(key) ? base.filter((item) => item !== key) : base.concat(key);
+        const merged = { ...expand, [expandKey]: next };
         setExpand(merged);
         readMaterialsUi({ expand: merged });
       };
+      const toggleShowAll = (key) => setShowAll((current) => ({ ...current, [key]: current[key] !== true }));
 
-      // 跨页签联动（2026-10-21 夜批3）：知识点页点「去资料页看」时带着 path/page 过来，
-      // 这里直接打开那份资料的正文——不然用户得自己去长列表里翻同一份文件。
+      // 扫描：换学科 / 点刷新都重扫一次（服务端有 60s 缓存，这里不再额外节流）
       useEffect(() => {
-        const target = focus?.path;
-        if (typeof target !== 'string' || target === '') return;
+        let alive = true;
+        setScan((current) => ({ status: 'loading', data: current?.data ?? null }));
+        getStudy('/materials/scan', courseId === '' ? { course: 'all' } : { course: courseId })
+          .then((data) => { if (alive) setScan({ status: 'ready', data }); })
+          .catch(() => { if (alive) setScan((current) => ({ status: 'error', data: current?.data ?? null })); });
+        return () => { alive = false; };
+      }, [courseId, scanTick]);
+
+      // 扫描到手后，把「≤20 个文件的单层目录」补进展开记忆（其余照旧收起）
+      useEffect(() => {
+        if (scan.status !== 'ready') return;
+        const defaults = materialDefaultOpenKeys(scan.data);
+        if (defaults.length === 0) return;
+        setExpand((current) => {
+          const base = Array.isArray(current[expandKey]) ? current[expandKey] : [];
+          const list = [...new Set([...base, ...defaults])];
+          const merged = { ...current, [expandKey]: list };
+          readMaterialsUi({ expand: merged });
+          return merged;
+        });
+      }, [scan, expandKey]);
+
+      // 跨页签联动（2026-11-25）：知识点页「在资料页定位」带着 path 过来 —— 切到该学科、
+      // 选中这份文件、把它的祖先节点全部展开。**不再顺手打开正文**（正文要用户自己点）。
+      useEffect(() => {
+        const target = typeof focus?.path === 'string' ? focus.path : '';
+        if (target === '') return;
         setView('files');
-        setCourseId('');
-        showMaterial(target, focus?.page);
+        const subjectId = materialSubjectIdForPath(scan.data, target);
+        if (subjectId !== null) setCourseId(subjectId);
+        setOpenPath(target);
+        setDetail(null);
+        setPendingLocate(target);
         onFocusConsumed?.();
       }, [focus]);
+
+      // 扫描结果到位后再展开祖先节点（否则树还没拿到，key 无从谈起）
+      useEffect(() => {
+        if (pendingLocate === null || scan.status !== 'ready') return;
+        if (!Array.isArray(scan.data?.groups) || scan.data.groups.length === 0) return;
+        const keys = materialOpenKeysForPath(scan.data, pendingLocate);
+        setPendingLocate(null);
+        if (keys.length === 0) return;
+        setExpand((current) => {
+          const base = Array.isArray(current[expandKey]) ? current[expandKey] : [];
+          const merged = { ...current, [expandKey]: [...new Set([...base, ...keys])] };
+          readMaterialsUi({ expand: merged });
+          return merged;
+        });
+      }, [pendingLocate, scan, expandKey]);
+
+      // 打开原件 / 在资源管理器定位：结果一律弹在面板里（卡 ⑥.6：不许静默失败）
+      const runMaterialAction = async (action, file) => {
+        if (typeof file?.path !== 'string' || file.path === '') return false;
+        const busyKey = `${action}:${file.path}`;
+        if (busy === busyKey) return false;
+        setBusy(busyKey);
+        setNotice(null);
+        const result = await postStudy(`/materials/${action}`, {
+          path: file.path,
+          ...(Number(file?.page) > 0 ? { page: Number(file.page) } : {}),
+        });
+        setBusy('');
+        if (result.ok === true) {
+          if (result.note === 'page-open-unsupported') {
+            setNotice({ kind: 'warn', text: `已用默认程序打开整份；系统外壳没法直接定位到第 ${result.page} 页，请在阅读器里翻到该页。` });
+          } else {
+            setNotice({ kind: 'ok', text: action === 'reveal' ? '已在资源管理器里定位并选中它。' : '已交给系统默认程序打开。' });
+          }
+          return true;
+        }
+        setNotice({ kind: 'error', text: materialActionErrorText(action, result) });
+        return false;
+      };
+
+      // 卡片主体左键：PPT 走「打开所在文件夹并选中」，其余走默认程序打开（卡 ⑥.6）
+      const openMaterialCard = async (file) => {
+        setOpenPath(file.path);
+        setDetail(null);
+        const ext = materialPathExt(file.path);
+        const action = MATERIAL_PPT_EXTS.includes(ext) ? 'reveal' : 'open';
+        await runMaterialAction(action, file);
+      };
+
+      const materialOpts = {
+        selectedPath: openPath,
+        // OCR 目录行要显示「学科/`_OCR`」（卡 ⑥ 界面示例）；兜底索引树没有学科目录时留空
+        subjectDir: scan.status === 'ready' && typeof scan.data?.dir === 'string' ? scan.data.dir : '',
+        isOpen: isMaterialOpen,
+        onToggle: toggleMaterialKey,
+        onShowAll: toggleShowAll,
+        showAll: (key) => showAll[key] === true,
+        // 卡片主体：选中 + 直接用系统程序打开（卡 ⑥.6）；详情卡同时出现在页尾
+        onCard: (file) => openMaterialCard(file),
+        onSelect: (file) => { setOpenPath(file.path); setDetail(null); },
+        onOpen: (file) => runMaterialAction('open', file),
+        onReveal: (file) => runMaterialAction('reveal', file),
+        onRead: (file, page) => showMaterial(file.path, page),
+      };
 
       // 记回界面记忆；顺带把当前页号也记下，恢复时能回到同一页
       useEffect(() => {
@@ -6820,11 +7435,11 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         });
       }, [openPath, detail]);
 
-      // 恢复上次打开的文件（返回/切页签回来时用）。有 focus 时以 focus 为准，别互相打架。
+      // 恢复上次**选中**的那份文件（返回/切页签回来时用）。有 focus 时以 focus 为准，别互相打架。
       useEffect(() => {
         if (typeof focus?.path === 'string' && focus.path !== '') return;
         const restored = readMaterialsUi();
-        if (restored.openPath !== null) showMaterial(restored.openPath, restored.openPage ?? undefined);
+        if (restored.openPath !== null) setOpenPath(restored.openPath);
       }, []);
 
       const materialRows = files.filter(keep);
@@ -6838,6 +7453,24 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         questions: '还没有题目台账。取字批次分题后写进 学习台/题目.json。',
         knowledge: '还没有知识点候选。分题后由批次写进 学习台/知识点候选.json，再确认。',
       };
+      // 学科下拉：优先用扫描出来的 7 个学科（`课程.json` 里没有「面向对象」，用它就会漏一门课）
+      const [subjectList, setSubjectList] = useState([]);
+      useEffect(() => {
+        // 单科结果里不带别的学科，所以另取一次「全部」的汇总；服务端 60s 缓存，代价很小
+        getStudy('/materials/scan', { course: 'all' })
+          .then((data) => setSubjectList(Array.isArray(data?.subjects) ? data.subjects : []))
+          .catch(() => setSubjectList((current) => current));
+      }, [scanTick]);
+      useEffect(() => {
+        if (Array.isArray(scan.data?.subjects)) setSubjectList(scan.data.subjects);
+      }, [scan]);
+
+      const subjectOptions = subjectList.length > 0
+        ? subjectList.map((subject) => ({ id: String(subject.id ?? ''), name: String(subject.name ?? '') }))
+        : courses.map((course) => ({ id: String(course.id ?? ''), name: String(course.name ?? '') }));
+      const scannedTotal = scan.status === 'ready' && Number.isFinite(Number(scan.data?.total)) ? Number(scan.data.total) : null;
+      const materialCount = scannedTotal === null ? `${materialRows.length}（索引）` : `${scannedTotal}`;
+
       const head = h('div', { className: 'sa-card' },
         h('h3', null, '课程资料与复习'),
         h('div', { className: 'sa-dock' },
@@ -6847,9 +7480,10 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             value: courseId,
             onChange: (event) => setCourseId(event.target.value),
           }, h('option', { value: '' }, '全部'),
-          ...courses.map((course) => h('option', { key: course.id, value: course.id }, course.name))),
+          ...subjectOptions.map((subject) => h('option', { key: subject.id, value: subject.id }, subject.name))),
           h('span', { className: 'sa-muted' },
-            `资料 ${materialRows.length} · 题目 ${questionRows.length} · 候选 ${candidateRows.length}`),
+            `资料 ${materialCount} · 题目 ${questionRows.length} · 候选 ${candidateRows.length}`),
+          scan.status === 'loading' ? h('span', { className: 'sa-muted', style: { fontSize: 13 } }, '扫描中…') : null,
           h('span', { className: 'sa-spacer' }),
           ...[['files', '资料'], ['questions', '题目']].map(([key, label]) =>
             h('button', {
@@ -6857,95 +7491,150 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
               className: `sa-btn${view === key ? ' primary' : ''}`,
               onClick: () => setView(key),
             }, label)),
+          h('button', {
+            className: 'sa-btn',
+            title: '重新扫一遍磁盘（服务端缓存 60 秒，扫描不写任何文件）',
+            onClick: () => setScanTick((tick) => tick + 1),
+          }, '刷新'),
         ),
       );
 
-      // ── 资料树（W3b）：学科 → 路径文件夹 → 文件，可折叠；叶子点击 = 打开正文（再点收起）──
-      const leafRow = (item) => {
-        const donePages = Array.isArray(item?.ocr?.donePages) ? item.ocr.donePages.length : 0;
-        const totalPages = Number(item?.ocr?.pages) || 0;
-        const isText = typeof item?.text?.outFile === 'string' && item.text.outFile !== '';
-        const state = isText
-          ? pill('文字层', 'soon')
-          : item?.ocr?.done === true
-            ? pill(`${donePages}/${totalPages || donePages} 页`, 'later')
-            : pill('未取字', 'today');
-        const isOpen = openPath === item.path;
-        return h('div', {
-          key: item.path,
-          className: 'sa-row sa-mat-leaf',
-          // 悬停只给元信息（kind · 页数 · 更新时间），摘要暂无字段，不编造（决策 D-W3-1）
-          title: materialMeta(item),
-          style: { cursor: 'pointer', alignItems: 'flex-start', paddingLeft: 24 },
-          onClick: () => (isOpen ? (setOpenPath(null), setDetail(null)) : showMaterial(item.path)),
-        },
-        h('span', { className: 'sa-grow', title: item.path },
-          materialBaseName(item.path),
-          h('div', { className: 'sa-muted', style: { fontSize: 13 } }, item.path)),
-        h('span', { className: 'sa-pill soon' }, materialKindLabel(item.kind)),
-        state,
-        h('span', { className: 'sa-muted', style: { fontSize: 14 } }, isOpen ? '收起' : '看内容'));
-      };
-      // 搜索框只筛文件名 + 科目（决策 D-W3-3 / F2：不做路径关键字、不做全文检索）
+      // ── 资料树（2026-11-25）：五组四棵树 + 卡片详情 + 大目录折叠 ────────────
+      const scanReady = scan.status === 'ready' && scan.data !== null;
+
+      // 搜索：只筛文件名 + 科目（决策 F2），命中时给一张扁平列表，不做全文检索
       const q = query.trim().toLowerCase();
-      const queryMatch = (item) => {
-        if (q === '') return true;
-        return materialBaseName(item.path).toLowerCase().includes(q)
-          || courseName(item.courseId).toLowerCase().includes(q);
-      };
-      const treeSource = q === '' ? materialRows : materialRows.filter(queryMatch);
-      const materialsTree = buildMaterialsTree(treeSource, courses);
+      const flatFiles = (() => {
+        const fromScan = [];
+        const walk = (node) => {
+          for (const file of objectList(node?.files)) fromScan.push(file);
+          for (const child of objectList(node?.nodes)) walk(child);
+        };
+        for (const group of objectList(scanReady ? scan.data?.groups : [])) {
+          for (const section of objectList(group?.sections)) walk(section?.root);
+        }
+        const source = fromScan.length > 0 ? fromScan : materialRows.map(materialFileFromIndex);
+        if (q === '') return [];
+        return source.filter((file) => String(file?.name ?? '').toLowerCase().includes(q));
+      })();
 
-      const materialList = materialRows.length === 0
-        ? h('div', { className: 'sa-card sa-muted' }, emptyText.files)
-        : h('div', { className: 'sa-card' },
-          h('div', { className: 'sa-dock', style: { marginBottom: 8 } },
-            h('input', {
-              className: 'sa-input',
-              type: 'search',
-              value: query,
-              placeholder: '搜索文件名 / 科目',
-              'aria-label': '搜索资料文件名或科目',
-              onChange: (event) => setQuery(event.target.value),
-            }),
-            q === '' ? null : h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `命中 ${treeSource.length} 份`)),
-          materialsTree.length === 0
+      const searchCard = h('div', { className: 'sa-card' },
+        h('div', { className: 'sa-dock', style: { marginBottom: 8 } },
+          h('input', {
+            className: 'sa-input',
+            type: 'search',
+            value: query,
+            placeholder: '搜索文件名 / 科目',
+            'aria-label': '搜索资料文件名或科目',
+            onChange: (event) => setQuery(event.target.value),
+          }),
+          q === '' ? null : h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `命中 ${flatFiles.length} 份`)),
+        q === ''
+          ? null
+          : (flatFiles.length === 0
             ? h('div', { className: 'sa-muted', style: { marginTop: 8 } }, '没有匹配的资料，换个关键词试试。')
-            : materialsTree.map((course) => h('div', { key: `course:${course.id}`, className: 'sa-mat-tree' },
-              h('div', {
-                className: 'sa-row sa-mat-course-row',
-                style: { fontWeight: 650, borderBottom: '1px solid var(--dsw-alias-border-l1)' },
-              },
-              h('span', { className: 'sa-grow' }, course.name),
-              h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${course.count} 份`)),
-              course.groups.map((group) => {
-                const open = q !== '' || isGroupOpen(course.id, group.id);
-                const allGids = course.groups.map((g) => g.id);
-                return h('div', { key: `group:${course.id}::${group.id}` },
-                  h('div', {
-                    className: 'sa-row sa-mat-folder-row',
-                    style: { cursor: 'pointer', paddingLeft: 12 },
-                    title: `${group.name}（${group.count} 份）`,
-                    onClick: () => toggleGroup(course.id, group.id, allGids),
-                  },
-                  h('span', { className: 'sa-grow' },
-                    `${open ? '▾' : '▸'} ${group.name}`,
-                    h('span', { className: 'sa-muted', style: { fontSize: 13, marginLeft: 6 } }, `${group.count} 份`))),
-                  open ? group.files.map(leafRow) : null);
-              }))));
+            : h('div', null, ...flatFiles.slice(0, MATERIAL_ROW_LIMIT).map((file) => materialFileRow(file, 0, { ...materialOpts, selectedPath: openPath })))));
+      const queryActive = q !== '';
 
+      // 汇总视图（学科选择 = 全部）：先给 7 个学科 + 各自计数，点一行进该学科
+      const subjects = scanReady && courseId === '' && Array.isArray(scan.data?.subjects) ? scan.data.subjects : null;
+      const subjectSummary = subjects === null
+        ? null
+        : h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-muted', style: { margin: '2px 0 8px' } },
+            `扫到 ${scan.data.total} 个文件（${materialSizeText(scan.data.bytes) ?? '大小未知'}）。先选一个学科，再展开「教材 / PPT / 习题 / 讲义 / 其他」。`),
+          ...subjects.map((subject) => h('div', {
+            key: `subject:${subject.id}`,
+            className: 'sa-row sa-mat-subject-row',
+            style: { cursor: 'pointer' },
+            title: `${subject.dir}（${subject.total} 个文件）`,
+            onClick: () => setCourseId(String(subject.id ?? '')),
+          },
+          h('span', { className: 'sa-grow' }, String(subject.name ?? '')),
+          h('span', { className: 'sa-muted sa-mat-meta', style: { fontSize: 13 } }, materialSubjectCountText(subject)),
+          h('span', { className: 'sa-btn' }, '查看'))));
 
-      // 正文卡改用共用的阅读面（W3a）：视图与知识点页同一套，状态仍留在本页签。
-      const detailCard = MaterialReadingCard({
+      // 单学科视图：五个组（教材 / PPT / 习题 / 讲义 / 其他）
+      const courseTree = scanReady && Array.isArray(scan.data?.groups) && courseId !== ''
+        ? h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-dock', style: { marginBottom: 6 } },
+            h('span', { className: 'sa-muted' }, `${scan.data.courseName ?? ''} · ${scan.data.total} 个文件`),
+            h('span', { className: 'sa-spacer' }),
+            h('span', { className: 'sa-muted', style: { fontSize: 13 } }, '点卡片打开原件；右侧「位置」在资源管理器里定位')),
+          scan.data.groups.length === 0
+            ? h('div', { className: 'sa-muted' }, '这个学科目录下没有可列的文件。')
+            : h('div', { className: 'sa-mat-tree' }, ...renderMaterialGroups(scan.data, materialOpts)))
+        : null;
+
+      // 扫描拿不到时的兜底：老索引树（240 条），保证资料页永远不会白屏
+      const indexTree = (() => {
+        if (scannedTotal !== null) return null;
+        if (materialRows.length === 0) return null;
+        const tree = buildMaterialsTree(materialRows, courses);
+        const courseBlock = (course) => h('div', { key: `course:${course.id}`, className: 'sa-mat-tree' },
+          h('div', { className: 'sa-row sa-mat-course-row', style: { fontWeight: 650, borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+            h('span', { className: 'sa-grow' }, course.name),
+            h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${course.count} 份`)),
+          ...course.groups.map((group) => {
+            const rows = group.files.map((item) => materialFileRow(materialFileFromIndex(item), 1, materialOpts));
+            return h('div', { key: `group:${course.id}::${group.id}` },
+              h('div', { className: 'sa-row sa-mat-folder-row', style: { paddingLeft: 12 } },
+                h('span', { className: 'sa-grow' }, group.name),
+                h('span', { className: 'sa-muted', style: { fontSize: 13 } }, `${group.count} 份`)),
+              ...rows);
+          }));
+        return h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-muted', style: { marginBottom: 6, fontSize: 13 } },
+            scan.status === 'error' ? '读不到扫描结果（接口 404 时多半是插件还没重启），先按资料索引显示：' : '按资料索引显示：'),
+          ...tree.map(courseBlock));
+      })();
+
+      const scanEmpty = scanReady && courseId !== '' && Array.isArray(scan.data?.groups) && scan.data.groups.length === 0;
+      const materialList = h('div', null,
+        searchCard,
+        queryActive ? null : subjectSummary,
+        queryActive ? null : courseTree,
+        queryActive ? null : indexTree,
+        queryActive || (subjectSummary !== null) || (courseTree !== null) || (indexTree !== null)
+          ? null
+          : (scanEmpty || materialRows.length === 0
+            ? h('div', { className: 'sa-card sa-muted' }, emptyText.files)
+            : null));
+
+      // 选中的那份文件的详情卡（卡 ⑥.6 的三个入口都在这里）
+      const selectedFile = (() => {
+        if (typeof openPath !== 'string' || openPath === '') return null;
+        const fromScan = scanReady ? findMaterialFileInScan(scan.data, openPath) : null;
+        if (fromScan !== null) return fromScan;
+        const fromIndex = materialRows.find((item) => item.path === openPath);
+        return fromIndex === undefined ? { path: openPath, name: materialPathBaseName(openPath) } : materialFileFromIndex(fromIndex);
+      })();
+
+      const fileCard = MaterialFileCard({
+        file: openPath === null ? null : selectedFile,
+        notice,
+        busy,
+        onOpen: (file) => runMaterialAction('open', file),
+        onReveal: (file) => runMaterialAction('reveal', file),
+        onRead: (file, page) => showMaterial(file.path, page),
+        onClose: () => {
+          setOpenPath(null);
+          setDetail(null);
+          setNotice(null);
+          readMaterialsUi({ openPath: null, openPage: null });
+        },
+      });
+
+      // 正文卡（旧阅读器）：只在点「看取字结果」时出现，是二级入口
+      const detailCard = detail === null ? null : MaterialReadingCard({
         detail,
         openPath,
         onPage: (no) => showMaterial(openPath, no),
         onClose: () => {
-          setOpenPath(null);
           setDetail(null);
-          readMaterialsUi({ openPath: null, openPage: null });
+          readMaterialsUi({ openPage: null });
         },
-        closeTitle: '关上这份正文（也可以按左上角「返回」回到上一个位置）',
+        closeTitle: '关上这份取字结果（也可以按左上角「返回」回到上一个位置）',
       });
 
 
@@ -6975,6 +7664,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return h('div', null,
         head,
         view === 'files' ? materialList : questionList,
+        fileCard,
         detailCard);
     }
     /**
@@ -7356,6 +8046,19 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       navHistory.push(entry);
       if (navHistory.length > NAV_LIMIT) navHistory = navHistory.slice(navHistory.length - NAV_LIMIT);
       navIndex = navHistory.length - 1;
+    }
+
+    /**
+     * 把「当前这一格」刷新成最新状态（2026-11-25 用户报障修复）：
+     * 同一页签里翻资料、展开目录不该多堆一条历史，但后退回来时要复原到**离开那一刻**的样子。
+     * 历史为空时顺手把起点记上；这样一来「栈顶永远等于我现在在哪」就是一条硬不变式。
+     */
+    function navSync(tab) {
+      if (navIndex < 0 || navHistory.length === 0) {
+        navPush(navSnapshot(tab));
+        return;
+      }
+      navHistory[navIndex] = navSnapshot(tab);
     }
 
     function navCanBack() {
@@ -9294,6 +9997,8 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const [courseId, setCourseId] = useState(restoredUi.courseId);
       const [openPath, setOpenPath] = useState(restoredUi.detailPath);
       const [detail, setDetail] = useState(null); // { status, data }：证据里「看原页」用
+      // 2026-11-25：知识点页「打开原件」的结果就地弹在卡片上（不再靠跳资料页看代码原文）
+      const [openNotice, setOpenNotice] = useState(null); // { kind: 'ok' | 'error', text }
       const mindViewportRef = useRef(null);
       const zoomScrollRef = useRef(null);
       const [fullBrowser, setFullBrowser] = useState(false);
@@ -9915,6 +10620,25 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         setDetail({ status: result.ok ? 'ready' : 'error', data: result, pending: false });
       };
 
+      // 「打开原件」（2026-11-25 卡 ⑥.7）：直接调 POST /materials/open，用系统默认程序打开磁盘上的原文件，
+      // 不再跳资料页读 OCR 原文。失败原因就地弹在这张卡的按钮行下面，不做静默失败。
+      const openOriginal = async (materialPath, page) => {
+        if (typeof materialPath !== 'string' || materialPath === '') return false;
+        setOpenNotice(null);
+        const result = await postStudy('/materials/open', {
+          path: materialPath,
+          ...(Number(page) > 0 ? { page: Number(page) } : {}),
+        });
+        if (result.ok === true) {
+          setOpenNotice(result.note === 'page-open-unsupported'
+            ? { kind: 'ok', text: `已打开整份；系统外壳没法直接跳到第 ${result.page} 页，请在阅读器里翻到该页。` }
+            : { kind: 'ok', text: '已交给系统默认程序打开。' });
+          return true;
+        }
+        setOpenNotice({ kind: 'error', text: materialActionErrorText('open', result) });
+        return false;
+      };
+
 
       const lectureCourses = objectList(docs.knowledgeAnalysis?.courses);
       const lectureCourse = lectureCourses.find((course) => String(course.courseId) === String(treeCourseId));
@@ -10446,10 +11170,23 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           detail?.status === 'ready'
             ? h('button', {
               className: 'sa-btn',
-              title: '带着这一页跳到「资料」页签继续翻',
-              onClick: () => onOpenMaterial?.(openPath, detail.data?.page),
-            }, '去资料页看')
+              title: '用系统默认程序打开这份原始文件（不再在面板里渲染取字原文）',
+              onClick: () => openOriginal(openPath, detail.data?.page),
+            }, '打开原件')
             : null,
+          detail?.status === 'ready'
+            ? h('button', {
+              className: 'sa-mat-link',
+              title: '带着这一页跳到「资料」页签，并在那棵树里定位到它',
+              onClick: () => onOpenMaterial?.(openPath, detail.data?.page),
+            }, '在资料页定位')
+            : null,
+          openNotice === null
+            ? null
+            : h('span', {
+              className: openNotice.kind === 'error' ? 'sa-error' : 'sa-muted',
+              style: { fontSize: 13 },
+            }, openNotice.text),
           isTreeView && !focusReading
             ? h('button', {
               className: 'sa-btn',
@@ -14200,10 +14937,18 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       // 返回/前进后 +1：资料页与知识点页用它当 key 重挂载，挂载时从模块内存恢复初值
       const [navVersion, setNavVersion] = useState(0);
 
-      /** 跳转前先把「现在在哪」压栈，再切页签（页签点击也走这里）。 */
+      /**
+       * 切页签（页签点击、卡片里的「跳到别处」都走这里）。
+       *
+       * 2026-11-25 修：旧版只把**离开前**的位置压栈，当前位置从不入栈 ⇒ 今日→知识点→资料 之后
+       * 点「上一步」落到的是**今日**（知识点的位置压根没被记过）。现在保持一条不变式：
+       * **历史栈顶永远就是我此刻所在的位置**——先把当前格刷新，再把新位置压进去。
+       */
       const goto = useCallback((nextTab) => {
-        navPush(navSnapshot(tab));
+        if (nextTab === tab) return;
+        navSync(tab);
         navTabMemory = nextTab;
+        navPush(navSnapshot(nextTab));
         setTab(nextTab);
       }, [tab]);
 
@@ -14223,7 +14968,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
 
       // 起点入栈 + Alt+← / Alt+→ 键盘来回（鼠标不去找按钮也能退）
       useEffect(() => {
-        if (navIndex < 0) navPush(navSnapshot(tab));
+        navSync(tab);
       }, []);
       useEffect(() => {
         const onKeyDown = (event) => {
@@ -14786,6 +15531,27 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         // 教材页正文卡的排版预览（2026-10-27 晚）：跨行 `$$…$$`、`#` 标题、分隔线，
         // 其余交给 analysisBlockNodes；「排版 / 原文」两档由 MaterialReading 组件切换
         materialPreviewNodes,
+        // 资料树（2026-11-25 卡）：五组四棵树、OCR 折单行、>200 折叠、卡片详情行全是纯函数，
+        // 测试直接调它们验结构（四组顺序 / 0 组不出现 / 折叠口径），不必重启宿主看界面
+        renderMaterialGroups,
+        materialGroupRows,
+        materialSectionBody,
+        materialNodeRows,
+        materialOcrRootRows,
+        materialOcrBookRows,
+        materialFileRow,
+        materialTextRow,
+        materialFileFromIndex,
+        materialFileMetaLine,
+        materialStateOf,
+        materialGroupCountText,
+        materialSubjectCountText,
+        materialDefaultOpenKeys,
+        materialSubjectIdForPath,
+        materialActionErrorText,
+        materialOpenKeysForPath,
+        findMaterialFileInScan,
+        materialFileCard: MaterialFileCard,
         // 讲义按「节」切片（2026-11-17 C2）：学习模式上/下篇翻节用
         splitLectureSections,
         // 公式排版（2026-10-26 深夜）：LaTeX → 符号（上下标/分式/根号/希腊字母），
@@ -14834,6 +15600,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         resetMaterialsUi,
         navSnapshot,
         navPush,
+        navSync,
         navBack,
         navForward,
         navCanBack,
