@@ -84,6 +84,11 @@ test('分类：PPT 扩展名 / 教材 zip / 习题取字 / 教材 OCR / 提交�
   assert.equal(classifyMaterialPath('物理/答案/第01次/a.md').group, 'exercise');
   assert.equal(classifyMaterialPath('物理/讲义/知识点/A.md').group, 'lecture');
   assert.equal(classifyMaterialPath('物理/EDA讲义/L2.md').group, 'lecture');
+  assert.equal(
+    classifyMaterialPath('数据结构/复习/散列表_速查表.md').group,
+    'lecture',
+    '复习目录里是速查表/复习提纲，本质是讲义（2026-11-25 用户点名归讲义组）',
+  );
   assert.equal(classifyMaterialPath('物理/zz 杂项/其他.pdf').group, 'other');
   assert.equal(classifyMaterialPath('物理/提交文件/第01次/hw.pdf'), null, '提交件整目录不展示');
   assert.equal(classifyMaterialPath('物理/README.md').group, 'other', '学科根下的散文件归其他');
