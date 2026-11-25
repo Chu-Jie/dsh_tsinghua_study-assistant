@@ -192,6 +192,32 @@ test('buildScheduleBoard：新字段生效、起止时间与排序（有时间�
   assert.deepEqual([...rows.map((row) => row.title)], ['上午', '下午', '全天'], '按开始时间升序，全天排最后');
 });
 
+test('twoDayScheduleEntries：只收今天和明天（明天带「明天」前缀的版块行也一并验）', () => {
+  const internals = loadInternals();
+  const docs = {
+    schedule: {
+      version: 1,
+      entries: [
+        { id: 'e_yesterday', title: '昨天', date: '2026-11-18', time: '09:00', category: 'study' },
+        { id: 'e_today', title: '今天', date: '2026-11-19', time: '09:00', category: 'study' },
+        { id: 'e_tomorrow', title: '明天', date: '2026-11-20', time: '09:00', endTime: '11:00', category: 'study' },
+        { id: 'e_after', title: '后天', date: '2026-11-21', time: '09:00', category: 'study' },
+      ],
+    },
+  };
+
+  const picked = internals.twoDayScheduleEntries(docs, FIXED_NOW);
+  assert.deepEqual(picked.map((entry) => entry.id), ['e_today', 'e_tomorrow'], '昨天与后天都不进来');
+
+  // 版块里明天那条的时刻要能一眼看出是明天，否则会被当成今天就做。
+  const board = internals.buildScheduleBoard({ courses: [], tasks: [], entries: picked, overrides: {}, now: FIXED_NOW });
+  const rows = board.blocks.find((block) => block.category === 'study').rows;
+  const labelOf = new Map(rows.map((row) => [row.title, row.timeLabel]));
+  assert.equal(labelOf.get('今天'), '09:00');
+  assert.equal(labelOf.get('明天'), '明天 09:00–11:00');
+  assert.equal(rows.length, 2);
+});
+
 test('buildScheduleBoard：覆盖表优先于关键词；课程行已于 2026-11-25 停用（不再产出 course: 行）', () => {
   const internals = loadInternals();
   const board = internals.buildScheduleBoard({

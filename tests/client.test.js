@@ -2088,7 +2088,7 @@ test('截止列表必须带科目：主面板分类版块与右侧栏「最近�
   const internals = half.DESCRIPTORS.internals;
   const source = fs.readFileSync(path.join(HERE, '..', 'client.full.js'), 'utf8');
 
-  for (const label of ['今日安排（按分类）', '最近截止']) {
+  for (const label of ['今明两天（按分类）', '最近截止']) {
     assert.ok(source.includes(`'${label}'`), `应存在「${label}」这一栏`);
   }
 

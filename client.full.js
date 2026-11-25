@@ -2848,6 +2848,33 @@ window.__ModuleLoader__.load({
 @container (max-width:560px){
   .sa-cat-grid{grid-template-columns:minmax(0,1fr)}
 }
+/* 「本月日程」月历（2026-11-25 用户要求）：每一格是日子 + 当天安排，课程不进格子。
+   色块沿用四分类同一套语义令牌（品牌 / 业务 / 成功 / 次级文字），DDL 用 error 色，不新增颜色。 */
+.sa-cal{display:flex;flex-direction:column;gap:10px}
+.sa-cal-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sa-cal-month{font-size:16px;font-weight:600;line-height:1.5;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.sa-cal-weekdays{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.sa-cal-wd{font-size:12px;line-height:1.6;text-align:center;color:var(--dsw-alias-label-secondary)}
+.sa-cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.sa-cal-cell{display:flex;flex-direction:column;gap:3px;min-height:74px;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-sm,4px),6px);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer;overflow:hidden}
+.sa-cal-cell.is-out{opacity:.45}
+.sa-cal-cell.is-today{border-color:var(--dsw-alias-brand-primary)}
+.sa-cal-cell.is-picked{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary)}
+.sa-cal-num{font-size:12px;line-height:1.4;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.sa-cal-cell.is-today .sa-cal-num{color:var(--dsw-alias-brand-primary);font-weight:600}
+.sa-cal-chip{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;max-width:100%;font-size:11px;line-height:1.35;padding:1px 4px;border-radius:var(--dsw-radius-sm,4px);border-left:3px solid currentColor;overflow:hidden;overflow-wrap:anywhere}
+.sa-cal-chip.cat-study{color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent)}
+.sa-cal-chip.cat-innovation{color:var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-business-primary,var(--dsw-alias-brand-primary)) 10%,transparent)}
+.sa-cal-chip.cat-life{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary)) 10%,transparent)}
+.sa-cal-chip.cat-work{color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-label-secondary) 10%,transparent)}
+.sa-cal-chip.chip-ddl{color:var(--dsw-alias-state-error-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-error-primary,var(--dsw-alias-brand-primary)) 10%,transparent)}
+.sa-cal-more{font-size:11px;line-height:1.4;color:var(--dsw-alias-label-tertiary)}
+.sa-cal-day{display:flex;flex-direction:column;gap:6px;padding:9px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-base)}
+.sa-cal-day-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;line-height:1.6;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+@container (max-width:560px){
+  .sa-cal-cell{min-height:58px;padding:3px;gap:2px}
+  .sa-cal-chip{font-size:10px;padding:0 3px}
+}
 /* 提醒结果条：成功/失败都停在这张卡里，不弹窗 */
 .sa-note{margin:10px 0 0;padding:9px 11px;border-radius:max(var(--dsw-radius-md,8px),10px);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l1);font-size:14px;line-height:1.6;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;overflow-wrap:anywhere}
 .sa-note-error{border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2)}
@@ -3660,7 +3687,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      *   `courses` —— **已停用**（2026-11-25 用户定：今日日程不排课程，课表页签是课程的权威视图）。
      *                参数保留只为不让调用方炸，传进来也不会有课程行。
      *   `tasks`   —— 调用方已按「逾期 + 今天 + 明天」筛过、并按紧迫度排好的未完成任务
-     *   `entries` —— `日程.json` 里今天的条目
+     *   `entries` —— `日程.json` 里今明两天的条目（明天那条的时刻前会加「明天」前缀）
      *   `overrides` —— localStorage 覆盖表（`course:<id>` / `ddl:<id>` → category）
      * @returns {{blocks: Array<{category: string, label: string, tone: string, rows: Array<object>}>, total: number}}
      */
@@ -3668,6 +3695,15 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
       const entries = Array.isArray(input?.entries) ? input.entries : [];
       const overrides = input?.overrides !== null && typeof input?.overrides === 'object' ? input.overrides : {};
+      // 明天的日期串（`YYYY-MM-DD`）：明天的日程要在时刻前标「明天」，否则摆在
+      // 「今日日程」里会被误读成今天就做（2026-11-25 反馈）。
+      // 注意**别写 `instanceof Date`**：测试与宿主是两个 realm，跨 realm 的 Date 不算 instanceof，
+      // 这里只认「有 getTime 的对象」，再用毫秒数在本地重建一个。
+      const rawNow = input?.now;
+      const nowForDay = rawNow !== null && typeof rawNow === 'object' && typeof rawNow.getTime === 'function'
+        ? new Date(rawNow.getTime())
+        : new Date();
+      const tomorrowKey = formatDay(new Date(nowForDay.getTime() + 24 * 60 * 60 * 1000));
 
       // 2026-11-25 用户定：今日日程不再排课（「课程和作业这两个没有意义」）。
       // 课程归「课表」页签，这里只留「两天内的 DDL + 自己安排的日程」。
@@ -3710,13 +3746,16 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         const time = typeof entry.time === 'string' && entry.time.trim() !== '' ? entry.time.trim() : null;
         const endTime = typeof entry.endTime === 'string' && entry.endTime.trim() !== '' ? entry.endTime.trim() : null;
         const category = SCHEDULE_CATEGORIES.includes(entry.category) ? entry.category : 'work';
+        // 明天那条在时刻前加「明天」；今天与「没给日期」保持原样（调用方只喂今明两天的条目）。
+        const entryDay = typeof entry.date === 'string' ? entry.date : '';
+        const dayPrefix = entryDay === tomorrowKey ? '明天 ' : '';
         rows.push({
           key: `entry:${entry.id}`,
           kind: 'entry',
           id: entry.id,
           category,
           title: String(entry.title ?? ''),
-          timeLabel: scheduleTimeLabel(time, endTime),
+          timeLabel: `${dayPrefix}${scheduleTimeLabel(time, endTime)}`,
           minutes: time === null ? null : minuteOfClock(time),
           detail: {
             lines: [
@@ -3780,6 +3819,156 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       return objectList(docs?.schedule?.entries)
         .filter((entry) => typeof entry.date === 'string' && parseDay(entry.date) !== null && formatDay(parseDay(entry.date)) === target)
         .sort(compareScheduleEntry);
+    }
+
+    /**
+     * 「今天 + 明天」两天的日程条目（2026-11-25 二改）。
+     *
+     * 第一版只取今天，结果用户加了「明天早上」的日程在面板上完全看不见（他的口径是
+     * 「两天以内的 DDL 和自己安排的日程」）。这里与 DDL 的 `withinTwoDayDeadline`
+     * 用同一个窗口：今天 00:00 ~ 明天 23:59:59。
+     */
+    function twoDayScheduleEntries(docs, day) {
+      const today = parseDay(day);
+      if (today === null) return [];
+      const from = today.getTime();
+      const until = from + 2 * 24 * 60 * 60 * 1000;
+      return objectList(docs?.schedule?.entries)
+        .filter((entry) => {
+          const date = parseDay(entry?.date);
+          if (date === null) return false;
+          const t = date.getTime();
+          return t >= from && t < until;
+        })
+        .sort((a, b) => {
+          const da = parseDay(a.date).getTime();
+          const db = parseDay(b.date).getTime();
+          return da !== db ? da - db : compareScheduleEntry(a, b);
+        });
+    }
+
+    // 月历表头：周一开头（国内月历习惯），与 isoWeekday 的 1~7 对齐。
+    const MONTH_CAL_WEEKDAY = ['一', '二', '三', '四', '五', '六', '日'];
+
+    // 一格最多摆几条：2026-11-25 用户要求「每一个框可以装的条目多一点」，从 3 提到 5。
+    // 超出的在格子里写「还有 N 条」，点开当天详情仍能看到全部。
+    const MONTH_CAL_CHIP_LIMIT = 5;
+
+    /**
+     * 月历色块上的那行字：DDL 带科目时把科目摆在标题前（「数字电子技术基础 · 数电第 11 次作业」），
+     * 日程没有科目就只有标题。单独拎出来是为了让测试能直接验拼装，不必去啃渲染树。
+     */
+    function monthChipText(item) {
+      const subject = typeof item?.subject === 'string' ? item.subject.trim() : '';
+      const title = String(item?.title ?? '');
+      return subject === '' ? title : `${subject} · ${title}`;
+    }
+
+    /**
+     * 「本月日程」月历网格（2026-11-25）。
+     *
+     * 用户口径：「一个日历，每一个日期下方如果有除了上课以外的安排，就用不同颜色的框写明具体内容」。
+     * 所以这里**只收两类**东西：自己加的日程（按四分类着色）与未完成任务的 DDL 截止日（红色）。
+     * 课程永远不进格子——课表页签才是课程的权威视图，这也是「今日日程」那一卡同一口径。
+     *
+     * 排版固定 7 的整数倍（35 或 42 格），前后补到上/下个月并标 `inMonth:false`，
+     * 不做「最后一行不满就少一格」的处理，否则每个月网格宽度会跳。
+     *
+     * @param {{year?:number, month?:number, entries?:Array, tasks?:Array, now?:Date}} input
+     *   `month` 是 **1–12**（不是 `Date#getMonth()` 的 0–11）；缺省取 `now` 的年月。
+     * @returns {{year:number, month:number, title:string, weekdayLabels:string[],
+     *   weeks:Array<Array<object>>, itemCount:number}}
+     */
+    function buildMonthGrid(input) {
+      const raw = input !== null && typeof input === 'object' ? input : {};
+      const nowDate = isDateLike(raw.now) ? new Date(raw.now.getTime()) : new Date();
+      const yearRaw = Number(raw.year);
+      const monthRaw = Number(raw.month);
+      const year = Number.isFinite(yearRaw) ? Math.trunc(yearRaw) : nowDate.getFullYear();
+      const month = Number.isFinite(monthRaw) ? Math.min(12, Math.max(1, Math.trunc(monthRaw))) : nowDate.getMonth() + 1;
+      const todayKey = formatDay(nowDate);
+      const byDay = new Map();
+      const pushItem = (key, item) => {
+        const list = byDay.get(key);
+        if (list === undefined) byDay.set(key, [item]);
+        else list.push(item);
+      };
+
+      for (const entry of objectList(raw.entries)) {
+        const date = parseDay(entry?.date);
+        if (date === null) continue;
+        const category = typeof entry.category === 'string' ? entry.category : 'study';
+        const time = typeof entry.time === 'string' ? entry.time : '';
+        const endTime = typeof entry.endTime === 'string' ? entry.endTime : '';
+        pushItem(formatDay(date), {
+          kind: 'entry',
+          id: typeof entry.id === 'string' ? entry.id : '',
+          title: typeof entry.title === 'string' && entry.title.trim() !== '' ? entry.title.trim() : '（未命名日程）',
+          timeLabel: time === '' ? '全天' : (endTime === '' ? time : `${time}–${endTime}`),
+          category,
+          tone: SCHEDULE_CATEGORY_TONE[category] ?? 'cat-study',
+          // 日程没有科目：留空串而不是留 undefined，渲染处只判 `=== ''`。
+          subject: '',
+          note: typeof entry.note === 'string' ? entry.note : '',
+          location: typeof entry.location === 'string' ? entry.location : '',
+        });
+      }
+
+      for (const task of objectList(raw.tasks)) {
+        const due = parseDue(task?.due);
+        if (due === null) continue;
+        // 科目名来自 `课程.json`（调用方用 `courseNameIn(courseIndex, courseId)` 现算塞进 `subjectName`）：
+        // 「DDL 要能看出是哪门课的」（2026-11-25 用户要求）。课名改了就跟着变，不在任务里冗余。
+        const subject = typeof task.subjectName === 'string' ? task.subjectName.trim() : '';
+        pushItem(formatDay(due), {
+          kind: 'ddl',
+          id: typeof task.id === 'string' ? task.id : '',
+          title: typeof task.title === 'string' && task.title.trim() !== '' ? task.title.trim() : '（未命名任务）',
+          subject,
+          timeLabel: `${pad2(due.getHours())}:${pad2(due.getMinutes())} 截止`,
+          category: 'ddl',
+          tone: 'chip-ddl',
+          note: typeof task.note === 'string' ? task.note : '',
+          location: '',
+        });
+      }
+
+      // 同一天里先日程后 DDL，各自按时间排：日程是用户自己定的，摆前面才顺手。
+      const itemsOf = (key) => [...(byDay.get(key) ?? [])].sort((a, b) => {
+        if (a.kind !== b.kind) return a.kind === 'entry' ? -1 : 1;
+        const ta = a.timeLabel === '全天' ? '' : a.timeLabel;
+        const tb = b.timeLabel === '全天' ? '' : b.timeLabel;
+        if (ta !== tb) return ta < tb ? -1 : 1;
+        return a.title.localeCompare(b.title);
+      });
+
+      const lead = isoWeekday(new Date(year, month - 1, 1)) - 1;   // 1 号前面要补几格
+      const daysInMonth = new Date(year, month, 0).getDate();
+      const total = Math.ceil((lead + daysInMonth) / 7) * 7;
+      const weeks = [];
+      for (let i = 0; i < total; i += 1) {
+        const date = new Date(year, month - 1, 1 - lead + i);
+        const key = formatDay(date);
+        const cell = {
+          key,
+          day: date.getDate(),
+          inMonth: date.getFullYear() === year && date.getMonth() === month - 1,
+          isToday: key === todayKey,
+          items: itemsOf(key),
+        };
+        if (i % 7 === 0) weeks.push([cell]);
+        else weeks[weeks.length - 1].push(cell);
+      }
+      const itemCount = weeks.reduce((sum, week) => sum
+        + week.reduce((n, cell) => n + (cell.inMonth ? cell.items.length : 0), 0), 0);
+      return {
+        year,
+        month,
+        title: `${year}年${month}月`,
+        weekdayLabels: MONTH_CAL_WEEKDAY,
+        weeks,
+        itemCount,
+      };
     }
 
     /** 今天之后 `days` 天内（不含今天）的日程条目，按日期 + 时间排：给「接下来」那一小段用。 */
@@ -3875,7 +4064,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       // 2026-11-25 起今日日程不排课程（课表页签是课程的权威视图），课程行的 memo 已删。
       // 这里补第 14 份文档 `schedule` 的今日条目，以及推送按钮的状态。
       // 表单默认日期就是「今天」，改日期只影响这一条落在哪天。
-      const todayEntries = useMemo(() => scheduleEntriesOf(docs, now), [docs.schedule, now]);
+      // 2026-11-25 二改：第一版只取「今天」，用户加的「明天早上」的日程在面板上看不见。
+      // 现在与「两天内 DDL」用同一窗口（今天 + 明天），明天那条的时刻会带「明天」前缀。
+      const twoDayEntries = useMemo(() => twoDayScheduleEntries(docs, now), [docs.schedule, now]);
       const upcomingEntries = useMemo(() => upcomingScheduleEntries(docs, now, 7), [docs.schedule, now]);
 
       // 「两天以内」的 DDL：逾期 + 今天 + 明天（用户 2026-11-25 定）。汇总文案与版块共用这一份筛选。
@@ -4068,10 +4259,10 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       // 筛选用的 `twoDayTasks` 在上面日程小节就建好了，汇总文案与这里共用同一份，不会两处筛出不同结果。
       const board = useMemo(() => buildScheduleBoard({
         tasks: twoDayTasks.map((task) => ({ ...task, subjectName: courseNameIn(courseIndex, task.courseId) })),
-        entries: todayEntries,
+        entries: twoDayEntries,
         overrides,
         now,
-      }), [twoDayTasks, todayEntries, overrides, now, courseIndex]);
+      }), [twoDayTasks, twoDayEntries, overrides, now, courseIndex]);
 
       /**
        * AI 草稿预览条：只有「AI 刚填过、标题非空」时才出现。
@@ -4122,6 +4313,42 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           .finally(() => setRemindBusy(false));
       };
 
+      // ---- 本月日程月历（2026-11-25 用户要求）----
+      // 一个日历，每格日子下方摆「除上课以外的安排」：自定义日程按四分类着色，未完成 DDL 用红色。
+      // 课程不进格子（课表页签是权威），与上面那张「今明两天」同一口径。
+      const [calCursor, setCalCursor] = useState(() => {
+        const base = parseDay(now) ?? new Date();
+        return { year: base.getFullYear(), month: base.getMonth() + 1 };
+      });
+      const [calPicked, setCalPicked] = useState(() => formatDay(parseDay(now) ?? new Date()));
+      // 月历要摆的是整月的 DDL（不只是两天内的），所以单独按 courseIndex 补一版科目名再喂进去；
+      // 网格里 DDL 的科目就从这里来，和「最近截止」那一栏用同一个 `courseNameIn`。
+      const calTasks = useMemo(
+        () => sorted.map((task) => ({ ...task, subjectName: courseNameIn(courseIndex, task.courseId) })),
+        [sorted, courseIndex],
+      );
+      const monthGrid = useMemo(() => buildMonthGrid({
+        year: calCursor.year,
+        month: calCursor.month,
+        entries: objectList(docs.schedule?.entries),
+        tasks: calTasks,
+        now,
+      }), [calCursor, docs.schedule, calTasks, now]);
+      const calCells = useMemo(() => monthGrid.weeks.reduce((all, week) => all.concat(week), []), [monthGrid]);
+      const calPickedCell = useMemo(
+        () => calCells.find((cell) => cell.key === calPicked) ?? null,
+        [calCells, calPicked],
+      );
+      const shiftMonth = (delta) => {
+        const base = new Date(calCursor.year, calCursor.month - 1 + delta, 1);
+        setCalCursor({ year: base.getFullYear(), month: base.getMonth() + 1 });
+      };
+      const backToThisMonth = () => {
+        const base = parseDay(now) ?? new Date();
+        setCalCursor({ year: base.getFullYear(), month: base.getMonth() + 1 });
+        setCalPicked(formatDay(base));
+      };
+
       // ---- 今日要闻（2026-11-19 B 卡）----
       // 数据不是面板写出来的：插件外的 tools/fetch-news.mjs 由 Windows 计划任务每天 7:00 跑一次，
       // 抓公开源写进第 15 份文档 `要闻.json`；这里只读展示，点标题去原文。
@@ -4157,7 +4384,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       }, [news]);
 
       // 2026-11-25 用户定：今日日程只报「日程 + 两天内 DDL」（课程移出本页、归课表页签）。
-      const todaySummary = `${todayEntries.length} 条日程 · ${twoDayTasks.length} 个两天内 DDL`
+      const todaySummary = `${twoDayEntries.length} 条日程 · ${twoDayTasks.length} 个两天内 DDL`
         + (twoDayOverdueCount > 0 ? `（含 ${twoDayOverdueCount} 个逾期）` : '');
 
       return h(
@@ -4195,9 +4422,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           // 行右侧的小下拉改分类；课程与 DDL 的改动只落 localStorage，不写回数据文件。
           h('div', { className: 'sa-sub sa-sub-first' },
             h('div', { className: 'sa-dock' },
-              h('h4', { className: 'sa-grow' }, '今日安排（按分类）'),
+              h('h4', { className: 'sa-grow' }, '今明两天（按分类）'),
               h('span', { className: 'sa-muted' },
-                `日程 ${todayEntries.length} · 两天内 DDL ${twoDayTasks.length}`)),
+                `今明日程 ${twoDayEntries.length} · 两天内 DDL ${twoDayTasks.length}`)),
             h('div', { className: 'sa-cat-grid' },
               board.blocks.map((block) => h('div', { className: 'sa-cat', key: block.category },
                 h('div', { className: 'sa-cat-head' },
@@ -4246,7 +4473,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                                   ? h('button', {
                                       className: 'sa-btn',
                                       disabled: busy,
-                                      onClick: () => removeScheduleEntry(todayEntries.find((item) => item.id === row.id) ?? { id: row.id, title: row.title }),
+                                      onClick: () => removeScheduleEntry(twoDayEntries.find((item) => item.id === row.id) ?? { id: row.id, title: row.title }),
                                     }, '删除')
                                   : null,
                               ),
@@ -4267,7 +4494,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           h('div', { className: 'sa-sub' },
             h('div', { className: 'sa-dock' },
               h('h4', { className: 'sa-grow' }, '自定义日程'),
-              h('span', { className: 'sa-muted' }, `${todayEntries.length} 条`)),
+              h('span', { className: 'sa-muted' }, `${twoDayEntries.length} 条`)),
             h('div', { className: 'sa-ai' },
               h('textarea', {
                 className: 'sa-input sa-textarea',
@@ -4343,6 +4570,77 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                       `${formatMonthDay(parseDay(entry.date))}${entry.time === null ? '' : ` ${entry.time}`}`),
                     h('span', { className: 'sa-grow' }, entry.title),
                   )),
+                ),
+          ),
+        ),
+
+        // 本月日程（2026-11-25 用户要求）：一张月历，格里只摆「除上课以外的安排」。
+        // 点任意一天在下面看当天详情；日程可当场删（走 /mutate 的 delete），DDL 只读。
+        h('div', { className: 'sa-card' },
+          h('div', { className: 'sa-dock' },
+            h('h3', { className: 'sa-grow' }, '本月日程'),
+            h('span', { className: 'sa-muted' }, `${monthGrid.title} · ${monthGrid.itemCount} 条安排`)),
+          h('div', { className: 'sa-cal' },
+            h('div', { className: 'sa-cal-bar' },
+              h('button', { className: 'sa-btn', title: '看上个月', onClick: () => shiftMonth(-1) }, '‹ 上月'),
+              h('button', { className: 'sa-btn', title: '看下个月', onClick: () => shiftMonth(1) }, '下月 ›'),
+              h('span', { className: 'sa-cal-month sa-grow' }, monthGrid.title),
+              h('button', { className: 'sa-btn', title: '回到本月并选中今天', onClick: backToThisMonth }, '回到本月')),
+            h('div', { className: 'sa-cal-weekdays' },
+              monthGrid.weekdayLabels.map((label) => h('div', { className: 'sa-cal-wd', key: label }, label))),
+            h('div', { className: 'sa-cal-grid' },
+              calCells.map((cell) => h('button', {
+                type: 'button',
+                key: cell.key,
+                className: 'sa-cal-cell'
+                  + (cell.inMonth ? '' : ' is-out')
+                  + (cell.isToday ? ' is-today' : '')
+                  + (cell.key === calPicked ? ' is-picked' : ''),
+                title: cell.items.length === 0 ? `${cell.key}：没有安排` : `${cell.key}：${cell.items.length} 条安排`,
+                onClick: () => setCalPicked(cell.key),
+              },
+                h('span', { className: 'sa-cal-num' }, String(cell.day)),
+                cell.items.slice(0, MONTH_CAL_CHIP_LIMIT).map((item) => {
+                  // DDL 带科目（2026-11-25 用户要求）：科目名摆在标题前面，一眼看出是哪门课的作业。
+                  const chipText = monthChipText(item);
+                  return h('span', {
+                    className: `sa-cal-chip ${item.tone}`,
+                    key: `${item.kind}:${item.id}`,
+                    title: `${item.timeLabel} ${chipText}`,
+                  }, chipText);
+                }),
+                cell.items.length > MONTH_CAL_CHIP_LIMIT
+                  ? h('span', { className: 'sa-cal-more' }, `还有 ${cell.items.length - MONTH_CAL_CHIP_LIMIT} 条`)
+                  : null,
+              ))),
+            calPickedCell === null
+              ? h('div', { className: 'sa-muted', style: { fontSize: 14 } }, '点上面的任意一天，看当天的安排。')
+              : h('div', { className: 'sa-cal-day' },
+                  h('div', { className: 'sa-cal-day-head' },
+                    h('span', { className: 'sa-grow' }, `${calPickedCell.key}${calPickedCell.isToday ? '（今天）' : ''}`),
+                    h('span', null, calPickedCell.items.length === 0 ? '没有安排' : `${calPickedCell.items.length} 条`)),
+                  calPickedCell.items.length === 0
+                    ? h('div', { className: 'sa-muted' }, '这天没有日程，也没有到期的 DDL。')
+                    : calPickedCell.items.map((item) => h('div', { className: 'sa-row', key: `${item.kind}:${item.id}` },
+                        h('span', { className: `sa-pill ${item.kind === 'ddl' ? 'later' : item.tone}` },
+                          item.kind === 'ddl' ? 'DDL' : SCHEDULE_CATEGORY_LABEL[item.category]),
+                        h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, item.timeLabel),
+                        h('span', { className: 'sa-grow' },
+                          item.title,
+                          // DDL 带科目，与「最近截止」那一栏同一种写法：标题后跟一个次级文字。
+                          item.subject === '' ? null : h('span', { className: 'sa-muted', style: { whiteSpace: 'nowrap' } }, `　${item.subject}`),
+                          item.location === '' ? null : h('span', { className: 'sa-muted' }, `　@${item.location}`),
+                          item.note === '' ? null : h('div', { className: 'sa-muted', style: { fontSize: 13 } }, item.note)),
+                        item.kind === 'entry'
+                          ? h('button', {
+                              className: 'sa-btn',
+                              disabled: busy,
+                              onClick: () => removeScheduleEntry(
+                                objectList(docs.schedule?.entries).find((entry) => entry.id === item.id)
+                                ?? { id: item.id, title: item.title }),
+                            }, '删除')
+                          : null,
+                      )),
                 ),
           ),
         ),
@@ -15578,6 +15876,17 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         // 测试直接拿它们验「关键词命中 / 兜底 / 覆盖优先 / 旧条目缺省 work」。
         classifyByKeyword,
         buildScheduleBoard,
+        // 今明两天的日程筛选（2026-11-25 二改）：纯函数，测试验「只有今天 → 只有今天」「明天进得来」「后天进不来」
+        twoDayScheduleEntries,
+        withinTwoDayDeadline,
+        // 本月日程月历（2026-11-25）：纯函数，测试直接验「补格 / 跨月 / 今天标记 / DDL 落格 / 只收除上课以外的安排」
+        buildMonthGrid,
+        MONTH_CAL_WEEKDAY,
+        // 一格最多摆几条（2026-11-25 用户要求「多一点」，3 → 5）：测试直接钉这个数字，
+        // 免得哪天被悄悄改回 3 而没人发现。
+        MONTH_CAL_CHIP_LIMIT,
+        // 色块文字的拼装（科目 + 标题）：DDL 要把科目摆在标题前。
+        monthChipText,
         readCategoryOverrides,
         writeCategoryOverride,
         SCHEDULE_CATEGORIES,
