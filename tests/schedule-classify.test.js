@@ -192,7 +192,7 @@ test('buildScheduleBoard：新字段生效、起止时间与排序（有时间�
   assert.deepEqual([...rows.map((row) => row.title)], ['上午', '下午', '全天'], '按开始时间升序，全天排最后');
 });
 
-test('buildScheduleBoard：覆盖表优先于关键词，课程 / DDL 都不写回数据', () => {
+test('buildScheduleBoard：覆盖表优先于关键词；课程行已于 2026-11-25 停用（不再产出 course: 行）', () => {
   const internals = loadInternals();
   const board = internals.buildScheduleBoard({
     courses: [
@@ -203,18 +203,15 @@ test('buildScheduleBoard：覆盖表优先于关键词，课程 / DDL 都不写�
       { id: 't1', title: '交实验报告', due: '2026-11-19 23:59', courseId: 'c1', subjectName: '数字电路实验' },
     ],
     entries: [],
-    // 用户把「数字电路实验」手动改成「学习」，把 t1 改成「生活」
+    // 用户把 t1 手动改成「生活」；`course:c1` 的覆盖键保留但已无人消费（课程行停用）
     overrides: { 'course:c1': 'study', 'ddl:t1': 'life' },
     now: FIXED_NOW,
   });
   const byId = {};
   for (const block of board.blocks) for (const row of block.rows) byId[row.key] = row;
-  assert.equal(byId['course:c1'].category, 'study', '覆盖表优先于关键词（含「实验」的课本来兜底学习，这里靠覆盖钉住）');
+  // 2026-11-25 用户定：今日日程不排课，课程归「课表」页签 —— 传进来的课程一条都不该出行。
+  assert.deepEqual(Object.keys(byId), ['ddl:t1'], `课程行应已停用，实际 ${JSON.stringify(Object.keys(byId))}`);
   assert.equal(byId['ddl:t1'].category, 'life', 'DDL 的覆盖优先于「实验」等关键词');
-  // 没有覆盖的课程按关键词走：挑战杯 → 科创
-  assert.equal(byId['course:c2'].category, 'innovation');
-  // 课程行显示节次、科目进详情
-  assert.equal(byId['course:c1'].timeLabel, '第 5-6 节');
   assert.ok(byId['ddl:t1'].detail.lines.some((line) => line.startsWith('科目：数字电路实验')));
 });
 

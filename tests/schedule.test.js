@@ -2,7 +2,8 @@
 //
 // 覆盖三件事：
 //   1. 注册面：DOC_KEYS / DOC_FILES / defaultDoc / DOC_SHAPE / validateDoc；
-//   2. buildDailyBrief：今日课程、今日自定义日程（全天排最后）、今日 DDL（逾期在前、已完结剔除）；
+//   2. buildDailyBrief：今日自定义日程（全天排最后）、今明 DDL（逾期在前、已完结剔除）；
+//      —— 2026-11-25 起**不再**算「今日课程」进推送（面板也去掉了课程行，课表页签是权威视图）。
 //   3. formatDailyBrief：一段可直发微信/QQ 的纯文本，含空态文案与超量截断。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,6 +38,9 @@ function doc(overrides = {}) {
       tasks: [
         { id: 't_over', title: '逾期作业', due: '2026-11-16', status: 'todo', courseId: 'c1' },
         { id: 't_today', title: '今天作业', due: '2026-11-19 23:59', status: 'todo' },
+        // 2026-11-25 新增口径：明天到期的要进推送（`soon` 里 days=1），后天及以后不进。
+        { id: 't_tomorrow', title: '明天交', due: '2026-11-20 18:00', status: 'todo' },
+        { id: 't_dayAfter', title: '后天交', due: '2026-11-21 18:00', status: 'todo' },
         { id: 't_done', title: '已完成', due: '2026-11-19', status: 'done' },
         { id: 't_none', title: '无截止', due: null, status: 'todo' },
         { id: 't_later', title: '下周交', due: '2026-11-26', status: 'todo' },
@@ -121,7 +125,8 @@ test('buildDailyBrief：今日课程 / 今日日程 / 今日 DDL 三块各按自
 
   assert.deepEqual(brief.ddl.overdue.map((d) => d.id), ['t_over'], '逾期单独一组');
   assert.deepEqual(brief.ddl.today.map((d) => d.id), ['t_today'], '今天到期的单独一组');
-  assert.equal(brief.ddl.total, 2, '已完成 / 下周 / 无截止都不算今日 DDL');
+  assert.deepEqual(brief.ddl.tomorrow.map((d) => d.id), ['t_tomorrow'], '明天到期的单独一组（用户 2026-11-25 定的两天窗口）');
+  assert.equal(brief.ddl.total, 3, '已完成 / 后天 / 下周 / 无截止都不算（窗口=逾期+今天+明天）');
 });
 
 test('buildDailyBrief：放假或没课时不编课，坏条目不会混进来', () => {
@@ -137,17 +142,20 @@ test('buildDailyBrief：放假或没课时不编课，坏条目不会混进来',
   assert.deepEqual(dirty.entries, [], '读入面也要挡掉坏条目，别把 undefined 渲染成一行');
 });
 
-test('formatDailyBrief：纯文本三段 + 空态文案', () => {
+test('formatDailyBrief：纯文本两段（课程已按 2026-11-25 要求删除）+ 空态文案', () => {
   const text = formatDailyBrief(buildDailyBrief(doc(), NOW));
   assert.match(text, /^【今日日程 · 11\/19 周四 · 第 1 周】/);
-  assert.match(text, /■ 今日课程/);
-  assert.match(text, /1\. 高等数学　第 1-2 节 · 六教 6A101/);
+  // 2026-11-25 用户定：推送不再列今日课程（面板也只剩课表页签），这里断言它确实不出现。
+  assert.ok(!text.includes('今日课程'), '推送里不该再有「今日课程」小节');
+  assert.ok(!text.includes('高等数学'), '课程名不该出现在推送正文里');
   assert.match(text, /■ 自定义日程/);
   assert.match(text, /09:30　交实验报告（三教）/);
   assert.match(text, /全天　取快递/);
-  assert.match(text, /■ 今日 DDL/);
+  assert.match(text, /■ 今明两天的 DDL/);
   assert.match(text, /\[逾期 3 天\] 逾期作业（截止 2026-11-16）/);
   assert.match(text, /\[今天 23:59\] 今天作业（截止 2026-11-19 23:59）/);
+  assert.match(text, /\[明天 18:00\] 明天交（截止 2026-11-20 18:00）/);
+  assert.ok(!text.includes('后天交'), '后天及以后的 DDL 不进推送（两天窗口）');
   assert.ok(!text.includes('昨天的会'), '非今日条目不该进推送');
 
   const empty = formatDailyBrief(buildDailyBrief({
@@ -156,9 +164,8 @@ test('formatDailyBrief：纯文本三段 + 空态文案', () => {
     tasks: { version: 1, tasks: [], updatedAt: null },
     schedule: { version: 1, entries: [], updatedAt: null },
   }, NOW));
-  assert.match(empty, /今天没有课。/);
   assert.match(empty, /今天没有自定义日程。/);
-  assert.match(empty, /今天没有到期或逾期的 DDL。/);
+  assert.match(empty, /今明两天没有要交的，也没有逾期的。/);
 });
 
 test('formatDailyBrief：超量时给出「还有 N 条」而不是静默截断', () => {

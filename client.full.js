@@ -465,6 +465,20 @@ window.__ModuleLoader__.load({
       return { level: 'later', days };
     }
 
+    /**
+     * 「两天以内的 DDL」= 逾期 + 今天 + 明天（按自然日）。
+     *
+     * 2026-11-25 用户定：今日日程只摆这两天内的 DDL（逾期的一律留着，藏起来最危险），
+     * 更远的截止日去「DDL」页签看。`soon` 是 days ≤ 3，明天 = days 1、后天 = days 2，
+     * 所以这里必须写成 `days <= 1` 而不是 `level === 'soon'`。
+     */
+    function withinTwoDayDeadline(task, now) {
+      const urgency = deadlineUrgency(task, now);
+      if (urgency.level === 'overdue') return true;
+      if (urgency.level === 'today') return true;
+      return urgency.level === 'soon' && Number.isInteger(urgency.days) && urgency.days <= 1;
+    }
+
     const URGENCY_RANK = { overdue: 0, today: 1, soon: 2, later: 3, unknown: 4, done: 5 };
 
     function compareTasksByDue(a, b, now) {
@@ -3643,54 +3657,23 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      * 组装「今日日程」的四个版块（纯函数）。
      *
      * @param {{courses?: Array, tasks?: Array, entries?: Array, overrides?: object, now?: Date}} input
-     *   `courses` —— 与 `todayCourses` 同形状（`{course, session}`）
-     *   `tasks`   —— 已经按紧迫度排好的未完成任务（调用方决定取前几条）
+     *   `courses` —— **已停用**（2026-11-25 用户定：今日日程不排课程，课表页签是课程的权威视图）。
+     *                参数保留只为不让调用方炸，传进来也不会有课程行。
+     *   `tasks`   —— 调用方已按「逾期 + 今天 + 明天」筛过、并按紧迫度排好的未完成任务
      *   `entries` —— `日程.json` 里今天的条目
      *   `overrides` —— localStorage 覆盖表（`course:<id>` / `ddl:<id>` → category）
      * @returns {{blocks: Array<{category: string, label: string, tone: string, rows: Array<object>}>, total: number}}
      */
     function buildScheduleBoard(input) {
-      const courses = Array.isArray(input?.courses) ? input.courses : [];
       const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
       const entries = Array.isArray(input?.entries) ? input.entries : [];
       const overrides = input?.overrides !== null && typeof input?.overrides === 'object' ? input.overrides : {};
 
+      // 2026-11-25 用户定：今日日程不再排课（「课程和作业这两个没有意义」）。
+      // 课程归「课表」页签，这里只留「两天内的 DDL + 自己安排的日程」。
+      // 课程行的旧代码（含 `course:<id>` 的 overrides 键）一并停用；`minuteOfPeriod`
+      // 与 `PERIOD_START_MINUTES` 保留，检索工具与课表侧仍在用。
       const rows = [];
-      for (const item of courses) {
-        const course = item?.course ?? null;
-        const session = item?.session ?? null;
-        if (course === null || session === null) continue;
-        const id = String(course.id ?? '');
-        if (id === '') continue;
-        const start = Number(session.startPeriod);
-        const end = Number(session.endPeriod);
-        const span = Number.isInteger(start) && start > 0
-          ? (Number.isInteger(end) && end > start ? `第 ${start}-${end} 节` : `第 ${start} 节`)
-          : '节次未填';
-        const category = SCHEDULE_CATEGORIES.includes(overrides[`course:${id}`])
-          ? overrides[`course:${id}`]
-          : classifyByKeyword(`${course.name ?? ''} ${Array.isArray(course.aliases) ? course.aliases.join(' ') : ''}`);
-        rows.push({
-          key: `course:${id}`,
-          kind: 'course',
-          id,
-          category,
-          title: String(course.name ?? ''),
-          timeLabel: span,
-          minutes: minuteOfPeriod(start),
-          detail: {
-            lines: [
-              `${span}`,
-              typeof session.location === 'string' && session.location.trim() !== '' ? `地点：${session.location.trim()}` : '',
-              typeof course.teacher === 'string' && course.teacher.trim() !== '' ? `教师：${course.teacher.trim()}` : '',
-              typeof session.weeks === 'string' && session.weeks.trim() !== '' ? `周次：${session.weeks.trim()}` : '',
-            ].filter((line) => line !== ''),
-            note: '',
-            location: '',
-            source: '',
-          },
-        });
-      }
 
       for (const task of tasks) {
         if (task === null || typeof task !== 'object' || typeof task.id !== 'string') continue;
@@ -3885,25 +3868,24 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         return countReviewedWithin(nodes, now instanceof Date ? now.getTime() : Date.now());
       }, [docs.knowledgeNetwork, now]);
 
-      const todayCourses = useMemo(() => {
-        if (!week.inTerm) return [];
-        const weekday = isoWeekday(now);
-        const courses = objectList(docs.courses?.courses);
-        return courses
-          .filter((course) => isWeekActive(course, week.week))
-          .flatMap((course) => (Array.isArray(course.sessions) ? course.sessions : []).map((session) => ({ course, session })))
-          .filter(({ session }) => Number(session?.weekday) === weekday)
-          .sort((a, b) => Number(a.session?.startPeriod ?? 0) - Number(b.session?.startPeriod ?? 0));
-      }, [docs.courses, week.inTerm, week.week, now]);
+      // 2026-11-25：今日日程不再排课（「课程和作业这两个没有意义」），`todayCourses` 已删。
+      // 要看今天上什么课去「课表」页签；本页只留「两天内 DDL + 自己安排的日程」。
 
-      // ---- 今日日程（2026-11-19 A 卡）：自定义日程 + 今日 DDL + 一键提醒 ----
-      // 课程仍是上面那个 todayCourses；这里补第 14 份文档 `schedule` 的今日条目，
-      // 以及推送按钮的状态。表单默认日期就是「今天」，改日期只影响这一条落在哪天。
+      // ---- 今日日程（2026-11-19 A 卡）：自定义日程 + 两天内 DDL + 一键提醒 ----
+      // 2026-11-25 起今日日程不排课程（课表页签是课程的权威视图），课程行的 memo 已删。
+      // 这里补第 14 份文档 `schedule` 的今日条目，以及推送按钮的状态。
+      // 表单默认日期就是「今天」，改日期只影响这一条落在哪天。
       const todayEntries = useMemo(() => scheduleEntriesOf(docs, now), [docs.schedule, now]);
       const upcomingEntries = useMemo(() => upcomingScheduleEntries(docs, now, 7), [docs.schedule, now]);
-      const todayDeadlineCount = useMemo(
-        () => sorted.filter((task) => deadlineUrgency(task, now).level === 'today').length,
+
+      // 「两天以内」的 DDL：逾期 + 今天 + 明天（用户 2026-11-25 定）。汇总文案与版块共用这一份筛选。
+      const twoDayTasks = useMemo(
+        () => sorted.filter((task) => withinTwoDayDeadline(task, now)),
         [sorted, now],
+      );
+      const twoDayOverdueCount = useMemo(
+        () => twoDayTasks.filter((task) => deadlineUrgency(task, now).level === 'overdue').length,
+        [twoDayTasks, now],
       );
 
       const [draft, setDraft] = useState({
@@ -4081,14 +4063,15 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
           .finally(() => setAiBusy(false));
       };
 
-      // 四个版块（学习 / 科创 / 生活 / 工作其他）：课程 + DDL（按紧迫度前 8 条）+ 今日自定义日程
+      // 四个版块（学习 / 科创 / 生活 / 工作其他）：两天内的 DDL（逾期一律留）+ 今日自定义日程。
+      // 2026-11-25 定：课程不排（去课表页签看）；DDL 不再只摆前 8 条，也不再只算「今天到期」。
+      // 筛选用的 `twoDayTasks` 在上面日程小节就建好了，汇总文案与这里共用同一份，不会两处筛出不同结果。
       const board = useMemo(() => buildScheduleBoard({
-        courses: todayCourses,
-        tasks: sorted.slice(0, 8).map((task) => ({ ...task, subjectName: courseNameIn(courseIndex, task.courseId) })),
+        tasks: twoDayTasks.map((task) => ({ ...task, subjectName: courseNameIn(courseIndex, task.courseId) })),
         entries: todayEntries,
         overrides,
         now,
-      }), [todayCourses, sorted, todayEntries, overrides, now, courseIndex]);
+      }), [twoDayTasks, todayEntries, overrides, now, courseIndex]);
 
       /**
        * AI 草稿预览条：只有「AI 刚填过、标题非空」时才出现。
@@ -4173,8 +4156,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
         return [...counts.entries()].sort((a, b) => (b[1] - a[1]) || (a[0] < b[0] ? -1 : 1));
       }, [news]);
 
-      const todaySummary = `${todayCourses.length} 节课 · ${todayEntries.length} 条日程 · ${todayDeadlineCount} 个今天到期`
-        + (overdueCount > 0 ? ` · ${overdueCount} 个逾期` : '');
+      // 2026-11-25 用户定：今日日程只报「日程 + 两天内 DDL」（课程移出本页、归课表页签）。
+      const todaySummary = `${todayEntries.length} 条日程 · ${twoDayTasks.length} 个两天内 DDL`
+        + (twoDayOverdueCount > 0 ? `（含 ${twoDayOverdueCount} 个逾期）` : '');
 
       return h(
         'div',
@@ -4213,8 +4197,7 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             h('div', { className: 'sa-dock' },
               h('h4', { className: 'sa-grow' }, '今日安排（按分类）'),
               h('span', { className: 'sa-muted' },
-                `课程 ${todayCourses.length} · 日程 ${todayEntries.length} · DDL ${Math.min(sorted.length, 8)}`
-                + (week.inTerm ? '' : ' · 今天不在教学周内'))),
+                `日程 ${todayEntries.length} · 两天内 DDL ${twoDayTasks.length}`)),
             h('div', { className: 'sa-cat-grid' },
               board.blocks.map((block) => h('div', { className: 'sa-cat', key: block.category },
                 h('div', { className: 'sa-cat-head' },
@@ -4273,9 +4256,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                     }),
               )),
             ),
-            sorted.length > 8
+            sorted.length > twoDayTasks.length
               ? h('div', { className: 'sa-muted', style: { fontSize: 14, marginTop: 8 } },
-                  `DDL 只摆紧迫度前 8 条（共 ${sorted.length} 个未完成），全量在「DDL」页签；今天到期 ${todayDeadlineCount}、逾期 ${overdueCount}。`)
+                  `这里只摆逾期和今明两天的 DDL（共 ${twoDayTasks.length} 个）；另有 ${sorted.length - twoDayTasks.length} 个更迟的未完成，全量在「DDL」页签。`)
               : null,
           ),
 
@@ -13370,8 +13353,109 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
      */
     function pickAssistantProposal(value) {
       if (value === null || value === undefined || typeof value !== 'object') return null;
+      if (value.kind === 'schedule-task') {
+        // 2026-11-25：助手改「日程 / DDL」的预览。动作必须逐条带 target/op/item 才算数，
+        // 少一条就整包不认 —— 否则界面上会出现「点了只改一半」的按钮。
+        const actions = Array.isArray(value.actions) ? value.actions : [];
+        const clean = actions.filter((action) => action !== null && typeof action === 'object'
+          && (action.target === 'schedule' || action.target === 'task')
+          && (action.op === 'create' || action.op === 'update' || action.op === 'delete'));
+        if (clean.length === 0 || clean.length !== actions.length) return null;
+        return { kind: 'schedule-task', actions: clean, danger: clean.some((action) => action.op === 'delete') };
+      }
       if (value.kind !== 'set-mastery' && value.kind !== 'set-mastery-batch') return null;
       return value;
+    }
+
+    /**
+     * 把「日程 / DDL」的预览动作真正落库（用户在卡片上点「确认执行」之后才调）。
+     *
+     * 走通用 `POST /mutate`（服务端自带校验 + 备份 + 乐观并发），不另开写接口。
+     * 逐条提交、逐条记账：中间某条失败**不停下也不回滚**，因为用户看到的清单是逐条的，
+     * 回执里也逐条说清哪条成了、哪条没成 —— 悄悄回滚比诚实报错更糟。
+     */
+    async function applyScheduleTaskActions(actions) {
+      const list = Array.isArray(actions) ? actions : [];
+      const done = [];
+      const failed = [];
+      for (const action of list) {
+        const doc = action.target === 'schedule' ? 'schedule' : 'tasks';
+        const label = typeof action.summary === 'string' && action.summary !== '' ? action.summary : `${action.target}/${action.op}`;
+        try {
+          if (action.op === 'create') await mutate(doc, 'create', { item: action.item });
+          else if (action.op === 'update') await mutate(doc, 'update', { id: action.id, item: action.item });
+          else await mutate(doc, 'delete', { id: action.id });
+          done.push(label);
+        } catch (error) {
+          failed.push(`${label}（${String(error?.message ?? error)}）`);
+        }
+      }
+      return { done, failed };
+    }
+
+    /**
+     * 「日程 / DDL」预览卡（两处聊天共用一份渲染，避免两边文案走偏）。
+     *
+     * 只负责画：确认/取消由调用方传进来（各自的 setMessages 在各自闭包里）。
+     */
+    function renderScheduleTaskCard(item, index, busy, onConfirm, onCancel) {
+      const actions = Array.isArray(item?.action?.actions) ? item.action.actions : [];
+      const pending = item?.actionState === 'pending';
+      const armed = item?.actionArmed === true;
+      const danger = item?.action?.danger === true;
+      return h('div', {
+        className: 'sa-assist-proposal',
+        'data-resolved': pending ? 'false' : 'true',
+        'data-sa-schedule-task': true,
+        key: `sa-schedule-task-${index}`,
+      },
+        h('ul', { className: 'sa-assist-proposal-list' },
+          actions.map((action, at) => h('li', { key: `sa-schedule-task-${index}-${at}` },
+            typeof action?.summary === 'string' && action.summary !== ''
+              ? action.summary
+              : `${action?.target ?? '?'}/${action?.op ?? '?'}`))),
+        h('span', { className: 'sa-muted' },
+          pending
+            ? (danger ? '这一步还没落库；里面有删除，要确认两次' : '这一步还没落库')
+            : item?.actionState === 'done' ? '已落库' : '已取消'),
+        h('button', {
+          className: 'sa-btn primary',
+          type: 'button',
+          disabled: busy || !pending,
+          onClick: () => onConfirm(index),
+        }, armed ? '再点一次确认删除' : '确认执行'),
+        h('button', {
+          className: 'sa-btn',
+          type: 'button',
+          disabled: busy || !pending,
+          onClick: () => onCancel(index),
+        }, '取消'),
+      );
+    }
+
+    /**
+     * 落库 + 回执：两处聊天共用的动作（只依赖传进来的三个 setter）。
+     *
+     * 回执逐条写清成了哪些、没成哪些；有一条没成也会额外提示一句，不装作全成功。
+     */
+    async function runScheduleTaskConfirm({ actions, index, setBusy, setFailure, setMessages }) {
+      setBusy(true);
+      setFailure('');
+      try {
+        const { done, failed } = await applyScheduleTaskActions(actions);
+        const parts = [];
+        if (done.length > 0) parts.push(`已改动 ${done.length} 处：\n${done.map((line) => `· ${line}`).join('\n')}`);
+        if (failed.length > 0) parts.push(`没改成 ${failed.length} 处：\n${failed.map((line) => `· ${line}`).join('\n')}`);
+        const receipt = parts.length === 0 ? '改完了（没有任何一条需要改）。' : parts.join('\n\n');
+        setMessages((current) => current
+          .map((item, at) => (at === index ? { ...item, actionState: 'done', actionArmed: false } : item))
+          .concat([{ role: 'assistant', content: receipt, action: null, actionState: null }]));
+        if (failed.length > 0) setFailure('有几处没改成，回执里逐条写了原因。');
+      } catch (error) {
+        setFailure(String(error?.message ?? error));
+      } finally {
+        setBusy(false);
+      }
     }
 
     /**
@@ -13655,6 +13739,25 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const cancelMastery = (index) => {
         setMessages((current) => current
           .map((item, at) => (at === index ? { ...item, actionState: 'cancelled' } : item))
+          .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
+      };
+
+      /** 「日程/DDL」确认：含删除时第一次点击只上膛，第二次才真删（用户口径：删除单独确认）。 */
+      const confirmScheduleTask = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || action.kind !== 'schedule-task' || message.actionState !== 'pending') return;
+        if (action.danger === true && message.actionArmed !== true) {
+          setMessages((current) => current.map((item, at) => (at === index ? { ...item, actionArmed: true } : item)));
+          return;
+        }
+        runScheduleTaskConfirm({ actions: action.actions, index, setBusy, setFailure, setMessages });
+      };
+
+      const cancelScheduleTask = (index) => {
+        setMessages((current) => current
+          .map((item, at) => (at === index ? { ...item, actionState: 'cancelled', actionArmed: false } : item))
           .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
       };
 
@@ -13985,7 +14088,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                 item.action !== null && item.action !== undefined
                   ? item.action.kind === 'set-mastery-batch'
                     ? renderBatchProposal(item, index)
-                    : h('div', {
+                    : item.action.kind === 'schedule-task'
+                      ? renderScheduleTaskCard(item, index, busy, confirmScheduleTask, cancelScheduleTask)
+                      : h('div', {
                         className: 'sa-assist-proposal',
                         'data-resolved': item.actionState === 'pending' ? 'false' : 'true',
                         key: `sa-focus-action-${index}`,
@@ -14388,10 +14493,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
             // 落库要等用户点「确认修改」→ confirmMastery 再发第二个请求。
             // v2-B2（2026-11-21）：范围批量用另一个 kind（`set-mastery-batch`），
             // 预览里带一整个清单 → 界面渲染成可勾选列表，默认全选（用户 m00484 拍板「不限条数」）。
-            const proposal = result.proposedAction !== null && typeof result.proposedAction === 'object'
-              && (result.proposedAction.kind === 'set-mastery' || result.proposedAction.kind === 'set-mastery-batch')
-              ? result.proposedAction
-              : null;
+            // 2026-11-25：统一走 `pickAssistantProposal`（含新增的 `schedule-task`），
+            // 别再在这里手写 kind 白名单 —— 两边各写一份就是上次文案走偏的根源。
+            const proposal = pickAssistantProposal(result.proposedAction);
             const batch = proposal !== null && proposal.kind === 'set-mastery-batch' ? proposal : null;
             setMessages((current) => current.concat([{
               role: 'assistant',
@@ -14458,6 +14562,25 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
       const cancelMastery = (index) => {
         setMessages((current) => current
           .map((item, at) => (at === index ? { ...item, actionState: 'cancelled' } : item))
+          .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
+      };
+
+      /** 「日程/DDL」确认：含删除时第一次点击只上膛，第二次才真删（用户口径：删除单独确认）。 */
+      const confirmScheduleTask = (index) => {
+        if (busy) return;
+        const message = messages[index];
+        const action = message !== null && message !== undefined ? message.action : null;
+        if (!action || action.kind !== 'schedule-task' || message.actionState !== 'pending') return;
+        if (action.danger === true && message.actionArmed !== true) {
+          setMessages((current) => current.map((item, at) => (at === index ? { ...item, actionArmed: true } : item)));
+          return;
+        }
+        runScheduleTaskConfirm({ actions: action.actions, index, setBusy, setFailure, setMessages });
+      };
+
+      const cancelScheduleTask = (index) => {
+        setMessages((current) => current
+          .map((item, at) => (at === index ? { ...item, actionState: 'cancelled', actionArmed: false } : item))
           .concat([{ role: 'assistant', content: '好，这次没改。', action: null, actionState: null }]));
       };
 
@@ -14838,7 +14961,9 @@ body[data-ds-dark-theme] .sa-reader-pane[data-focus-reader="true"]{--sa-focus-pa
                       item.action !== null && item.action !== undefined
                         ? item.action.kind === 'set-mastery-batch'
                           ? renderBatchProposal(item, index)
-                          : h('div', {
+                          : item.action.kind === 'schedule-task'
+                            ? renderScheduleTaskCard(item, index, busy, confirmScheduleTask, cancelScheduleTask)
+                            : h('div', {
                               className: 'sa-assist-proposal',
                               'data-resolved': item.actionState === 'pending' ? 'false' : 'true',
                             },
