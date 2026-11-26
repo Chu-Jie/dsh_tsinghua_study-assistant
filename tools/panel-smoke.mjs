@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { judgeBadWords } from './panel-smoke-badwords.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,13 +136,8 @@ function readDocs(dataDir) {
   return docs;
 }
 
-// 2026-10-27 晚：`NaN` 不能一律当坏词——化学式 NaNbO₃（铌酸钠）里就含「NaN」三个字母，
-// 那是正常正文。改成按「独立单词」判（前后不能紧贴字母数字）。
-const BAD_TOKEN_TESTS = [
-  { token: 'undefined', hit: (html) => html.includes('undefined') },
-  { token: 'NaN', hit: (html) => /\bNaN\b/u.test(html) },
-  { token: '[object Object]', hit: (html) => html.includes('[object Object]') },
-];
+// 坏词判据已抽到 tools/panel-smoke-badwords.mjs（2026-11-26 卡）：
+// 只有坏词落在数值位/结构位才算泄漏，正文里讲 IEEE-754 的 `NaN` 不再误报。
 const args = parseArgs(process.argv.slice(2));
 const clientFile = path.join(HERE, '..', 'client.js');
 const internals = loadClient(clientFile);
@@ -152,9 +148,13 @@ const cases = [];
 const run = (name, build) => {
   try {
     const html = renderToMarkup(build());
-    const bad = BAD_TOKEN_TESTS.filter((item) => item.hit(html)).map((item) => item.token);
+    const hits = judgeBadWords(html);
+    const bad = hits.map((hit) => hit.token);
     cases.push({ name, ok: true, chars: html.length, bad });
-    if (args.verbose) console.log(`  ✔ ${name}（${html.length} 字符）`);
+    if (args.verbose) {
+      console.log(`  ✔ ${name}（${html.length} 字符）`);
+      for (const hit of hits) console.log(`    ⚠ ${hit.token} @ ${hit.snippet}`);
+    }
   } catch (error) {
     cases.push({ name, ok: false, error: `${error.name}: ${error.message}` });
   }
